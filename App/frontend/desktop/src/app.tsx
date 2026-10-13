@@ -42,6 +42,7 @@ import { MemmyAgentRequestError, type MemmyAgentClient } from "./api/memmy-agent
 import { getRuntimeConfig } from "./api/runtime-config.js";
 import { readHistoryPermissionSetup } from "./pages/memory/computer-history-permission-state.js";
 import { clearMemoryPanelCache } from "./pages/memory/memory-panel-cache.js";
+import { ActiveRecordingBar } from "./pages/memory/task-recordings.js";
 import { readLocalNickname } from "./app/nickname.js";
 import {
   formatAgentSourceScanRequestError,
@@ -327,6 +328,7 @@ function RuntimeApp() {
       <AgentRuntimeBridge taskStateCoordinator={taskStateCoordinator ?? undefined}>
         <NotificationCenterProvider>
           <AppRouter onRetry={retry} />
+          <ActiveRecordingBar client={clients?.memmyAgent ?? null} />
           <CampaignPromptHost />
           <TokenCreditToastHost />
           <GithubStarPromptHost />

@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cwchar>
 #include <filesystem>
@@ -42,6 +43,9 @@ using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 namespace {
 constexpr UINT kWidth = 1920, kHeight = 1080, kFps = 15;
 constexpr LONGLONG kTicksPerSecond = 10000000;
+// Media Foundation encodes stream selectors as signed enum sentinels; its APIs take DWORD.
+constexpr DWORD kAllReaderStreams = static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS);
+constexpr DWORD kFirstReaderVideoStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
 using winrt::check_hresult;
 using winrt::com_ptr;
 
@@ -251,24 +255,43 @@ class WindowCapture {
 com_ptr<IMFSourceReader> Reader(const std::filesystem::path& file, bool decode) {
   if (Reparse(file)) throw std::runtime_error("invalid_media");
   com_ptr<IMFSourceReader> reader;
-  check_hresult(MFCreateSourceReaderFromURL(file.c_str(), nullptr, reader.put()));
-  check_hresult(reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE));
-  check_hresult(reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE));
+  com_ptr<IMFAttributes> attributes;
+  if (decode) {
+    check_hresult(MFCreateAttributes(attributes.put(), 1));
+    check_hresult(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE));
+  }
+  check_hresult(MFCreateSourceReaderFromURL(file.c_str(), attributes.get(), reader.put()));
+  check_hresult(reader->SetStreamSelection(kAllReaderStreams, FALSE));
+  check_hresult(reader->SetStreamSelection(kFirstReaderVideoStream, TRUE));
   if (decode) {
     auto output = VideoType(MFVideoFormat_RGB32);
-    check_hresult(reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, output.get()));
+    check_hresult(reader->SetCurrentMediaType(kFirstReaderVideoStream, nullptr, output.get()));
   }
   return reader;
 }
-void SavePng(const std::filesystem::path& file, IMFSample* sample) {
+void SavePng(const std::filesystem::path& file, IMFSample* sample, LONG defaultStride) {
   com_ptr<IMFMediaBuffer> buffer;
   check_hresult(sample->ConvertToContiguousBuffer(buffer.put()));
-  BYTE* data = nullptr; DWORD length = 0;
-  check_hresult(buffer->Lock(&data, nullptr, &length));
   std::vector<BYTE> topDown(static_cast<std::size_t>(kWidth) * kHeight * 4);
-  if (length != topDown.size()) { buffer->Unlock(); throw std::runtime_error("decoded_size_invalid"); }
-  for (UINT y = 0; y < kHeight; ++y) std::copy_n(data + static_cast<std::size_t>(kHeight - 1 - y) * kWidth * 4, kWidth * 4, topDown.data() + static_cast<std::size_t>(y) * kWidth * 4);
-  check_hresult(buffer->Unlock());
+  const auto buffer2d = buffer.try_as<IMF2DBuffer>();
+  if (buffer2d) {
+    BYTE* scanline = nullptr; LONG pitch = 0;
+    check_hresult(buffer2d->Lock2D(&scanline, &pitch));
+    const auto rowBytes = static_cast<LONG>(kWidth * 4);
+    if (!scanline || (pitch > -rowBytes && pitch < rowBytes)) { buffer2d->Unlock2D(); throw std::runtime_error("decoded_stride_invalid"); }
+    for (UINT y = 0; y < kHeight; ++y) std::copy_n(scanline + static_cast<std::ptrdiff_t>(y) * pitch, kWidth * 4, topDown.data() + static_cast<std::size_t>(y) * kWidth * 4);
+    check_hresult(buffer2d->Unlock2D());
+  } else {
+    BYTE* data = nullptr; DWORD length = 0;
+    check_hresult(buffer->Lock(&data, nullptr, &length));
+    const auto pitch = static_cast<std::int64_t>(defaultStride);
+    const auto rowBytes = pitch < 0 ? -pitch : pitch;
+    if (rowBytes < kWidth * 4 || static_cast<std::uint64_t>(rowBytes) * kHeight > length) { buffer->Unlock(); throw std::runtime_error("decoded_size_invalid"); }
+    const BYTE* scanline = pitch < 0 ? data + static_cast<std::ptrdiff_t>(kHeight - 1) * rowBytes : data;
+    for (UINT y = 0; y < kHeight; ++y) std::copy_n(scanline + static_cast<std::ptrdiff_t>(y) * defaultStride, kWidth * 4, topDown.data() + static_cast<std::size_t>(y) * kWidth * 4);
+    check_hresult(buffer->Unlock());
+  }
+  for (std::size_t offset = 3; offset < topDown.size(); offset += 4) topDown[offset] = 255;
   if (std::filesystem::exists(file) || Reparse(file)) throw std::runtime_error("output_exists");
   com_ptr<IWICImagingFactory> factory;
   check_hresult(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory.put())));
@@ -280,9 +303,9 @@ void SavePng(const std::filesystem::path& file, IMFSample* sample) {
   com_ptr<IWICBitmapFrameEncode> frame; com_ptr<IPropertyBag2> properties;
   check_hresult(encoder->CreateNewFrame(frame.put(), properties.put())); check_hresult(frame->Initialize(properties.get()));
   check_hresult(frame->SetSize(kWidth, kHeight));
-  WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGR;
+  WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
   check_hresult(frame->SetPixelFormat(&format));
-  if (format != GUID_WICPixelFormat32bppBGR) throw std::runtime_error("png_format_invalid");
+  if (format != GUID_WICPixelFormat32bppBGRA) throw std::runtime_error("png_format_invalid");
   check_hresult(frame->WritePixels(kHeight, kWidth * 4, static_cast<UINT>(topDown.size()), topDown.data()));
   check_hresult(frame->Commit()); check_hresult(encoder->Commit());
 }
@@ -467,7 +490,7 @@ int TaskVideo::Finalize(const std::wstring& folder) {
       if (part.at("bytes").get<std::uintmax_t>() != std::filesystem::file_size(mediaFile)
         || part.at("sha256").get<std::string>() != Sha256Hex(Read(mediaFile, 64 * 1024 * 1024))) throw std::runtime_error("part_integrity_invalid");
       auto reader = Reader(directory / L"parts" / PartName(index, L"mp4"), false);
-      com_ptr<IMFMediaType> type; check_hresult(reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, type.put()));
+      com_ptr<IMFMediaType> type; check_hresult(reader->GetNativeMediaType(kFirstReaderVideoStream, 0, type.put()));
       GUID subtype{}; check_hresult(type->GetGUID(MF_MT_SUBTYPE, &subtype));
       UINT32 width = 0, height = 0; check_hresult(MFGetAttributeSize(type.get(), MF_MT_FRAME_SIZE, &width, &height));
       if (subtype != MFVideoFormat_H264 || width != kWidth || height != kHeight) throw std::runtime_error("part_invalid");
@@ -515,7 +538,7 @@ int TaskVideo::Finalize(const std::wstring& folder) {
     std::vector<BYTE> header;
     for (const auto& part : parts) {
       auto reader = Reader(directory / L"parts" / PartName(part.at("index").get<unsigned>(), L"mp4"), false);
-      com_ptr<IMFMediaType> type; check_hresult(reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, type.put()));
+      com_ptr<IMFMediaType> type; check_hresult(reader->GetNativeMediaType(kFirstReaderVideoStream, 0, type.put()));
       UINT32 size = 0; check_hresult(type->GetBlobSize(MF_MT_MPEG_SEQUENCE_HEADER, &size));
       std::vector<BYTE> currentHeader(size); check_hresult(type->GetBlob(MF_MT_MPEG_SEQUENCE_HEADER, currentHeader.data(), size, nullptr));
       if (!started) {
@@ -526,7 +549,7 @@ int TaskVideo::Finalize(const std::wstring& folder) {
       bool first = true;
       for (;;) {
         DWORD flags = 0; LONGLONG timestamp = 0; com_ptr<IMFSample> sample;
-        check_hresult(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &timestamp, sample.put()));
+        check_hresult(reader->ReadSample(kFirstReaderVideoStream, 0, nullptr, &flags, &timestamp, sample.put()));
         if ((flags & MF_SOURCE_READERF_ERROR) != 0) throw std::runtime_error("part_decode_failed");
         if (sample) {
           if (first && MFGetAttributeUINT32(sample.get(), MFSampleExtension_CleanPoint, FALSE) == FALSE) throw std::runtime_error("part_not_independent");
@@ -570,17 +593,22 @@ int TaskVideo::ExportFrames(const std::wstring& folder, const std::wstring& dest
       }
       if (selected.empty()) continue;
       auto reader = Reader(directory / L"parts" / PartName(part, L"mp4"), true);
+      com_ptr<IMFMediaType> decodedType;
+      check_hresult(reader->GetCurrentMediaType(kFirstReaderVideoStream, decodedType.put()));
+      UINT32 encodedStride = 0; LONG defaultStride = 0;
+      if (SUCCEEDED(decodedType->GetUINT32(MF_MT_DEFAULT_STRIDE, &encodedStride))) defaultStride = static_cast<LONG>(encodedStride);
+      else check_hresult(MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.Data1, kWidth, &defaultStride));
       unsigned frameNumber = 0; std::size_t written = 0;
       for (;;) {
         DWORD flags = 0; com_ptr<IMFSample> sample;
-        check_hresult(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, nullptr, sample.put()));
+        check_hresult(reader->ReadSample(kFirstReaderVideoStream, 0, nullptr, &flags, nullptr, sample.put()));
         if ((flags & MF_SOURCE_READERF_ERROR) != 0) throw std::runtime_error("decode_failed");
         if (sample) {
           for (const auto& request : selected) if (request.at("partFrame").get<unsigned>() == frameNumber) {
             const auto i = request.at("i").get<unsigned>(); const auto phase = request.at("phase").get<std::string>();
             if (i > 9999 || (phase != "before" && phase != "after")) throw std::runtime_error("request_invalid");
             wchar_t name[40]{}; swprintf_s(name, L"%04u_%ls.png", i, phase == "before" ? L"before" : L"after");
-            SavePng(output / L"frames" / name, sample.get()); ++written;
+            SavePng(output / L"frames" / name, sample.get(), defaultStride); ++written;
           }
           ++frameNumber;
         }
