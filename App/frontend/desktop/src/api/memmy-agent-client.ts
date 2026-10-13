@@ -6,6 +6,8 @@
  * bearer tokens and a WebSocket protocol owned by memmy-agent.
  */
 import { z } from "zod";
+import { ComputerRecordingsClient } from "./computer-recordings-client.js";
+import type { RecordingStart } from "@memmy/local-api-contracts";
 import {
   ApplicationIconSchema,
   ComputerHistorySnapshotSchema,
@@ -632,6 +634,7 @@ export type WebuiSessionTarget =
   | { kind: "project"; projectId: string };
 
 export type MemmyAgentSendMessageInput = {
+  taskRecording?: RecordingStart;
   chatId: string;
   content: string;
   clientRequestId?: string;
@@ -708,6 +711,7 @@ export type MemmyAgentRunLifecycleEvent = MemmyAgentWsEvent & {
 };
 
 export interface MemmyAgentClient {
+  recordings?: ComputerRecordingsClient;
   bootstrap(options?: { force?: boolean }): Promise<MemmyAgentBootstrap>;
   getSettings(): Promise<MemmyAgentSettings>;
   getComputerHistory(): Promise<ComputerHistorySnapshot>;
@@ -1017,6 +1021,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 class HttpMemmyAgentClient implements MemmyAgentClient {
+  readonly recordings = new ComputerRecordingsClient((path, schema, options) => this.request(path, schema, options));
   private readonly baseUrl: string;
   private readonly bootstrapSecret: string | null;
   private readonly clientId: string;
@@ -2333,6 +2338,7 @@ class MemmyAgentWebSocketSession implements MemmyAgentWebSocketConnection {
       ...(input.clientRequestId ? { client_request_id: input.clientRequestId } : {}),
       ...(input.target ? { target: input.target } : {}),
       ...(input.language ? { language: input.language } : {}),
+      ...(input.taskRecording ? { task_recording: input.taskRecording } : {}),
       ...(input.modelPreset !== undefined ? { model_preset: input.modelPreset } : {}),
       ...(input.media?.length ? { media_paths: input.media.map((item) => item.path) } : {})
     }, expectedGeneration);
@@ -2820,7 +2826,8 @@ function sameMessageAttempt(
     target: left.target ?? null,
     language: left.language ?? null,
     modelPreset: left.modelPreset ?? null,
-    mediaPaths: left.media?.map((item) => item.path) ?? []
+    mediaPaths: left.media?.map((item) => item.path) ?? [],
+    taskRecording: left.taskRecording ?? null
   }) === JSON.stringify({
     chatId: right.chatId,
     content: right.content,
@@ -2828,7 +2835,8 @@ function sameMessageAttempt(
     target: right.target ?? null,
     language: right.language ?? null,
     modelPreset: right.modelPreset ?? null,
-    mediaPaths: right.media?.map((item) => item.path) ?? []
+    mediaPaths: right.media?.map((item) => item.path) ?? [],
+    taskRecording: right.taskRecording ?? null
   });
 }
 

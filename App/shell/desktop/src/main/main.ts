@@ -1,4 +1,7 @@
 import { createDesktopScreenCapture } from './desktop-screen-capture.js';
+import { protocol } from "electron";
+import { createRecordingMediaProxy } from "./recording-media-proxy.js";
+protocol.registerSchemesAsPrivileged([{ scheme: "memmy-recording", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }]);
 import { createComputerUseOnboarding } from './computer-use-onboarding.js';
 import { isComputerUsePermissionPanelFocused, showComputerUsePermissionPanel } from './computer-use-permission-panel.js';
 import { createHttpMemmyAgentAdminClient, createLocalBackend, loadCloudServiceEnv, syncRuntimeConfigForStartup, trackAnalyticsEvent, type BootstrapScenario, type LocalBackend } from "@memmy/backend";
@@ -123,6 +126,7 @@ import {
 } from "./windows-launch-at-login.js";
 import { resolveComputerHistoryMarkdownPath } from "./computer-history-markdown.js";
 import { stopComputerHistoryBeforeExit } from "./computer-history-exit.js";
+import { stopTaskRecordingBeforeExit } from "./task-recording-exit.js";
 import { writeQuitDiagnostic, type QuitDiagnostic } from "./quit-diagnostics.js";
 
 let mainWindow: BrowserWindow | null = null;
@@ -5005,6 +5009,7 @@ function handleRendererLoadFailure(error: unknown): void {
 }
 
 app.whenReady().then(async () => {
+  protocol.handle("memmy-recording", createRecordingMediaProxy(() => runtimeServices?.agentGateway ?? null));
   if (!(await waitForSingleInstanceLock())) {
     // An instance is already running: this instance exits directly, to avoid a second instance
     // contending for the fixed ports (memory 18960 / agent gateway) and causing a startup failure.
@@ -5121,12 +5126,12 @@ function relaunchAfterQuitCleanupIfRequested(): void {
   app.relaunch();
 }
 
-function armQuitCleanupForceExitTimer(): void {
+function armQuitCleanupForceExitTimer(timeoutMs = APP_QUIT_CLEANUP_FORCE_EXIT_DELAY_MS): void {
   clearQuitCleanupForceExitTimer();
   const quit = quitCleanupContext;
   quitCleanupForceExitTimer = setTimeout(() => {
     if (quit) forceQuitCleanup(quit);
-  }, APP_QUIT_CLEANUP_FORCE_EXIT_DELAY_MS);
+  }, timeoutMs);
   quitCleanupForceExitTimer.unref?.();
 }
 
@@ -5166,8 +5171,11 @@ async function closeRuntimeForQuit(quit: QuitCleanupContext): Promise<void> {
   }
   if (!quit.servicesClose) {
     quit.servicesClose = (async () => {
-      if (process.platform === "win32") {
+      if (process.platform === "win32" || process.platform === "darwin") {
         quit.phase = "history-stop";
+        try { await stopTaskRecordingBeforeExit(services.agentGateway, () => armQuitCleanupForceExitTimer(30_000)); } catch { /* sealed parts recover on next startup */ }
+      }
+      if (process.platform === "win32") {
         try {
           await stopComputerHistoryBeforeExit(services.agentGateway);
           if (quit.outcome === "pending") recordQuitDiagnostic(quit, "history-stopped");

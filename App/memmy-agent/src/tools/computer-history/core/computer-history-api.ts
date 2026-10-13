@@ -1,4 +1,5 @@
 import type { HistoryPlatformDriver, HistoryPermissions, HistoryPermission } from "./platform-driver.js";
+import { collectorGate, CollectorBusyError } from "./collector-gate.js";
 import { historyPermissionsReady } from "./platform-driver.js";
 import {
   ObservationSettingsStore,
@@ -338,6 +339,12 @@ export class ComputerHistoryDemoService {
   private permissions: HistoryPermissions | undefined;
   private readonly permissionReader: (request?: HistoryPermission) => Promise<HistoryPermissions>;
   private permissionStartVersion = 0;
+  private permissionStarts = 0;
+
+  get recorderBusy(): boolean {
+    return this.permissionStarts > 0 || !!this.recorderTransition || this.recorderChildren.size > 0
+      || this.observationState === "running" || this.observationState === "stopping";
+  }
 
   private get segmentsDirectory(): string {
     return path.join(this.recordingDirectory, SEGMENTS_DIRECTORY_NAME);
@@ -1106,6 +1113,7 @@ export class ComputerHistoryDemoService {
   }
 
   startObservation(): ComputerHistorySnapshot {
+    if (collectorGate.taskActive) throw new CollectorBusyError();
     if (this.shuttingDown || this.recorderTransition || this.observationState === "stopping") {
       throw new ComputerHistoryApiError(409, "Computer History is finishing a recorder transition");
     }
@@ -1149,8 +1157,11 @@ export class ComputerHistoryDemoService {
 
   /** Missing consent is an onboarding state, before creating any recording. */
   async startObservationWithPermissions(resume = false): Promise<ComputerHistorySnapshot> {
+    if (collectorGate.taskActive) throw new CollectorBusyError();
     const version = ++this.permissionStartVersion;
-    const status = await this.checkPermissions();
+    this.permissionStarts++;
+    let status: HistoryPermissions;
+    try { status = await this.checkPermissions(); } finally { this.permissionStarts--; }
     if (version !== this.permissionStartVersion || this.shuttingDown) return this.snapshot();
     if (!status.supported) throw new ComputerHistoryApiError(400, "Computer History recording is unavailable on this platform");
     if (!historyPermissionsReady(status)) {
@@ -1248,6 +1259,7 @@ export class ComputerHistoryDemoService {
   }
 
   resumeObservation(): ComputerHistorySnapshot {
+    if (collectorGate.taskActive) throw new CollectorBusyError();
     if (this.observationState !== "paused") {
       throw new ComputerHistoryApiError(409, "Computer History is not paused");
     }

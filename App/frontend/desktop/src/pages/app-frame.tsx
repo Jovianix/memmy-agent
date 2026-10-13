@@ -1,4 +1,5 @@
 import { BookOpen } from "lucide-react";
+import { ActiveRecordingBar } from "./memory/task-recordings.js";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -1525,6 +1526,7 @@ export function AppFrame(props: AppFrameProps) {
           style={props.topBarBorder ? { paddingTop: "calc(var(--codex-toolbar-height) + var(--app-frame-topbar-offset, 0px))" } : undefined}
         >
           {props.children}
+          <ActiveRecordingBar client={clients?.memmyAgent ?? null} />
         </div>
       </main>
       <ConfirmDialog

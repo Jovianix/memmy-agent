@@ -23,7 +23,7 @@ struct HookCounters {
 // waits. Key codes, characters and pointer coordinates are never retained.
 class HookThread {
  public:
-  explicit HookThread(std::size_t queueCapacity);
+  explicit HookThread(std::size_t queueCapacity, bool taskInput = false);
   ~HookThread();
   HookThread(const HookThread&) = delete;
   HookThread& operator=(const HookThread&) = delete;
@@ -34,6 +34,7 @@ class HookThread {
   bool Stop(DWORD timeoutMs);
 
   std::uint64_t Generation() const;
+  std::uint64_t GenerationQpc() const;
   void BumpGeneration();
   void SetPaused(bool paused);
   bool StopRequested() const;

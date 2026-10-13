@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <filesystem>
@@ -1576,6 +1577,46 @@ void CaseObserveCtrlBreak() {
   Expect(observe.Finish(5000, "observe") == 0, "exit code");
 }
 
+void CaseTaskVideoLifecycle() {
+  Fixture fixture; fixture.Start(); fixture.RequireForeground('a');
+  Json rule = FullRule(fixture); rule["processStart"] = fixture.ProcessStart();
+  const auto policy = WritePolicy("task-video", Json::array({rule}));
+  const auto directory = g_paths.artifacts / L"task-video"; fs::create_directory(directory);
+  Observe recording;
+  recording.Proc().Start(g_paths.Recorder(), {L"record-task", L"--policy", policy.wstring(), L"--output-dir", directory.wstring(),
+    L"--seconds", L"20", L"--sample-ms", L"200", L"--input-hooks"});
+  const auto started = recording.TryWait("session.started", 12000);
+  if (!started) {
+    recording.Proc().Save("task-start-failed");
+    if (recording.Proc().Stderr().find("task_video_start_failed") != std::string::npos) Skip("Windows Graphics Capture / hardware D3D device unavailable");
+    Fail("task recorder failed to acknowledge startup");
+  }
+  Expect(started->at("protocol") == "memmy.windows.task-recording" && started->contains("task"), "independent task protocol");
+  const auto conflict = RunToEnd(g_paths.Recorder(), {L"observe", L"--policy", policy.wstring(), L"--seconds", L"1"}, "task-history-conflict");
+  Expect(conflict.exitCode == 4, "task and background history share the native lease");
+  for (int i = 0; i < 10; ++i) { fixture.Command("set-message task-before-" + std::to_string(i)); Sleep(200); }
+  recording.Send("pause"); recording.Wait("session.paused", 5000); Sleep(400);
+  recording.Send("resume"); recording.Wait("session.resumed", 5000);
+  for (int i = 0; i < 50; ++i) { fixture.Command("set-message task-after-" + std::to_string(i)); Sleep(200); }
+  recording.Send("stop"); recording.Wait("session.stopped", 5000);
+  Expect(recording.Finish(5000, "task-recording") == 0, "task capture stopped within bound");
+  Expect(RunToEnd(g_paths.Recorder(), {L"finalize-task", L"--output-dir", directory.wstring()}, "task-finalize").exitCode == 0, "task remux");
+  const auto media = ParseLine(ReadFileBytes(directory / L"native-media.json"));
+  Expect(media.at("complete") == true && media.at("parts").size() >= 2, "sealed video parts and merged media");
+  Expect(fs::file_size(directory / L"recording.mp4") > 0, "merged video exists");
+  bool pauseGap = false; for (const auto& gap : media.at("gaps")) if (gap.at("reason") == "paused") pauseGap = true;
+  Expect(pauseGap, "pause interval is explicit");
+  std::size_t captured = 0; double last = -1;
+  const auto origin = std::stoull(media.at("qpcOrigin").get<std::string>()), frequency = std::stoull(media.at("qpcFrequency").get<std::string>());
+  for (const auto& line : SplitLines(ReadFileBytes(directory / L"frames.jsonl"))) {
+    if (line.empty()) continue; const auto frame = ParseLine(line);
+    const auto tick = std::stoull(frame.at("qpc").get<std::string>()); const double time = frame.at("timeMs").get<double>();
+    Expect(time > last && std::abs(time - static_cast<double>(tick - origin) * 1000.0 / static_cast<double>(frequency)) < 2, "QPC frame alignment"); last = time;
+    if (!frame.at("blank").get<bool>()) { ++captured; Expect(frame.at("window").at("pid") == fixture.Pid(), "authorized window only"); }
+  }
+  Expect(captured > 10, "actual window pixels were sampled");
+}
+
 const std::map<std::string, std::function<void()>>& Cases() {
   static const std::map<std::string, std::function<void()>> cases = {
       {"cli_contract", CaseCliContract},
@@ -1609,6 +1650,7 @@ const std::map<std::string, std::function<void()>>& Cases() {
       {"stdout_broken", CaseStdoutBroken},
       {"input_hooks_lifecycle", CaseInputHooksLifecycle},
       {"stop_hotkey", CaseStopHotkey},
+      {"task_video_lifecycle", CaseTaskVideoLifecycle},
   };
   return cases;
 }

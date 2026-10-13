@@ -2,6 +2,7 @@
 #include "win/commands.h"
 #include "win/system.h"
 #include "win/uia_reader.h"
+#include "win/task_video.h"
 
 #include <windows.h>
 #include <crtdbg.h>
@@ -53,7 +54,12 @@ int wmain(int argc, wchar_t** argv) {
       case memmy::cli::CommandKind::Snapshot:
         return memmy::win::RunSnapshot(command);
       case memmy::cli::CommandKind::Observe:
+      case memmy::cli::CommandKind::RecordTask:
         return memmy::win::RunObserve(command);
+      case memmy::cli::CommandKind::FinalizeTask:
+        return memmy::win::TaskVideo::Finalize(command.outputDirectory);
+      case memmy::cli::CommandKind::ExportTaskFrames:
+        return memmy::win::TaskVideo::ExportFrames(command.outputDirectory, command.exportDirectory);
       case memmy::cli::CommandKind::Worker:
         return memmy::win::WorkerMain();
     }

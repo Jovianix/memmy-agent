@@ -27,7 +27,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test.each(["human-recorder", "app-icon"])("%s resolves the unpacked binary without reading source or invoking Swift", async (name) => {
+test.each(["human-recorder", "app-icon", "task-recorder"])("%s resolves the unpacked binary without reading source or invoking Swift", async (name) => {
   const source = path.join(root, "Memmy.app", "Contents", "Resources", "app.asar", "dist", `${name}.swift`);
   const binary = path.join(path.dirname(source).replace("app.asar", "app.asar.unpacked"), "native", process.arch, name);
   fs.mkdirSync(path.dirname(binary), { recursive: true });

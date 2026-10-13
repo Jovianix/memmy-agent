@@ -53,6 +53,7 @@ set(MEMMY_RECORDER_WIN_SOURCES
   src/win/worker_host.cpp
   src/win/uia_reader.cpp
   src/win/commands.cpp
+  src/win/task_video.cpp
   src/main.cpp)
 
 # The production executable and the fault-injection test executable are built
@@ -60,13 +61,19 @@ set(MEMMY_RECORDER_WIN_SOURCES
 function(memmy_add_recorder target test_hooks)
   add_executable(${target} ${MEMMY_RECORDER_WIN_SOURCES})
   target_compile_definitions(${target} PRIVATE MEMMY_HISTORY_TEST_HOOKS=${test_hooks})
-  target_link_libraries(${target} PRIVATE memmy_history_core ole32 oleaut32 uiautomationcore bcrypt shell32 version uuid)
+  target_link_libraries(${target} PRIVATE memmy_history_core ole32 oleaut32 uiautomationcore bcrypt shell32 version uuid
+    d3d11 dxgi dwmapi mf mfplat mfreadwrite mfuuid windowsapp windowscodecs)
 endfunction()
 
 memmy_add_recorder(memmy-history-recorder 0)
 
 if(MEMMY_HISTORY_BUILD_TESTS)
   enable_testing()
+  add_executable(memmy-task-video-tests tests/unit/task_video_tests.cpp src/win/task_video.cpp src/win/system.cpp src/win/identity.cpp src/win/hook_thread.cpp)
+  target_compile_definitions(memmy-task-video-tests PRIVATE MEMMY_HISTORY_TEST_HOOKS=1)
+  target_link_libraries(memmy-task-video-tests PRIVATE memmy_history_core ole32 oleaut32 bcrypt shell32 version uuid d3d11 dxgi dwmapi mf mfplat mfreadwrite mfuuid windowsapp windowscodecs)
+  add_test(NAME task_video.media_integrity COMMAND memmy-task-video-tests)
+  set_tests_properties(task_video.media_integrity PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
   memmy_add_recorder(memmy-history-recorder-testhooks 1)
 
   # Synthetic-document diagnostics only. Never built or staged for production.
@@ -111,7 +118,7 @@ if(MEMMY_HISTORY_BUILD_TESTS)
     observe_lifecycle observe_unauthorized_foreground observe_policy_corrupt observe_policy_race
     observe_ui_hang_recovery observe_eof observe_parent_exit observe_parent_kill
     observe_collector_kill_reaps_worker observe_ctrl_break single_instance rotation_unicode_path
-    output_exists output_segment_failure output_flush_failure stdout_broken input_hooks_lifecycle stop_hotkey)
+    output_exists output_segment_failure output_flush_failure stdout_broken input_hooks_lifecycle stop_hotkey task_video_lifecycle)
   foreach(case IN LISTS MEMMY_INTEGRATION_CASES)
     add_test(NAME integration.${case}
       COMMAND memmy-history-integration-tests

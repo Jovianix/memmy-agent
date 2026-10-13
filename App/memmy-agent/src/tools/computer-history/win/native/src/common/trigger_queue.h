@@ -21,7 +21,7 @@ enum class TriggerKind : std::uint8_t {
 
 const char* TriggerKindName(TriggerKind kind);
 
-enum class ActionKind : std::uint8_t { None, MouseClick, Scroll, KeyPress, TextKey };
+enum class ActionKind : std::uint8_t { None, MouseClick, Scroll, KeyPress, TextKey, Unsupported };
 struct InputAction {
   ActionKind kind = ActionKind::None;
   std::uint16_t key = 0;  // only a navigation key or an allowlisted shortcut, never plain text
@@ -30,6 +30,7 @@ struct InputAction {
   std::int32_t x = 0, y = 0, wheel = 0;
   bool horizontal = false, injected = false;
   std::uint64_t timestamp = 0;  // FILETIME, formatted outside the callback
+  std::uint64_t qpc = 0;  // task protocol only; never added to the legacy v1 JSON
 };
 InputAction ClassifyKeyboard(std::uint32_t virtualKey, std::uint8_t modifiers, bool injected);
 std::string SemanticKey(const InputAction& action);

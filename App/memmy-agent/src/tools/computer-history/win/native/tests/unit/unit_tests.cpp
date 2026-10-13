@@ -849,6 +849,16 @@ TEST(cli_other_commands) {
   CHECK(ParseArgs({L"__worker", L"--policy", L"p"}).error == "unknown_option");
 }
 
+TEST(task_video_cli_is_separate_and_bounded) {
+  const auto task = ParseArgs({L"record-task", L"--policy", L"p.json", L"--output-dir", L"recording", L"--input-hooks"});
+  CHECK(task.command && task.command->kind == cli::CommandKind::RecordTask && task.command->seconds == 1200);
+  CHECK(ParseArgs({L"record-task", L"--policy", L"p", L"--output-dir", L"out", L"--seconds", L"1201"}).error == "invalid_seconds");
+  CHECK(ParseArgs({L"record-task", L"--policy", L"p"}).error == "missing_output_directory");
+  CHECK(ParseArgs({L"observe", L"--policy", L"p", L"--output-dir", L"out"}).error == "unknown_option");
+  CHECK(ParseArgs({L"export-task-frames", L"--output-dir", L"out"}).error == "missing_export_directory");
+  CHECK(ParseArgs({L"finalize-task", L"--output-dir", L"out"}).command->kind == cli::CommandKind::FinalizeTask);
+}
+
 TEST(cli_test_options_exist_only_in_test_builds) {
   CHECK(ParseArgs({L"snapshot", L"--hwnd", L"5", L"--policy", L"p", L"--test-worker-sleep-ms", L"10"}).error ==
         "unknown_option");

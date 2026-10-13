@@ -6,6 +6,7 @@ import type { HistoryPlatformDriver, HistoryPermissions, RecorderLaunch } from "
 import { applicationCatalog, browserNames, discoverApplications, resolveWindowsCollector, WindowsSettingsStore } from "./settings.js";
 import { isSystemSurface, pathKey } from "./policy.js";
 import path from "node:path";
+import { collectorGate } from "../core/collector-gate.js";
 import { discoverApplicationCatalog, type CatalogApplication } from "./application-catalog.js";
 
 interface ProcessSession { ready: Promise<void>; closed: Promise<void> }
@@ -52,9 +53,13 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
   async iconFor(): Promise<null> { return null; }
   launch(input: RecorderLaunch): ChildProcessWithoutNullStreams {
     this.prepare();
-    const child = spawn(process.execPath, [this.recorderScript, "--binary", resolveWindowsCollector(this.binary),
+    const release = collectorGate.acquire("history");
+    let child: ChildProcessWithoutNullStreams;
+    try { child = spawn(process.execPath, [this.recorderScript, "--binary", resolveWindowsCollector(this.binary),
       "--settings", this.store.filePath, "--out", input.eventsFile, "--title", input.title, "--seconds", "86400", "--append", "--input-hooks"],
-    { windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"], env: process.env });
+    { windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"], env: process.env }); }
+    catch (error) { release(); throw error; }
+    child.once("close", release);
     let readyResolve!: () => void;
     let readyReject!: (error: Error) => void;
     let closeResolve!: () => void;
@@ -99,7 +104,10 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
     this.sessions.set(child, { ready, closed });
     return child;
   }
-  ready(child: ChildProcessWithoutNullStreams): Promise<void> { return this.sessions.get(child)!.ready; }
+  async ready(child: ChildProcessWithoutNullStreams): Promise<void> {
+    const session = this.sessions.get(child)!;
+    try { await session.ready; } catch (error) { await session.closed.catch(() => {}); throw error; }
+  }
   async stop(child: ChildProcessWithoutNullStreams): Promise<void> {
     const session = this.sessions.get(child);
     if (!session) throw new Error("Unknown Windows recorder process");

@@ -9,7 +9,7 @@
 
 namespace memmy::cli {
 
-enum class CommandKind { Help, Version, Applications, Catalog, Windows, Snapshot, Observe, Worker };
+enum class CommandKind { Help, Version, Applications, Catalog, Windows, Snapshot, Observe, RecordTask, FinalizeTask, ExportTaskFrames, Worker };
 
 // Fault-injection options. Accepted only by the separately built test-hooks executable.
 struct TestOptions {
@@ -25,6 +25,8 @@ struct CommandLine {
   std::uint64_t hwnd = 0;
   std::wstring policyPath;
   std::wstring outputPath;
+  std::wstring outputDirectory;
+  std::wstring exportDirectory;
   std::uint32_t seconds = 30;
   std::uint32_t rotateSeconds = 600;
   std::uint32_t sampleMs = 1000;

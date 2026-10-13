@@ -645,7 +645,7 @@ verify_computer_history_helpers() {
   local swift_cpu="$2"
   local helper
   if [ "$swift_cpu" = "x64" ]; then swift_cpu=x86_64; fi
-  for helper in human-recorder app-icon; do
+  for helper in human-recorder app-icon task-recorder; do
     require_packaged_runtime_file "$helper_dir/$helper"
     if [ ! -x "$helper_dir/$helper" ]; then
       echo "Computer History helper is not executable: $helper_dir/$helper" >&2

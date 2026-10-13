@@ -1,4 +1,8 @@
 import { staticLlmRuntime } from "../../utils/llm-runtime.js";
+import { RecordingStartSchema } from "@memmy/local-api-contracts";
+import { handleRecordingHttp } from "../../tools/computer-recordings/http-api.js";
+import { getRecordingSessionService, shutdownRecordingService } from "../../tools/computer-recordings/service.js";
+import { CollectorBusyError } from "../../tools/computer-history/core/collector-gate.js";
 import crypto from "node:crypto";
 import * as childProcess from "node:child_process";
 import fs from "node:fs";
@@ -119,7 +123,7 @@ import {
 
 type Query = Record<string, string[]>;
 type HttpRequestLike = { path: string; method?: string; headers?: http.IncomingHttpHeaders | Record<string, any>; body?: Buffer | string };
-type HttpLikeResponse = { status: number; headers: Record<string, string>; body: Buffer | string };
+type HttpLikeResponse = { status: number; headers: Record<string, string>; body: Buffer | string; stream?: fs.ReadStream };
 type WorkspaceEnvironmentContextResult =
   | { ok: true; context: WorkspaceEnvironmentContext }
   | { ok: false; response: HttpLikeResponse };
@@ -923,6 +927,7 @@ export class WebSocketChannel extends BaseChannel {
     queueSurface,
     turnAdmission,
     expectedTurnId,
+    taskRecording,
   }: {
     chatId: string;
     content: string;
@@ -933,6 +938,7 @@ export class WebSocketChannel extends BaseChannel {
     queueSurface: "chat_composer" | null;
     turnAdmission: "queue" | "steer";
     expectedTurnId: string | null;
+    taskRecording?: unknown;
   }): string {
     return crypto.createHash("sha256").update(JSON.stringify({
       chat_id: chatId,
@@ -944,6 +950,7 @@ export class WebSocketChannel extends BaseChannel {
       queue_surface: queueSurface,
       turn_admission: turnAdmission,
       expected_turn_id: expectedTurnId,
+      ...(taskRecording ? { task_recording: taskRecording } : {}),
     })).digest("hex");
   }
 
@@ -2740,6 +2747,10 @@ export class WebSocketChannel extends BaseChannel {
     if (got === "/api/settings") return this.handleSettings(request);
     if (got === "/api/commands") return this.handleCommands(request);
     if (got === "/api/computer-history") return this.handleComputerHistory(request, "snapshot");
+    if (got === "/api/computer-recordings" || got.startsWith("/api/computer-recordings/")) {
+      if (!this.checkApiToken(request)) return httpError(401, "Unauthorized");
+      return handleRecordingHttp(getRecordingSessionService(), request, true);
+    }
     if (got === "/api/computer-history/windows/settings") return this.handleWindowsHistorySettings(request);
     if (got === "/api/computer-history/permissions/check") return this.handleComputerHistory(request, "permissions-check");
     if (got === "/api/computer-history/permissions/open") return this.handleComputerHistory(request, "permissions-open");
@@ -2815,6 +2826,7 @@ export class WebSocketChannel extends BaseChannel {
 
   override async start(): Promise<void> {
     this.running = true;
+    if (process.platform === "win32" || process.platform === "darwin") void getRecordingSessionService().list().catch(() => {});
     const factory = this.config.serverFactory;
     if (factory) {
       this.server = await factory(this);
@@ -2868,6 +2880,7 @@ export class WebSocketChannel extends BaseChannel {
     // Recording is scoped to the app: closing it finalizes the open segment
     // rather than leaving a recorder running behind the user's back.
     await this.computerHistory.shutdown();
+    await shutdownRecordingService();
     if (typeof this.server?.close === "function") {
       await new Promise<void>((resolve) => this.server.close(() => resolve()));
     }
@@ -2907,7 +2920,7 @@ export class WebSocketChannel extends BaseChannel {
     try {
       return httpJsonResponse({ icon: await this.computerHistory.applicationIcon(bundleId) });
     } catch (error) {
-      if (error instanceof ComputerHistoryApiError) return httpError(error.status, error.message);
+      if (error instanceof ComputerHistoryApiError || error instanceof CollectorBusyError) return httpError(error.status, error.message);
       return httpError(500, error instanceof Error ? error.message : String(error));
     }
   }
@@ -3010,7 +3023,7 @@ export class WebSocketChannel extends BaseChannel {
       }
       return httpJsonResponse(clientSnapshot(snapshot!) as unknown as Record<string, any>);
     } catch (error) {
-      if (error instanceof ComputerHistoryApiError) return httpError(error.status, error.message);
+      if (error instanceof ComputerHistoryApiError || error instanceof CollectorBusyError) return httpError(error.status, error.message);
       return httpError(500, error instanceof Error ? error.message : String(error));
     }
   }
@@ -3342,6 +3355,11 @@ export class WebSocketChannel extends BaseChannel {
       });
       return;
     }
+    const recording = envelope.task_recording == null ? null : RecordingStartSchema.safeParse(envelope.task_recording);
+    if (recording && !recording.success) {
+      await this.sendWebuiRequestError(connection, { chatId, clientRequestId, detail: "message_request_rejected", reason: "task_recording_consent_invalid" });
+      return;
+    }
     const digest = clientRequestId
       ? this.webuiMessageDigest({
           chatId,
@@ -3353,6 +3371,7 @@ export class WebSocketChannel extends BaseChannel {
           queueSurface,
           turnAdmission,
           expectedTurnId,
+          taskRecording: recording?.success ? recording.data : null,
         })
       : null;
     if (existing && clientRequestId) {
@@ -3455,6 +3474,7 @@ export class WebSocketChannel extends BaseChannel {
     }
     const metadata: Record<string, any> = {
       remote: connection?.remoteAddress ?? null,
+      ...(recording?.success ? { task_recording: recording.data } : {}),
       webui: envelope.webui === true,
       model_preset: modelSelection.preset,
       model_provider: modelSelection.provider,
@@ -4423,6 +4443,10 @@ export class WebSocketChannel extends BaseChannel {
       });
       return;
     }
+    if (message.metadata?.taskRecordingStatus) {
+      await this.broadcast(message.chatId, { event: "task_recording", chat_id: message.chatId, ...message.metadata.taskRecordingStatus });
+      return;
+    }
     if (message.metadata?.turnEnd) {
       await this.sendTurnEnd(message.chatId, {
         latencyMs: numberOrNull(message.metadata.latencyMs),
@@ -4969,8 +4993,15 @@ function httpConnectionFromRequest(req: http.IncomingMessage): any {
 }
 
 function writeNodeResponse(res: http.ServerResponse, response: HttpLikeResponse): void {
+  if (response.stream) {
+    res.writeHead(response.status, response.headers);
+    response.stream.on("error", () => res.destroy());
+    res.on("close", () => response.stream?.destroy());
+    response.stream.pipe(res);
+    return;
+  }
   const body = typeof response.body === "string" ? Buffer.from(response.body, "utf8") : response.body;
-  const headers = { ...response.headers, "content-length": String(body.length) };
+  const headers = { "content-length": String(body.length), ...response.headers };
   res.writeHead(response.status, headers);
   res.end(body);
 }

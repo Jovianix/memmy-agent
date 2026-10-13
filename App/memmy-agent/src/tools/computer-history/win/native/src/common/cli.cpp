@@ -33,6 +33,10 @@ const char* UsageText() {
          "  memmy-history-recorder observe --policy FILE [--output FILE] [--seconds N]\n"
          "                                 [--rotate-seconds N] [--sample-ms N]\n"
          "                                 [--parent-pid N] [--input-hooks]\n"
+         "  memmy-history-recorder record-task --policy FILE --output-dir DIR\n"
+         "                                    [--seconds N] [--parent-pid N] --input-hooks\n"
+         "  memmy-history-recorder finalize-task --output-dir DIR\n"
+         "  memmy-history-recorder export-task-frames --output-dir DIR --export-dir DIR\n"
          "\n"
          "Machine modes write UTF-8 JSONL to stdout; diagnostics go to stderr.\n"
          "observe reads 'pause', 'resume' and 'stop' lines from stdin; stdin EOF stops.\n"
@@ -66,6 +70,13 @@ ParseResult Parse(const std::vector<std::wstring>& args, bool allowTestOptions) 
     command.kind = CommandKind::Snapshot;
   } else if (verb == L"observe") {
     command.kind = CommandKind::Observe;
+  } else if (verb == L"record-task") {
+    command.kind = CommandKind::RecordTask;
+    command.seconds = 1200;
+  } else if (verb == L"finalize-task") {
+    command.kind = CommandKind::FinalizeTask;
+  } else if (verb == L"export-task-frames") {
+    command.kind = CommandKind::ExportTaskFrames;
   } else if (verb == L"__worker") {
     command.kind = CommandKind::Worker;
   } else {
@@ -90,7 +101,7 @@ ParseResult Parse(const std::vector<std::wstring>& args, bool allowTestOptions) 
     };
     // Options without a value.
     if (option == L"--input-hooks") {
-      if (!flagAllowed({CommandKind::Observe})) {
+      if (!flagAllowed({CommandKind::Observe, CommandKind::RecordTask})) {
         result.error = "unknown_option";
         return result;
       }
@@ -115,7 +126,7 @@ ParseResult Parse(const std::vector<std::wstring>& args, bool allowTestOptions) 
         return result;
       }
       command.hwnd = number;
-    } else if (option == L"--policy" && flagAllowed({CommandKind::Snapshot, CommandKind::Observe})) {
+    } else if (option == L"--policy" && flagAllowed({CommandKind::Snapshot, CommandKind::Observe, CommandKind::RecordTask})) {
       if (value.empty()) {
         result.error = "invalid_policy_path";
         return result;
@@ -127,8 +138,14 @@ ParseResult Parse(const std::vector<std::wstring>& args, bool allowTestOptions) 
         return result;
       }
       command.outputPath = value;
-    } else if (option == L"--seconds" && flagAllowed({CommandKind::Observe})) {
-      if (!ParseRange(value, 1, 86400, number)) {
+    } else if (option == L"--output-dir" && flagAllowed({CommandKind::RecordTask, CommandKind::FinalizeTask, CommandKind::ExportTaskFrames})) {
+      if (value.empty()) { result.error = "invalid_output_path"; return result; }
+      command.outputDirectory = value;
+    } else if (option == L"--export-dir" && flagAllowed({CommandKind::ExportTaskFrames})) {
+      if (value.empty()) { result.error = "invalid_output_path"; return result; }
+      command.exportDirectory = value;
+    } else if (option == L"--seconds" && flagAllowed({CommandKind::Observe, CommandKind::RecordTask})) {
+      if (!ParseRange(value, 1, command.kind == CommandKind::RecordTask ? 1200 : 86400, number)) {
         result.error = "invalid_seconds";
         return result;
       }
@@ -139,13 +156,13 @@ ParseResult Parse(const std::vector<std::wstring>& args, bool allowTestOptions) 
         return result;
       }
       command.rotateSeconds = static_cast<std::uint32_t>(number);
-    } else if (option == L"--sample-ms" && flagAllowed({CommandKind::Observe})) {
+    } else if (option == L"--sample-ms" && flagAllowed({CommandKind::Observe, CommandKind::RecordTask})) {
       if (!ParseRange(value, 200, 60000, number)) {
         result.error = "invalid_sample_ms";
         return result;
       }
       command.sampleMs = static_cast<std::uint32_t>(number);
-    } else if (option == L"--parent-pid" && flagAllowed({CommandKind::Observe})) {
+    } else if (option == L"--parent-pid" && flagAllowed({CommandKind::Observe, CommandKind::RecordTask})) {
       if (!ParseRange(value, 1, 0xFFFFFFFFull, number)) {
         result.error = "invalid_parent_pid";
         return result;
@@ -185,6 +202,10 @@ ParseResult Parse(const std::vector<std::wstring>& args, bool allowTestOptions) 
     result.error = command.hwnd == 0 ? "missing_hwnd" : "missing_policy";
   }
   if (command.kind == CommandKind::Observe && command.policyPath.empty()) result.error = "missing_policy";
+  if (command.kind == CommandKind::RecordTask && command.policyPath.empty()) result.error = "missing_policy";
+  if ((command.kind == CommandKind::RecordTask || command.kind == CommandKind::FinalizeTask || command.kind == CommandKind::ExportTaskFrames)
+      && command.outputDirectory.empty()) result.error = "missing_output_directory";
+  if (command.kind == CommandKind::ExportTaskFrames && command.exportDirectory.empty()) result.error = "missing_export_directory";
   if (result.error.empty()) result.command = command;
   return result;
 }

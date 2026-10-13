@@ -104,23 +104,28 @@ try {
   run("agent-build", agent, [binary(agent, "typescript/bin/tsc"), "-p", "tsconfig.build.json"]);
   run("frontend-types", frontend, [binary(frontend, "typescript/bin/tsc"), "-p", "tsconfig.json", "--noEmit"]);
   run("agent-lint", agent, [binary(agent, "eslint/bin/eslint.js"),
+    "src/tools/computer-recordings/**/*.ts", "tests/tools/computer-recordings/**/*.ts",
     "src/tools/computer-history/**/*.ts", "tests/tools/computer-history/**/*.ts",
     "src/tools/computer-use/extract-workflow-candidate.ts", "tests/tools/computer-use/extract-workflow-candidate.test.ts",
     "src/integrations/channels/websocket.ts", "tests/integrations/channels/websocket-computer-history-routes.test.ts",
     "tests/core/agent-runtime/skills-loader.test.ts"]);
   const frontendTests = ["src/app/tests/computer-history-model-sync.test.tsx",
+    "src/pages/tests/task-recordings.interaction.test.tsx",
     ...["computer-history-platform", "computer-history-sub-page", "computer-history-permission-guide", "windows-history-settings"]
       .map((name) => `src/pages/tests/${name}.interaction.test.tsx`), "src/pages/tests/computer-history-quota.test.tsx"];
   run("frontend-lint", frontend, [binary(frontend, "eslint/bin/eslint.js"),
+    "src/api/computer-recordings-client.ts", "src/pages/memory/task-recordings.tsx",
     "src/api/computer-history-contract.ts", "src/api/memmy-agent-client.ts", "src/app/computer-history-platform.ts",
     "src/app/computer-history-model-sync.ts", "src/i18n/messages.ts",
     ...["app-icon", "computer-history-sub-page", "computer-history-recording-confirmation", "windows-history-settings"]
       .map((name) => `src/pages/memory/${name}.tsx`), ...frontendTests]);
   // Exclude native capture independently of ambient environment variables.
   tests("agent-tests", agent, ["tests/tools/computer-history", "tests/tools/computer-use/extract-workflow-candidate.test.ts",
+    "tests/tools/computer-recordings",
     "tests/core/agent-runtime/skills-loader.test.ts", "tests/integrations/channels/websocket-computer-history-routes.test.ts",
     `--exclude=${nativeTest}`]);
   tests("frontend-tests", frontend, frontendTests);
+  tests("recording-media-proxy-tests", root, ["App/shell/desktop/tests/recording-media-proxy.test.ts", "App/shell/desktop/tests/task-recording-exit.test.ts"]);
   tests("contract-packaging-tests", root, ["tests/computer-history-contract.test.ts", "tests/computer-history-packaging.test.mjs",
     "tests/computer-history-windows-packaging.test.mjs", "tests/windows-history-workflow.test.ts"],
   { ...environment, ...(options["--native-bin"] ? { MEMMY_WINDOWS_HISTORY_TEST_BIN_DIR: options["--native-bin"] } : {}) });

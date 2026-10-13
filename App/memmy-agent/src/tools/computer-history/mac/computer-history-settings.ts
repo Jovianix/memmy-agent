@@ -2,6 +2,7 @@ import { Tool } from "../../../core/agent-runtime/tools/base.js";
 import { getComputerHistoryDemoService } from "./computer-history-api.js";
 import type { ComputerHistoryDemoService } from "./computer-history-api.js";
 import { isComputerHistorySupported } from "../platform.js";
+import { collectorGate } from "../core/collector-gate.js";
 import {
   ObservationSettingsError,
   ObservationSettingsStore,
@@ -147,6 +148,7 @@ export class ComputerHistoryUpdateSettingsTool extends Tool {
   get parameters() { return structuredClone(UPDATE_PARAMETERS); }
 
   async execute(params: { settings: unknown }): Promise<string> {
+    if (collectorGate.taskActive) return "Error: stop task recording before changing Computer History settings";
     try {
       const settings = this.store.write(params.settings);
       return JSON.stringify({ status: "ok", settings });

@@ -3,6 +3,7 @@
 #include "win/identity.h"
 
 #include <vector>
+#include <cstdlib>
 
 namespace memmy::win {
 namespace {
@@ -19,13 +20,17 @@ LARGE_INTEGER Now() {
 }  // namespace
 
 struct HookThread::State {
-  explicit State(std::size_t capacity)
-      : queue_(capacity), queueEvent_(Own(CreateEventW(nullptr, FALSE, FALSE, nullptr))),
+  explicit State(std::size_t capacity, bool taskInput)
+      : taskInput_(taskInput), queue_(capacity), queueEvent_(Own(CreateEventW(nullptr, FALSE, FALSE, nullptr))),
         readyEvent_(Own(CreateEventW(nullptr, TRUE, FALSE, nullptr))) {}
   std::uint64_t Generation() const { return generation_.load(std::memory_order_acquire); }
-  void BumpGeneration() { generation_.fetch_add(1, std::memory_order_acq_rel); }
+  void BumpGeneration() { generationQpc_.store(static_cast<std::uint64_t>(Now().QuadPart), std::memory_order_release); generation_.fetch_add(1, std::memory_order_acq_rel); }
   void Push(TriggerKind kind, HWND hwnd, const InputAction& action = {});
   void RecordCallback(LARGE_INTEGER started);
+  const bool taskInput_;
+  POINT pointerDown_{};
+  std::uint8_t downButton_ = 0;
+  bool dragged_ = false;
   TriggerQueue queue_;
   UniqueHandle queueEvent_, readyEvent_;
   std::atomic<DWORD> threadId_{0};
@@ -33,6 +38,7 @@ struct HookThread::State {
   std::atomic<bool> stopRequested_{false};
   std::atomic<std::uint64_t> generation_{1}, ignoredBackground_{0}, ignoredPaused_{0}, callbacks_{0},
       callbackMaxTicks_{0};
+  std::atomic<std::uint64_t> generationQpc_{0};
 #if MEMMY_HISTORY_TEST_HOOKS
   std::atomic<DWORD> exitDelay_{0};
 #endif
@@ -41,8 +47,9 @@ struct HookThread::State {
 std::atomic<HookThread::State*> HookThread::active_{nullptr};
 thread_local HookThread::State* HookThread::callbackState_ = nullptr;
 
-HookThread::HookThread(std::size_t queueCapacity) : state_(std::make_shared<State>(queueCapacity)) {}
+HookThread::HookThread(std::size_t queueCapacity, bool taskInput) : state_(std::make_shared<State>(queueCapacity, taskInput)) {}
 std::uint64_t HookThread::Generation() const { return state_->Generation(); }
+std::uint64_t HookThread::GenerationQpc() const { return state_->generationQpc_.load(std::memory_order_acquire); }
 void HookThread::BumpGeneration() { state_->BumpGeneration(); }
 void HookThread::SetPaused(bool paused) { state_->paused_.store(paused, std::memory_order_release); }
 bool HookThread::StopRequested() const { return state_->stopRequested_.load(std::memory_order_acquire); }
@@ -147,6 +154,7 @@ void HookThread::State::Push(TriggerKind kind, HWND hwnd, const InputAction& act
     FILETIME now{};
     GetSystemTimeAsFileTime(&now);
     trigger.action.timestamp = (static_cast<std::uint64_t>(now.dwHighDateTime) << 32) | now.dwLowDateTime;
+    trigger.action.qpc = static_cast<std::uint64_t>(Now().QuadPart);
   }
   queue_.Push(trigger);
   SetEvent(queueEvent_.get());
@@ -211,12 +219,27 @@ LRESULT CALLBACK HookThread::OnKeyboard(int code, WPARAM wParam, LPARAM lParam) 
 LRESULT CALLBACK HookThread::OnMouse(int code, WPARAM wParam, LPARAM lParam) {
   State* self = callbackState_;
   if (self != nullptr && self->enabled_.load(std::memory_order_acquire) && code == HC_ACTION &&
-      (wParam == WM_LBUTTONUP || wParam == WM_RBUTTONUP || wParam == WM_MOUSEWHEEL || wParam == WM_MOUSEHWHEEL)) {
+      (wParam == WM_LBUTTONUP || wParam == WM_RBUTTONUP || wParam == WM_MOUSEWHEEL || wParam == WM_MOUSEHWHEEL
+        || (self->taskInput_ && (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN || wParam == WM_MOUSEMOVE)))) {
     const LARGE_INTEGER started = Now();
     const auto* data = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+    if (self->taskInput_) {
+      if (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN) {
+        self->pointerDown_ = data->pt; self->downButton_ = wParam == WM_LBUTTONDOWN ? 1 : 2; self->dragged_ = false;
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+      }
+      if (wParam == WM_MOUSEMOVE) {
+        if (self->downButton_ && (std::abs(data->pt.x - self->pointerDown_.x) > 4 || std::abs(data->pt.y - self->pointerDown_.y) > 4)) self->dragged_ = true;
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+      }
+    }
     InputAction action;
     action.kind = (wParam == WM_MOUSEWHEEL || wParam == WM_MOUSEHWHEEL) ? ActionKind::Scroll : ActionKind::MouseClick;
     action.button = wParam == WM_RBUTTONUP ? 2 : 1;
+    if (self->taskInput_ && action.kind == ActionKind::MouseClick) {
+      if (self->dragged_ || self->downButton_ != action.button) action.kind = ActionKind::Unsupported;
+      self->downButton_ = 0; self->dragged_ = false;
+    }
     action.x = data->pt.x; action.y = data->pt.y;
     action.wheel = static_cast<short>(HIWORD(data->mouseData));
     action.horizontal = wParam == WM_MOUSEHWHEEL;

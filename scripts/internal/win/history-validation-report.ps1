@@ -14,7 +14,7 @@ $summary | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $Output -Encoding 
 $line = "Native History: $($summary.passed) passed, $($summary.failed) failed, $($summary.skipped) skipped (total $($summary.total))."
 Write-Host $line
 if ($env:GITHUB_STEP_SUMMARY) { $line | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }
-foreach ($name in @('unit', 'win.boundaries', 'win.metadata', 'integration.cli_contract')) {
+foreach ($name in @('unit', 'win.boundaries', 'win.metadata', 'integration.cli_contract', 'task_video.media_integrity')) {
   if ($name -notin @($passed | ForEach-Object { $_.name })) { throw "Required native case did not pass: $name" }
 }
 if ($failed.Count -or -not $cases.Count) { throw 'Native History validation failed.' }

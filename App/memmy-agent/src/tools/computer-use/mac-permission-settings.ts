@@ -42,7 +42,7 @@ export class MacPermissionSettingsGuide {
     },
   ) {}
 
-  async show(source: "computer-use" | "computer-history", permission: MacPermission, userRequested = false): Promise<boolean> {
+  async show(source: "computer-use" | "computer-history" | "task-recording", permission: MacPermission, userRequested = false): Promise<boolean> {
     if (this.platform !== "darwin") return false;
     const key = `${source}:${permission}`;
     const existing = userRequested ? undefined : this.pending.get(key);

@@ -19,6 +19,7 @@ import { readHistoryPermissionSetup, saveHistoryPermissionSetup } from "./comput
 import { ComputerHistoryRecordingConfirmation } from "./computer-history-recording-confirmation.js";
 import { WindowsHistorySettings } from "./windows-history-settings.js";
 import { historyPermissionsReady, type WindowsHistoryConfiguration } from "../../api/computer-history-contract.js";
+import { TaskRecordingsPanel } from "./task-recordings.js";
 
 export interface ComputerHistorySubPageProps {
   client: MemmyAgentClient | null;
@@ -350,6 +351,7 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
           <p id="computer-history-record-description" className="memory-panel__subtitle">{t(windows ? "computerHistory.windows.description" : "computerHistory.recordDescription")}</p>
         </div>
       </header>
+      <TaskRecordingsPanel client={props.client} human />
 
       <div className="ch__recording-setting flex items-center justify-between bg-background-paper rounded-card-lg border-content-panel">
         <div className="flex-1 pr-4">
