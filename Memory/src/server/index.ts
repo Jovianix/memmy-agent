@@ -12,6 +12,8 @@ import { closeMemoryHttpServer, listenMemoryHttpServer } from "./http.js";
 import { loadCloudServiceEnv } from "../cli/load-env.js";
 import { requestMemoryServiceRestart } from "./service-restart.js";
 import { MEMORY_PROTOCOL_VERSION, MEMORY_SERVICE_VERSION } from "../version.js";
+import { SCHEMA_VERSION } from "../storage/schema.js";
+import { MEMORY_RUNTIME_BUILD_ID } from "../runtime-build.js";
 
 const logger = createMemoryLogger("server");
 
@@ -65,6 +67,9 @@ async function runMemoryService(argv: string[], lifecycle: {
     const sqlitePath = options.dbPath ?? config.storage.sqlitePath;
     const serviceHome = resolve(dirname(configPath), "memory-service");
     logger.info("service.starting", {
+        serviceVersion: MEMORY_SERVICE_VERSION,
+        supportedSchemaVersion: SCHEMA_VERSION,
+        buildId: MEMORY_RUNTIME_BUILD_ID,
         host,
         port,
         mode: config.storage.mode,
@@ -75,6 +80,7 @@ async function runMemoryService(argv: string[], lifecycle: {
     const serviceLock = acquireUserServiceLock({ serviceHome, host, port });
     let sqliteLock: SqliteServerLock | undefined;
     let backend: StorageBackend | undefined;
+    let service: MemoryService | undefined;
     let server: Server | undefined;
     let requestShutdown!: () => void;
     let restartRequested = false;
@@ -94,7 +100,7 @@ async function runMemoryService(argv: string[], lifecycle: {
             endpoint: config.storage.endpoint,
             token: config.storage.token
         });
-        const service = new MemoryService({
+        service = new MemoryService({
             backend,
             mode: config.storage.mode,
             configPath,
@@ -128,6 +134,8 @@ async function runMemoryService(argv: string[], lifecycle: {
             pid: process.pid,
             endpoint: url,
             serviceVersion: MEMORY_SERVICE_VERSION,
+            buildId: MEMORY_RUNTIME_BUILD_ID,
+            supportedSchemaVersion: SCHEMA_VERSION,
             protocolVersion: MEMORY_PROTOCOL_VERSION,
             configPath,
             sqlitePath,
@@ -143,6 +151,9 @@ async function runMemoryService(argv: string[], lifecycle: {
     } finally {
         if (server) {
             await closeMemoryHttpServer(server);
+        }
+        if (service) {
+            await service.stop();
         }
         backend?.close();
         removeRuntimeState(serviceHome);

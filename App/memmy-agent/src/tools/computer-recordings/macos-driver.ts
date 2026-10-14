@@ -38,7 +38,7 @@ const unsupported = new Set(["com.apple.loginwindow", "com.apple.ScreenSaver.Eng
   "com.apple.notificationcenterui", "com.apple.SecurityAgent", "com.microsoft.rdc.macos", "com.microsoft.rdc.mac", "com.microsoft.WindowsApp",
   "com.teamviewer.TeamViewer", "com.anydesk.AnyDesk", "com.citrix.receiver.icaviewer.mac", "com.parallels.desktop.console"]);
 export function macRecordingApplicationSupported(bundleId: string): boolean {
-  return ![...BROWSER_BUNDLE_IDS].some((id) => bundleId === id || bundleId.startsWith(`${id}.`))
+  return ![...BROWSER_BUNDLE_IDS].some((id) => bundleId.toLowerCase() === id || bundleId.toLowerCase().startsWith(`${id}.`))
     && !unsupported.has(bundleId) && !/remote.?desktop|teamviewer|anydesk|citrix|vmware|parallels/iu.test(bundleId);
 }
 const clockMs = (ticks: string, clock: { origin: string; frequency: string }) => Number(BigInt(ticks) - BigInt(clock.origin)) * 1000 / Number(clock.frequency);

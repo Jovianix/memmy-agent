@@ -51,6 +51,24 @@ function setup(mode = "normal") {
     title: "Release review api_key=metadata-secret", commandTimeoutMs: 200 } };
 }
 describe("owned Windows collector lifecycle", () => {
+  it("applies shared source exclusions before persisting native Windows content", async () => {
+    const test = setup();
+    const observationSettingsFile = path.join(test.directory, "observation.json");
+    const writeSettings = (rules: unknown[]) => fs.writeFileSync(observationSettingsFile, JSON.stringify({
+      observation: { defaultApplicationBehavior: "observe", defaultURLBehavior: "observe", rules },
+    }));
+    writeSettings([{ scope: "app", bundleID: "win32.fixture", behavior: "do_not_observe" }]);
+    const recorder = await WindowsHistoryRecorder.start({ ...test.options, observationSettingsFile });
+    test.send(full([root, { ...text, name: "EXCLUDED_NATIVE_TEXT" }]));
+    expect(fs.readFileSync(test.eventsFile, "utf8")).not.toContain("EXCLUDED_NATIVE_TEXT");
+    writeSettings([]);
+    test.send(full([root, { ...text, name: "AUTHORIZED_NATIVE_TEXT" }]));
+    expect(fs.readFileSync(test.eventsFile, "utf8")).toContain("AUTHORIZED_NATIVE_TEXT");
+    fs.writeFileSync(observationSettingsFile, "broken live policy");
+    test.send(full([root, { ...text, name: "AFTER_CORRUPT_POLICY" }]));
+    await expect(recorder.finished).rejects.toThrow();
+    expect(fs.readFileSync(test.eventsFile, "utf8")).not.toContain("AFTER_CORRUPT_POLICY");
+  });
   it("accepts the native stop hotkey only after terminal output and clean process close", async () => {
     const test = setup();
     const recorder = await WindowsHistoryRecorder.start(test.options);

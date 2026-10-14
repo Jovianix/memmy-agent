@@ -6,7 +6,7 @@ import { resolveWindowsCollector } from "./settings.js";
 
 export function parseRecorderArgs(argv: string[]): (WindowsRecorderOptions & { settingsFile?: string }) | null {
   if (argv.length === 1 && argv[0] === "--help") return null;
-  const supported = new Set(["--binary", "--policy", "--settings", "--out", "--title", "--seconds", "--sample-ms", "--append", "--input-hooks"]);
+  const supported = new Set(["--binary", "--policy", "--settings", "--out", "--title", "--seconds", "--sample-ms", "--append", "--input-hooks", "--observation-settings", "--wechat-consent"]);
   const values = new Map<string, string>();
   for (let index = 0; index < argv.length; ++index) {
     const flag = argv[index]!;
@@ -24,7 +24,8 @@ export function parseRecorderArgs(argv: string[]): (WindowsRecorderOptions & { s
     if (value !== undefined && !/^[1-9][0-9]*$/u.test(value)) throw new Error("windows_recorder_arguments_invalid");
     return value === undefined ? fallback : Number(value);
   };
-  return { binary: values.get("--binary"), policyFile: policyFile ?? "", settingsFile, eventsFile, appendToRecording: values.has("--append"), inputHooks: values.has("--input-hooks"), title: values.get("--title") ?? "Computer History Windows",
+  return { binary: values.get("--binary"), policyFile: policyFile ?? "", settingsFile, eventsFile,
+    observationSettingsFile: values.get("--observation-settings"), weChatConsentFile: values.get("--wechat-consent"), appendToRecording: values.has("--append"), inputHooks: values.has("--input-hooks"), title: values.get("--title") ?? "Computer History Windows",
     seconds: numeric("--seconds", 30), sampleMs: numeric("--sample-ms", 1000) };
 }
 

@@ -29,7 +29,7 @@ export const DEFAULT_NAMESPACE_SOURCE = "unknown";
 export type Cursor = string;
 export type MemoryLayer = "L1" | "L2" | "L3" | "Skill";
 export type RecallMemoryLayer = MemoryLayer | "UserMemory";
-export type MemoryKind = "user_memory" | "trace" | "span" | "policy" | "world_model" | "skill" | "work_memory";
+export type MemoryKind = "user_memory" | "trace" | "span" | "policy" | "world_model" | "skill" | "work_memory" | "observed_activity";
 export type MemoryStatus = "activated" | "resolving" | "archived" | "deleted";
 export type RetrievalMode =
   | "search"
@@ -71,6 +71,7 @@ export type JobType =
   | "trace_summary"
   | "user_memory_embedding"
   | "import_summary"
+  | "observation_extract"
   | "reflection"
   | "embedding"
   | "reward"
@@ -86,7 +87,9 @@ export type JobType =
   | "skill_cluster_assign"
   | "skill_batch_evolve"
   | "skill_trial_resolve"
-  | "work_memory_extract";
+  | "work_memory_extract"
+  | "work_memory_idle_flush"
+  | "feedback_experience";
 
 export interface RuntimeNamespace {
   source: string;
@@ -250,6 +253,9 @@ export interface MemoryListItem {
   status: MemoryStatus;
   title: string;
   summary: string;
+  sourceText?: string;
+  generatedTitle?: string;
+  experienceDraft?: boolean;
   tags: string[];
   metrics?: {
     value?: number;
@@ -349,6 +355,8 @@ export interface TurnStartRequest extends RequestEnvelope {
 }
 
 export interface TurnCompleteRequest extends RequestEnvelope {
+  /** False when automatic recall was not delivered to the model (for example, a host timeout). */
+  recallApplied?: boolean;
   sessionId: string;
   episodeId?: string;
   query: string;
@@ -384,6 +392,13 @@ export interface SourceTurnCompleteRequest extends Omit<TurnCompleteRequest, "se
   sourceTurn: SourceTurnIdentity;
   channel: "hook" | "agent_source_scan";
   workspacePath?: string;
+  /**
+   * Set only by initial and full agent-source scans. Those scans backfill history
+   * that completed before capture activation. Hooks and incremental scans must omit it.
+   */
+  captureLegacyHistory?: boolean;
+  /** Pre-native import turn id, recomputed from the first user message. */
+  legacyImportTurnId?: string;
 }
 
 export interface TurnCompletionResult {
@@ -409,6 +424,7 @@ export interface SourceTurnCompleteResponse {
   status: "stored" | "existing" | "rejected" | "pending" | "conflict";
   reason?: string;
   result?: TurnCompletionResult;
+  legacyImportMemoryId?: string;
 }
 
 export type UserMemoryType = "User Fact" | "User Preference" | "User Directive";
@@ -504,6 +520,40 @@ export interface MemoryAddRequest extends RequestEnvelope {
   sourceContentHash?: string;
 }
 
+/** Passive source evidence. This is deliberately not an agent conversation. */
+export interface ExternalEvidenceSyncRequest extends RequestEnvelope {
+  action: "upsert" | "delete";
+  source: string;
+  sourceRecordId: string;
+  /** ISO instant; older revisions cannot replace newer evidence. */
+  revision: string;
+  title?: string;
+  /** A source's actual summary, separate from the title and complete evidence body. */
+  summary?: string;
+  content?: string;
+  startedAt?: string;
+  endedAt?: string;
+  provenance?: Record<string, unknown>;
+  parentSourceRecordIds?: string[];
+}
+
+/** Read-only reconciliation for an optional external evidence producer. */
+export interface ExternalEvidenceStatusRequest extends RequestEnvelope {
+  source: string;
+  sourceRecordIds: string[];
+  skillIds?: string[];
+}
+
+/** Candidate-only Skill proposal grounded in several passive evidence records. */
+export interface ExternalEvidenceSkillSuggestionRequest extends RequestEnvelope {
+  source: string;
+  groupId: string;
+  revision: string;
+  sourceRecordIds: string[];
+  /** Semantic actions observed locally; each action retains its source record. */
+  actions: Array<{ sourceRecordId: string; text: string }>;
+}
+
 export interface FeedbackTarget {
   kind: "memory" | "raw_turn" | "recall";
   id: string;
@@ -560,6 +610,7 @@ export interface RawTurnRedactRequest extends RequestEnvelope {
 
 export interface HealthResponse {
   ok: boolean;
+  buildId?: string;
   serviceVersion: string;
   protocolVersion: number;
   viewerVersion: string;

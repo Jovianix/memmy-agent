@@ -37,6 +37,8 @@ function setup(options: { stopMemory?: boolean; close?: () => Promise<void>; dra
     app, Date, setTimeout, clearTimeout, randomUUID, join, process: { platform: "win32", pid: 123 },
     runtimeServices: services, isQuitting: false, isQuitCleanupInProgress: false, isQuitCleanupComplete: false,
     stopMemoryServiceForCurrentQuit: false, hasSingleInstanceLock: true,
+    readMacQuitContext: () => null, captureMacPermissionRestartRequest: vi.fn(),
+    stopTaskRecordingBeforeExit: async () => {},
     shouldIgnoreStaleReopenQuit: () => false, closeSplashWindow: vi.fn(), hideAppShellForQuit: vi.fn(),
     readStopMemoryServiceOnExitSetting: () => options.stopMemory ?? false,
     writeQuitDiagnostic: (_path: string, record: QuitDiagnostic) => records.push(record),

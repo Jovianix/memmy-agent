@@ -16,6 +16,7 @@ export interface RecorderLaunch {
   title: string;
   eventsFile: string;
   observationSettingsFile: string;
+  weChatConsentFile?: string;
 }
 
 export interface HistoryPlatformDriver {
@@ -24,6 +25,7 @@ export interface HistoryPlatformDriver {
   openPermission(permission: HistoryPermission, mode: "request" | "settings"): Promise<HistoryPermissions>;
   permissionError(message: string): HistoryPermission | null;
   iconFor(applicationId: string): Promise<string | null>;
+  listApplications?(): Promise<Array<{ bundleId: string; name: string }>>;
   prepare?(): void;
   ready?(child: ChildProcessWithoutNullStreams): Promise<void>;
   stop?(child: ChildProcessWithoutNullStreams): Promise<void>;

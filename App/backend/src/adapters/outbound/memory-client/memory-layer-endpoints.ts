@@ -3,6 +3,7 @@
 export const MEMORY_LAYER_PATHS = Object.freeze({
   health: "/api/v1/health",
   reloadConfig: "/api/v1/admin/reload-config",
+  memoryTokenBudget: "/api/v1/admin/memory-token-budget",
   exportBundle: "/api/v1/admin/export",
   clearAllData: "/api/v1/admin/data",
   openSession: "/api/v1/sessions/open",
@@ -14,6 +15,8 @@ export const MEMORY_LAYER_PATHS = Object.freeze({
   addMemory: "/api/v1/memory/add",
   getMemory: "/api/v1/memory/:id",
   deleteMemory: "/api/v1/memory/:id",
+  approveObservedSkill: "/api/v1/evidence/skills/:id/approve",
+  updateObservedSkill: "/api/v1/evidence/skills/:id",
   recallEvidence: "/api/v1/memory/recalls/:queryId",
   runWorker: "/api/v1/worker/run",
   enqueueImportSummaries: "/api/v1/worker/import-summaries/enqueue",

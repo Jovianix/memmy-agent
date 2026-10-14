@@ -119,13 +119,17 @@ function setupCleanup(platform: string, drain: () => Promise<void>) {
   const services = { agentGateway, close: async () => { calls.push("services"); } };
   const diagnostic = vi.fn();
   const context = createContext({
-    process: { platform },
+    process: { platform, env: {} }, app: { isPackaged: false },
     runtimeServices: services,
     quitCleanupContext: { services, stopMemory: false, outcome: "pending", servicesClose: null },
     recordQuitDiagnostic: diagnostic,
     memoryServiceControl: {},
     localBackend: { close: async () => { calls.push("backend"); } },
     stopMemoryServiceForCurrentQuit: false,
+    browserWebviewDownloads: null, disposeBrowserWebviewPermissions: null,
+    stopTaskRecordingBeforeExit: async () => {},
+    stopComputerUseAgentForPermissionRestart: async () => {},
+    browserSidebarBridge: null, embeddedBrowserDriver: { dispose: vi.fn() }, computerUseSurfaceWindows: null,
     stopComputerHistoryBeforeExit: stop,
     stopPackagedRendererServer: async () => { calls.push("renderer"); },
     sendAppExitEventBeforeQuit: async () => { calls.push("analytics"); },
@@ -140,7 +144,7 @@ describe("production Desktop cleanup ordering", () => {
     let finish!: () => void;
     const test = setupCleanup("win32", () => new Promise<void>(resolve => { finish = resolve; }));
     const cleanup = test.cleanup();
-    expect(test.stop).toHaveBeenCalledWith(test.agentGateway);
+    await vi.waitFor(() => expect(test.stop).toHaveBeenCalledWith(test.agentGateway));
     expect(test.calls).toEqual([]);
     finish(); await cleanup;
     expect(test.calls).toEqual(["services", "backend", "renderer", "analytics"]);

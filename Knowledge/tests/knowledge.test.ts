@@ -305,6 +305,22 @@ it("local routes require auth, reject credential overrides and have no reveal en
     expect(renameUrl).toBe("https://cloud.example/api/knowledge/bases/owned");
     expect(renameInit.method).toBe("PATCH");
     expect(renameInit.body).toBe(JSON.stringify({ name: "新名称" }));
+    fetcher.mockImplementationOnce(async () => reply({ ok: true }));
+    const shared = await app.inject({
+      method: "POST",
+      url: "/api/knowledge/bases/owned/members",
+      headers,
+      payload: { userId: "ada@example.com" },
+    });
+    expect(shared.statusCode).toBe(200);
+    const [shareUrl, shareInit] = fetcher.mock.calls.at(-1) as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(shareUrl).toBe(
+      "https://cloud.example/api/knowledge/bases/owned/members",
+    );
+    expect(shareInit.body).toBe(JSON.stringify({ userId: "ada@example.com" }));
     const response = await app.inject({
       method: "GET",
       url: "/api/knowledge/settings",
@@ -420,4 +436,67 @@ it("distinguishes a timed-out cloud request from a user abort", async () => {
       controller.signal,
     ),
   ).rejects.toThrow(/abort/i);
+});
+it("passes created time through for files and folders", async () => {
+  const app = Fastify();
+  const fetcher = vi.fn(async (url: unknown) =>
+    String(url).includes("/folders")
+      ? reply({
+          folders: [
+            {
+              id: "f1",
+              parentId: "",
+              name: "资料",
+              created_at: "2026-08-26T07:15:00.000Z",
+              ownerId: "secret-user",
+            },
+          ],
+        })
+      : reply({
+          files: [
+            {
+              id: "a1",
+              name: "指南.pdf",
+              status: "AVAILABLE",
+              message: "",
+              createTime: 1787727840000,
+              apiKey: "server-secret",
+            },
+          ],
+          total: 1,
+          page: 1,
+        }),
+  );
+  registerKnowledgeRoutes(app, {
+    baseUrl: "https://cloud.example",
+    getSession: () => session,
+    fetcher,
+    authenticate: async () => undefined,
+  });
+  try {
+    const headers = { "x-memmy-local-token": "local" };
+    const files = await app.inject({
+      method: "GET",
+      url: "/api/knowledge/bases/owned/files?page=1",
+      headers,
+    });
+    expect(files.json().files[0]).toMatchObject({
+      id: "a1",
+      createdAt: "2026-08-26T07:04:00.000Z",
+    });
+    expect(JSON.stringify(files.json())).not.toContain("server-secret");
+    const foldersResponse = await app.inject({
+      method: "GET",
+      url: "/api/knowledge/bases/owned/folders",
+      headers,
+    });
+    expect(foldersResponse.json().folders[0]).toEqual({
+      id: "f1",
+      parentId: "",
+      name: "资料",
+      createdAt: "2026-08-26T07:15:00.000Z",
+    });
+  } finally {
+    await app.close();
+  }
 });

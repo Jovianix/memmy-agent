@@ -14,6 +14,9 @@ import { createMemoryLogger, memoryErrorFields } from "../logging/logger.js";
 import { isMemoryViewerPath, memoryViewerAsset } from "../viewer/static.js";
 import type {
   MemoryAddRequest,
+  ExternalEvidenceSyncRequest,
+  ExternalEvidenceStatusRequest,
+  ExternalEvidenceSkillSuggestionRequest,
   MemoryGovernanceRequest,
   MemoryLayer,
   MemoryReloadConfigRequest,
@@ -30,6 +33,7 @@ import { MemoryService } from "../service/memory-service.js";
 import { MemoryServiceError, statusForCode } from "../utils/error.js";
 import { stableHash } from "../utils/id.js";
 import { resolveTimeZone } from "../utils/time.js";
+import { readDesktopAnalyticsIdentity } from "./desktop-analytics-identity.js";
 import {
   createMemoryDesktopAddAnalytics,
   type MemoryDesktopAddAnalytics,
@@ -38,9 +42,10 @@ import {
   createPluginRuntimeAnalytics,
   hitCountFromGetResponse,
   hitCountFromSearchResponse,
-  storedCountFromAddResponse,
   trackExternalHookCapture,
   trackExternalHookRecall,
+  trackStoredExternalMemoryAdd,
+  trackStoredExternalSourceTurnCapture,
   trackExternalToolCall,
   type PluginRuntimeAnalytics,
 } from "./plugin-runtime-analytics.js";
@@ -60,6 +65,7 @@ export const API_ROUTES = [
   "GET /health",
   "GET /api/v1/health",
   "POST /api/v1/admin/reload-config",
+  "GET /api/v1/admin/memory-token-budget",
   "POST /api/v1/admin/shutdown",
   "GET /api/v1/admin/export",
   "DELETE /api/v1/admin/data",
@@ -74,6 +80,11 @@ export const API_ROUTES = [
   "POST /api/v1/memory/search",
   "GET /api/v1/memory/recalls/:queryId",
   "POST /api/v1/memory/add",
+  "POST /api/v1/evidence/sync",
+  "POST /api/v1/evidence/status",
+  "POST /api/v1/evidence/skills/suggest",
+  "POST /api/v1/evidence/skills/:id/approve",
+  "PATCH /api/v1/evidence/skills/:id",
   "POST /api/v1/memory/processing/status",
   "POST /api/v1/memory/:id/processing/retry",
   "GET /api/v1/memory/:id",
@@ -125,6 +136,7 @@ interface AuthPrincipal {
   kind: "anonymous" | "local" | "cloud" | "scoped" | "viewer";
   tokenId?: string;
   namespace?: RuntimeNamespace;
+  authenticatedNamespace?: RuntimeNamespace;
   scopes: string[];
   timeZone?: string;
 }
@@ -145,8 +157,15 @@ export function createMemoryHttpServer(options: MemoryHttpServerOptions): Server
     startupFallbackMs: options.workerStartupFallbackMs ?? DEFAULT_WORKER_STARTUP_FALLBACK_MS,
     postHealthDelayMs: options.workerPostHealthDelayMs ?? DEFAULT_WORKER_POST_HEALTH_DELAY_MS
   });
-  const pluginRuntimeAnalytics = options.pluginRuntimeAnalytics ?? createPluginRuntimeAnalytics();
-  const memoryAddAnalytics = options.memoryAddAnalytics ?? createMemoryDesktopAddAnalytics();
+  const desktopIdentity = () => readDesktopAnalyticsIdentity(options.configPath);
+  const pluginRuntimeAnalytics = options.pluginRuntimeAnalytics ?? createPluginRuntimeAnalytics({
+    getUserId: () => desktopIdentity().userId,
+    getUserMode: () => desktopIdentity().userMode,
+  });
+  const memoryAddAnalytics = options.memoryAddAnalytics ?? createMemoryDesktopAddAnalytics({
+    getUserId: () => desktopIdentity().userId,
+    getUserMode: () => desktopIdentity().userMode,
+  });
   const agentSources = options.agentSourceExecutor ?? createAgentSourceExecutor({
     service: options.service,
     configPath: options.configPath,
@@ -332,6 +351,7 @@ function createAutoWorkerDrain(
   let disposed = false;
   let startupReleased = false;
   let startupReconciled = false;
+  let workerStarted = false;
   let startupTimer: ReturnType<typeof setTimeout> | undefined;
   let delayedTimer: ReturnType<typeof setTimeout> | undefined;
   let scheduledTimer: ReturnType<typeof setTimeout> | undefined;
@@ -344,6 +364,7 @@ function createAutoWorkerDrain(
     if (disposed) {
       return;
     }
+    workerStarted = true;
     if (running) {
       requested = true;
       return;
@@ -438,6 +459,24 @@ function createAutoWorkerDrain(
     }, 0);
   }
 
+  service.setAppBudgetReconcileListener(() => {
+    if (disposed || !workerStarted) {
+      return;
+    }
+    if (delayedTimer) {
+      clearTimeout(delayedTimer);
+      delayedTimer = undefined;
+    }
+    scheduleNextDueJob();
+  });
+
+  service.setPersistRecoveredListener(() => {
+    if (disposed || !workerStarted) {
+      return;
+    }
+    schedule();
+  });
+
   return {
     start(): void {
       if (disposed || startupReleased || startupTimer) {
@@ -464,6 +503,8 @@ function createAutoWorkerDrain(
     schedule,
     async dispose(): Promise<void> {
       disposed = true;
+      service.setAppBudgetReconcileListener(undefined);
+      service.setPersistRecoveredListener(undefined);
       requested = false;
       if (startupTimer) {
         clearTimeout(startupTimer);
@@ -507,6 +548,10 @@ async function routeRequest(
 
   if (method === "GET" && (path === "/health" || path === "/api/v1/health")) {
     return service.health([...API_ROUTES]);
+  }
+  if (method === "GET" && path === "/api/v1/admin/memory-token-budget") {
+    requireMemoryRead(principal);
+    return service.memoryTokenBudget();
   }
   if (method === "POST" && path === "/api/v1/admin/reload-config") {
     requireAdminWrite(principal);
@@ -568,7 +613,8 @@ async function routeRequest(
     const result = await service.idempotent("sessions.close", request, { sessionId, request }, () =>
       service.closeSession(sessionId, request)
     );
-    scheduleAutoWorkerForEvolution(result, autoWorker);
+    // Close can queue L3 batches even when no episode closes, so always wake the worker.
+    autoWorker.schedule();
     return publicCloseSessionResponse(result);
   }
 
@@ -662,15 +708,32 @@ async function routeRequest(
     const request = strictEnvelopeWithPrincipal({ ...input, namespace }, scopedPrincipal) as unknown as SourceTurnCompleteRequest;
     requireStringField(request, "query", "source-turn.complete");
     requireStringField(request, "answer", "source-turn.complete");
-    const result = service.completeSourceTurn({
+    const completeSourceTurn = () => service.completeSourceTurn({
       namespace: request.namespace, timeZone: request.timeZone, source: request.source,
       sourceTurn: request.sourceTurn, channel: request.channel, workspacePath: request.workspacePath,
+      ...(request.captureLegacyHistory === true ? { captureLegacyHistory: true } : {}),
+      ...(typeof request.legacyImportTurnId === "string" && request.legacyImportTurnId.trim()
+        ? { legacyImportTurnId: request.legacyImportTurnId.trim() }
+        : {}),
       sessionId: request.sessionId, episodeId: request.episodeId,
       query: request.query, answer: request.answer, reasoningSummary: request.reasoningSummary,
       toolCalls: request.toolCalls, toolResults: request.toolResults, artifacts: request.artifacts,
       sourceMemoryIds: request.sourceMemoryIds, usage: request.usage, status: request.status,
       tags: request.tags, userMemoryCorrection: request.userMemoryCorrection
     });
+    const result = request.channel === "hook"
+      ? await trackStoredExternalSourceTurnCapture(
+        pluginRuntimeAnalytics,
+        {
+          source: request.source ?? request.sourceTurn?.source,
+          adapterId: request.adapterId,
+          namespace: request.namespace,
+          turnId: request.sourceTurn?.turnId,
+        },
+        request,
+        completeSourceTurn,
+      )
+      : completeSourceTurn();
     if (result.result) scheduleAutoWorkerForEvolution(result.result, autoWorker);
     return result;
   }
@@ -684,6 +747,7 @@ async function routeRequest(
     requireStringField(request, "answer", "turn.complete");
     const turnId = decodeMatchSegment(turnComplete, 1);
     const publicRequest: TurnCompleteRequest = {
+      ...(typeof request.recallApplied === "boolean" ? { recallApplied: request.recallApplied } : {}),
       requestId: request.requestId,
       adapterId: request.adapterId,
       namespace: request.namespace,
@@ -784,21 +848,63 @@ async function routeRequest(
       sourceContentHash: typeof request.sourceContentHash === "string" ? request.sourceContentHash : undefined
     };
     const idempotency = memoryAddIdempotency(publicRequest, path);
-    const result = await trackExternalToolCall(
+    const result = await trackStoredExternalMemoryAdd(
       pluginRuntimeAnalytics,
-      { ...request, toolName: "memmy_memory_add" },
+      { ...request, layer: publicRequest.layer },
       () =>
         service.idempotent("memory.add", idempotency.request, idempotency.fingerprint, () =>
           service.addMemory(publicRequest)
         ),
-      (addResult) => ({
-        stored_count: storedCountFromAddResponse(addResult),
-        ...(publicRequest.layer ? { layer: publicRequest.layer } : {}),
-      }),
     );
     if (!publicRequest.deferProcessing) {
       autoWorker.schedule();
     }
+    return result;
+  }
+
+  if (method === "POST" && path === "/api/v1/evidence/sync") {
+    requireMemoryWrite(principal);
+    const request = evidenceEnvelopeWithPrincipal(asObject(body, "evidence.sync"), principal) as unknown as ExternalEvidenceSyncRequest;
+    const result = service.syncExternalEvidence(request);
+    if (request.action === "upsert") autoWorker.schedule();
+    return result;
+  }
+
+  if (method === "POST" && path === "/api/v1/evidence/status") {
+    requireMemoryRead(principal);
+    const request = evidenceEnvelopeWithPrincipal(asObject(body, "evidence.status"), principal) as unknown as ExternalEvidenceStatusRequest;
+    return service.externalEvidenceStatus(request);
+  }
+
+  if (method === "POST" && path === "/api/v1/evidence/skills/suggest") {
+    requireMemoryWrite(principal);
+    const request = evidenceEnvelopeWithPrincipal(asObject(body, "evidence.skills.suggest"), principal) as unknown as ExternalEvidenceSkillSuggestionRequest;
+    const result = await service.suggestExternalEvidenceSkill(request);
+    if (result.status === "active") autoWorker.schedule();
+    return result;
+  }
+  const evidenceSkillEdit = path.match(/^\/api\/v1\/evidence\/skills\/([^/]+)$/u);
+  if (method === "PATCH" && evidenceSkillEdit) {
+    requireMemoryWrite(principal);
+    const scopedPrincipal = { ...principal, namespace: principal.authenticatedNamespace ?? principal.namespace };
+    const input = asObject(body, "evidence.skills.edit");
+    const request = scopedPrincipal.namespace ? strictEnvelopeWithPrincipal(input, scopedPrincipal)
+      : envelopeWithPrincipal(input, scopedPrincipal);
+    const result = service.updateExternalEvidenceSkill(decodeURIComponent(evidenceSkillEdit[1]!),
+      { body: input.body as string, expectedVersion: input.expectedVersion as number }, request);
+    autoWorker.schedule();
+    return result;
+  }
+  const evidenceSkillApprove = path.match(/^\/api\/v1\/evidence\/skills\/([^/]+)\/approve$/u);
+  if (method === "POST" && evidenceSkillApprove) {
+    requireMemoryWrite(principal);
+    const scopedPrincipal = { ...principal, namespace: principal.authenticatedNamespace ?? principal.namespace };
+    const input = asObject(body, "evidence.skills.approve");
+    const request = scopedPrincipal.namespace
+      ? strictEnvelopeWithPrincipal(input, scopedPrincipal)
+      : envelopeWithPrincipal(input, scopedPrincipal);
+    const result = service.approveExternalEvidenceSkill(decodeURIComponent(evidenceSkillApprove[1]!), request);
+    autoWorker.schedule();
     return result;
   }
 
@@ -1275,6 +1381,7 @@ function authenticate(
       kind: "cloud",
       tokenId: stableTokenId(candidate!),
       namespace: mergeNamespaces(cloudNamespace, namespaceFromRequest(request, url)),
+      authenticatedNamespace: cloudNamespace,
       scopes: ["*"]
     };
   }
@@ -1284,6 +1391,7 @@ function authenticate(
       kind: "scoped",
       tokenId: stableTokenId(candidate!),
       namespace: mergeNamespaces(scoped.namespace, namespaceFromRequest(request, url)),
+      authenticatedNamespace: scoped.namespace,
       scopes: scoped.scopes ?? ["memory:read", "memory:write"]
     };
   }
@@ -1456,6 +1564,16 @@ function strictEnvelopeWithPrincipal(
     namespace,
     timeZone: principal.timeZone ?? (typeof body.timeZone === "string" ? body.timeZone : undefined)
   };
+}
+
+/** A producer's source is evidence identity, independent of its authenticated namespace. */
+function evidenceEnvelopeWithPrincipal(
+  body: Record<string, unknown>,
+  principal: AuthPrincipal
+): Record<string, unknown> {
+  const { source, ...envelope } = body;
+  const scopedPrincipal = { ...principal, namespace: principal.authenticatedNamespace ?? principal.namespace };
+  return { ...strictEnvelopeWithPrincipal(envelope, scopedPrincipal), source };
 }
 
 function parseV2OpenSessionRequest(value: Record<string, unknown>): SessionOpenRequest {

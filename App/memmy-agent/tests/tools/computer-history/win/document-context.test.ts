@@ -11,6 +11,13 @@ const event = (node: CaptureNode = body): HistoryEvent => ({ eventType: "accessi
 const evidence = (...events: HistoryEvent[]) => compactEventEvidence(events.map((item) => JSON.stringify(item)));
 
 describe("authorized VS Code document context", () => {
+  it("retains qualified document context after raw-event retention", () => {
+    const result = compactEventEvidence([JSON.stringify({ recordType: "human_event", sequence: 1, ...event() })], { purpose: "retention" });
+    expect(result).toContain(`${prefix} ${body.text}`);
+    expect(result).toContain("SECOND-LINE-BODY-MARKER");
+    expect(result).toContain("on screen: Visible first line.");
+    expect(result).not.toContain("on screen: Visible first line. SECOND-LINE-BODY-MARKER");
+  });
   it("includes body outside the provider-visible line with a separate qualification", () => {
     const result = evidence(event());
     expect(result).toContain(`${prefix} ${body.text}`);

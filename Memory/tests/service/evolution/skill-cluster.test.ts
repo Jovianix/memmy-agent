@@ -36,7 +36,12 @@ const DIRECT_SKILL_JSON = {
   tags: ["xlsx", "python"]
 };
 
-function createDirectSkillLlm(calls: Array<{ operation: string }>): LlmClient {
+interface DirectSkillCall {
+  operation: string;
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+}
+
+function createDirectSkillLlm(calls: DirectSkillCall[]): LlmClient {
   return {
     config: {
       ...DEFAULT_MEMMY_CONFIG.evolution,
@@ -54,7 +59,7 @@ function createDirectSkillLlm(calls: Array<{ operation: string }>): LlmClient {
       messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
       options: { operation: string }
     ): Promise<T> {
-      calls.push({ operation: options.operation });
+      calls.push({ operation: options.operation, messages });
       if (options.operation.startsWith("skill.batch_evolve.meta")) {
         return {
           reasoning: "ground steps in openpyxl",
@@ -70,6 +75,7 @@ function createDirectSkillLlm(calls: Array<{ operation: string }>): LlmClient {
           ?? "filled report.xlsx";
         return {
           l1: {
+            title: turnSummary.slice(0, 30),
             summary: turnSummary,
             evidence: [{ quote: turnSummary, role: "user", kind: "task_outcome" }]
           },
@@ -94,9 +100,10 @@ async function runDirectSkillEpisode(input: {
   rTask: number;
   query?: string;
   answer?: string;
+  config?: typeof DEFAULT_MEMMY_CONFIG;
 }) {
-  const calls: Array<{ operation: string }> = [];
-  const { db, service } = createTestService({ skillLlm: createDirectSkillLlm(calls) });
+  const calls: DirectSkillCall[] = [];
+  const { db, service } = createTestService({ skillLlm: createDirectSkillLlm(calls), config: input.config });
   const session = service.openSession({
     namespace: { source: "codex", profileId: "jiang", userId: input.userId }
   });
@@ -137,6 +144,40 @@ async function runDirectSkillEpisode(input: {
 }
 
 describe("MemoryService / evolution / skill cluster", () => {
+  it.each([
+    { language: "zh-CN", outputLanguageMode: "follow_policy", expected: "zh" },
+    { language: "en-US", outputLanguageMode: "follow_policy", expected: "en" },
+    { language: "ja-JP", outputLanguageMode: "follow_policy", expected: "ja-JP" },
+    { language: "fr-FR", outputLanguageMode: "follow_policy", expected: "fr-FR" },
+    { language: "zh-Hant-TW", outputLanguageMode: "follow_policy", expected: "zh-Hant-TW" },
+    { language: "zh-CN", outputLanguageMode: "en", expected: "en" },
+    { language: "en-US", outputLanguageMode: "zh", expected: "zh" }
+  ] as const)("uses $expected for interface $language and skill mode $outputLanguageMode", async ({
+    language, outputLanguageMode, expected
+  }) => {
+    const { calls } = await runDirectSkillEpisode({
+      userId: `skill-language-${language}-${outputLanguageMode}`,
+      rTask: 1,
+      config: {
+        ...DEFAULT_MEMMY_CONFIG,
+        language,
+        algorithm: {
+          ...DEFAULT_MEMMY_CONFIG.algorithm,
+          skill: { ...DEFAULT_MEMMY_CONFIG.algorithm.skill, outputLanguageMode }
+        }
+      }
+    });
+    const generation = calls.find((call) => call.operation === "skill.batch_evolve.crystallize");
+    expect(generation).toBeDefined();
+    const userMessage = generation!.messages.find((message) => message.role === "user");
+    expect(JSON.parse(userMessage!.content).OUTPUT_LANGUAGE).toBe(expected);
+    expect(generation!.messages.filter((message) => message.role === "system").map((message) => message.content))
+      .toContain(expected === "zh"
+        ? "All natural-language answers MUST be in Simplified Chinese (zh-CN)."
+        : expected === "en" ? "All natural-language answers MUST be in English."
+          : `All natural-language answers MUST use the language, script, and regional conventions of BCP 47 locale ${expected}. Preserve JSON keys and machine identifiers.`);
+  });
+
   it("crystallizes a Skill from RawTurns when the cluster has a success anchor", async () => {
     const { db, complete, calls } = await runDirectSkillEpisode({
       userId: "direct-success",
@@ -165,7 +206,7 @@ describe("MemoryService / evolution / skill cluster", () => {
   });
 
   it("enqueues assign/evolve after episode reward without a manual skill job", async () => {
-    const calls: Array<{ operation: string }> = [];
+    const calls: DirectSkillCall[] = [];
     const { db, service } = createTestService({
       llm: createDirectSkillLlm(calls),
       config: {
@@ -272,7 +313,7 @@ describe("MemoryService / evolution / skill cluster", () => {
   });
 
   it("splits the same tool family into two fine clusters when query vectors differ", async () => {
-    const calls: Array<{ operation: string }> = [];
+    const calls: DirectSkillCall[] = [];
     const { db, service } = createTestService({
       skillLlm: createDirectSkillLlm(calls),
       embedder: {

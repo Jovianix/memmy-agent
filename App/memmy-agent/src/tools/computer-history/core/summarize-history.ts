@@ -498,6 +498,8 @@ function reusableHumanAction(record: JsonRecord, { navigationHint = "" }: { navi
     if (details.unit === "key_press") return `Text keys were pressed in ${application} (\`${bundleId}\`); input contents were redacted and resulting characters are unknown. Require a current task variable before entering text.`;
     return details.redacted
       ? `Text was entered in ${application} (\`${bundleId}\`) but was intentionally redacted; require a current task variable or stop instead of guessing it.`
+      : details.textSource === "focused_field_value"
+        ? `Set the matching semantic field in ${application} (\`${bundleId}\`) to the recorded current value ${cleanInline(JSON.stringify(details.text ?? ""), 240)}, then verify it. Do not append the entire value as new keystrokes.`
       : `Enter ${cleanInline(JSON.stringify(details.text ?? ""), 240)} in the matching semantic field in ${application} (\`${bundleId}\`), then verify the visible value.`;
   }
   if (record.eventType === "key_press") {
@@ -572,6 +574,7 @@ function derivedHumanTitle(events: JsonRecord[], fallback: string): string {
   }
   const textInput = events.find((event) => (
     event.eventType === "text_input"
+    && event.details?.textPurpose === "search_query"
     && event.details?.redacted === false
     && typeof event.details?.text === "string"
     && event.details.text.trim()
@@ -623,6 +626,8 @@ export function renderHumanSummary({
     `applications: [${applications.map(yamlString).join(", ")}]`,
     `source_session: ${yamlString(recordingId)}`,
     `source_type: human_computer_history`,
+    ...(events.some((event) => /^(wechat|weixin)\.exe$/iu.test(path.win32.basename(event.application?.executable ?? "")))
+      ? ["sensitive_source: personal_wechat"] : []),
     // Use the recording's platform, including when recovering it on a different
     // host. Older recordings without this field use the original Mac policy.
     `capture_policy: ${metadata.platform === "windows" ? "accessibility_events_no_screenshots" : "accessibility_events_and_page_urls_no_screenshots"}`,

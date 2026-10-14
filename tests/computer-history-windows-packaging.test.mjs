@@ -40,7 +40,7 @@ async function fixture(configName, realBinary) {
 it.each(["electron-builder.win.yml", "electron-builder.win.unsigned.yml"])("%s explicitly unpacks the Windows History executable", async (config) => {
   const { archive } = await fixture(config);
   expect(existsSync(join(`${archive}.unpacked`, prefix, "memmy-history-recorder.exe"))).toBe(true);
-  expect(existsSync(join(`${archive}.unpacked`, prefix, "native-helper.cjs"))).toBe(false);
+  expect(existsSync(join(`${archive}.unpacked`, prefix, "native-helper.cjs"))).toBe(true);
 });
 const nativeDir = process.env.MEMMY_WINDOWS_HISTORY_TEST_BIN_DIR;
 it.runIf(process.platform === "win32" && !!nativeDir)("Electron executes the packaged production EXE without development overrides or compiler PATH", async () => {

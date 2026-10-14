@@ -256,6 +256,8 @@ export function buildSixHourSummary(
     `applications: [${applications.map((value) => JSON.stringify(value)).join(", ")}]`,
     "summary_window: 6h",
     `source_type: rollup`,
+    ...(covered.some((summary) => /^sensitive_source:\s*personal_wechat\s*$/imu.test(summary.markdown))
+      ? ["sensitive_source: personal_wechat"] : []),
     "summary_state: pending",
     `covered_history_ids: ${JSON.stringify(coveredHistoryIds)}`,
     "---",

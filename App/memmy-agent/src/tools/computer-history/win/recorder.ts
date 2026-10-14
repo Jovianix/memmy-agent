@@ -1,5 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import { DEFAULT_OBSERVATION_SETTINGS, evaluateObservation, parseObservationSettings } from "../core/observation-settings.js";
+import { WeChatHistoryConsentStore } from "../mac/wechat-consent.js";
 import path from "node:path";
 import { resolveNativeCollector } from "./native-helper.js";
 import { RecordingWriter, type HistoryEvent } from "../core/recording.js";
@@ -12,6 +15,8 @@ export interface WindowsRecorderOptions {
   binary?: string;
   policyFile: string;
   eventsFile: string;
+  observationSettingsFile?: string;
+  weChatConsentFile?: string;
   title: string;
   seconds?: number;
   sampleMs?: number;
@@ -97,6 +102,17 @@ export class WindowsHistoryRecorder {
     try { this.writer.append(event); }
     catch { throw new Error("windows_recording_write_failed"); }
   }
+  private observationAllowed(record: HistoryEvent): boolean {
+    if (!this.options.observationSettingsFile || !record.application?.executable) return true;
+    const file = this.options.observationSettingsFile;
+    // Missing policy preserves the established default; a corrupt live policy stops capture.
+    const settings = fs.existsSync(file) ? parseObservationSettings(JSON.parse(fs.readFileSync(file, "utf8")))
+      : DEFAULT_OBSERVATION_SETTINGS;
+    const bundleId = `win32.${path.win32.basename(record.application.executable, ".exe").toLowerCase()}`;
+    return evaluateObservation(settings, { bundleId,
+      weChatChatAccess: new WeChatHistoryConsentStore(this.options.weChatConsentFile).read().enabled,
+    }).observe;
+  }
   private receive(event: NativeEvent): void {
     if (this.failure) return;
     if (this.terminal) throw new Error("windows_protocol_after_stop");
@@ -122,6 +138,7 @@ export class WindowsHistoryRecorder {
         const { policy, revision } = readNativePolicy(this.options.policyFile);
         const normalized = this.normalizer.normalizeEvents(event, policy, revision);
         for (const record of normalized) {
+          if (!this.observationAllowed(record)) { this.normalizer.reset(); return; }
           if (this.stateValue !== "running") { this.normalizer.reset(); break; }
           if (readNativePolicy(this.options.policyFile).revision !== revision) { this.normalizer.reset(); return; }
           this.persist(record);

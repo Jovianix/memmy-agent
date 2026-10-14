@@ -70,6 +70,19 @@ export function createMockMemoryClient(options: CreateMockMemoryClientOptions = 
       };
     },
 
+    async getMemoryTokenBudget() {
+      failIfNeeded();
+      return {
+        dailyLimitM: 10,
+        totalLimitM: 500,
+        dailyUsed: 0,
+        lifetimeUsed: 0,
+        paused: false,
+        trigger: null,
+        nextLocalMidnightAt: now()
+      };
+    },
+
     async openSession() {
       failIfNeeded();
       return {
@@ -224,6 +237,16 @@ export function createMockMemoryClient(options: CreateMockMemoryClientOptions = 
         auditId: randomUUID(),
         serverTime: now()
       };
+    },
+
+    async approveObservedSkill(memoryId) {
+      failIfNeeded();
+      return { id: memoryId, status: "activated", serverTime: now() };
+    },
+
+    async updateObservedSkill(memoryId, input) {
+      failIfNeeded();
+      return { id: memoryId, status: "activated", version: input.expectedVersion + 1, serverTime: now() };
     },
 
     async enqueueImportSummaries() {

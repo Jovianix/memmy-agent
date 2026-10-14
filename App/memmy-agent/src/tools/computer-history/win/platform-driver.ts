@@ -48,6 +48,15 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
       return { ...status, ready, reason: ready ? "ready" : "no_running_authorized_application" };
     } catch { return { ...status, reason: "discovery_failed" }; }
   }
+  async listApplications(): Promise<Array<{ bundleId: string; name: string }>> {
+    const configuration = await this.configuration();
+    const applications = new Map<string, { bundleId: string; name: string }>();
+    for (const app of configuration.applications.filter((item) => item.supported)) {
+      const bundleId = `win32.${path.win32.basename(app.executable, ".exe").toLowerCase()}`;
+      applications.set(bundleId, { bundleId, name: app.name });
+    }
+    return [...applications.values()];
+  }
   openPermission(): Promise<HistoryPermissions> { return this.readPermissions(); }
   permissionError(): null { return null; }
   async iconFor(): Promise<null> { return null; }
@@ -56,7 +65,9 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
     const release = collectorGate.acquire("history");
     let child: ChildProcessWithoutNullStreams;
     try { child = spawn(process.execPath, [this.recorderScript, "--binary", resolveWindowsCollector(this.binary),
-      "--settings", this.store.filePath, "--out", input.eventsFile, "--title", input.title, "--seconds", "86400", "--append", "--input-hooks"],
+      "--settings", this.store.filePath, "--out", input.eventsFile, "--title", input.title, "--seconds", "86400", "--append", "--input-hooks",
+      "--observation-settings", input.observationSettingsFile,
+      ...(input.weChatConsentFile ? ["--wechat-consent", input.weChatConsentFile] : [])],
     { windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"], env: process.env }); }
     catch (error) { release(); throw error; }
     child.once("close", release);
