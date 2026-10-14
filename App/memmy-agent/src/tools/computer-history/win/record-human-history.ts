@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { WindowsHistoryRecorder, type WindowsRecorderOptions } from "./recorder.js";
 import { WindowsPolicySession } from "./session-policy.js";
 import { resolveWindowsCollector } from "./settings.js";
+import { recorderHealthReporter } from "../mac/recorder-health.js";
 
 export function parseRecorderArgs(argv: string[]): (WindowsRecorderOptions & { settingsFile?: string }) | null {
   if (argv.length === 1 && argv[0] === "--help") return null;
@@ -37,9 +38,15 @@ export async function runWindowsRecorder(argv = process.argv.slice(2)): Promise<
   }
   const binary = resolveWindowsCollector(options.binary);
   const policySession = options.settingsFile ? await WindowsPolicySession.create(options.settingsFile, binary) : null;
+  const health = recorderHealthReporter();
   let recorder: WindowsHistoryRecorder;
-  try { recorder = await WindowsHistoryRecorder.start({ ...options, binary, policyFile: policySession?.file ?? options.policyFile }); }
-  catch (error) { await policySession?.dispose(); throw error; }
+  try {
+    recorder = await WindowsHistoryRecorder.start({ ...options, binary, policyFile: policySession?.file ?? options.policyFile,
+      // Report only persisted events. The native Windows collector has no heartbeat protocol.
+      onEvent: (event) => health.report("event_recorded", { timestamp: event.timestamp }),
+    });
+  }
+  catch (error) { health.close(); await policySession?.dispose(); throw error; }
   let refreshError: Error | null = null;
   policySession?.monitor(recorder, (error) => { refreshError = error; });
   const status = () => console.log(JSON.stringify({ kind: "recorder.state", state: recorder.state }));
@@ -78,6 +85,7 @@ export async function runWindowsRecorder(argv = process.argv.slice(2)): Promise<
   process.once("SIGTERM", onInterrupt);
   try { await recorder.finished; if (refreshError) throw refreshError; status(); }
   finally {
+    health.close();
     process.stdin.off("data", onData); process.stdin.off("end", onEnd); process.stdin.pause();
     process.off("SIGINT", onInterrupt); process.off("SIGTERM", onInterrupt);
     process.stdout.off("error", onOutputError);

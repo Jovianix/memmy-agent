@@ -10,7 +10,7 @@ import { parseNativePolicy, readNativePolicy } from "../../../../src/tools/compu
 import { loadRecords, renderHumanSummary } from "../../../../src/tools/computer-history/core/summarize-history.js";
 import { applyNarrative, compactEventEvidence, isNarrated, writeSegmentNarrative } from "../../../../src/tools/computer-history/core/summary-writer.js";
 import { context, counters, envelope, full, policyInput, root, text } from "./fixtures.js";
-import { parseRecorderArgs } from "../../../../src/tools/computer-history/win/record-human-history.js";
+import { parseRecorderArgs, runWindowsRecorder } from "../../../../src/tools/computer-history/win/record-human-history.js";
 
 vi.mock("node:child_process", async (original) => ({ ...await original<typeof import("node:child_process")>(), spawn: vi.fn() }));
 const directories: string[] = [];
@@ -51,6 +51,25 @@ function setup(mode = "normal") {
     title: "Release review api_key=metadata-secret", commandTimeoutMs: 200 } };
 }
 describe("owned Windows collector lifecycle", () => {
+  it("publishes content-free health only after a native event is persisted", async () => {
+    const test = setup();
+    // Vitest's piped stdin is already at EOF; give the CLI a live control stream.
+    vi.spyOn(process, "stdin", "get").mockReturnValue(new PassThrough() as unknown as typeof process.stdin);
+    const output = vi.spyOn(console, "log").mockImplementation(() => {});
+    const running = runWindowsRecorder(["--binary", process.execPath, "--policy", test.policyFile,
+      "--out", test.eventsFile, "--title", "Private document title"]);
+    await vi.waitFor(() => expect(output).toHaveBeenCalledWith('{"kind":"recorder.state","state":"running"}'));
+    expect(output.mock.calls.some(([line]) => String(line).startsWith("[recorder-health] "))).toBe(false);
+    test.send(full([root, { ...text, name: "PRIVATE_CAPTURE_CONTENT" }]));
+    expect(fs.readFileSync(test.eventsFile, "utf8")).toContain("PRIVATE_CAPTURE_CONTENT");
+    const signals = output.mock.calls.map(([line]) => String(line)).filter(line => line.startsWith("[recorder-health] "));
+    expect(signals.map(line => JSON.parse(line.slice("[recorder-health] ".length))))
+      .toEqual([{ code: "event_recorded", timestamp: "2026-10-02T01:00:00.000Z" }]);
+    expect(signals.join("\n")).not.toMatch(/PRIVATE_CAPTURE_CONTENT|Private document title|heartbeat/);
+    test.child.stdin.write("stop\n");
+    await running;
+    expect(output).toHaveBeenCalledWith('{"kind":"recorder.state","state":"stopped"}');
+  });
   it("applies shared source exclusions before persisting native Windows content", async () => {
     const test = setup();
     const observationSettingsFile = path.join(test.directory, "observation.json");

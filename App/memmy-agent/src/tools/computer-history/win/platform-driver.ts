@@ -98,6 +98,15 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
       while ((index = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
         try {
+          if (line.startsWith("[recorder-health] ")) {
+            const health = JSON.parse(line.slice("[recorder-health] ".length));
+            if (!health || typeof health !== "object" || Array.isArray(health)
+                || health.code !== "event_recorded" || typeof health.timestamp !== "string"
+                || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(health.timestamp)
+                || !Number.isFinite(Date.parse(health.timestamp))
+                || Object.keys(health).some(key => key !== "code" && key !== "timestamp")) throw new Error();
+            continue;
+          }
           const state = JSON.parse(line);
           if (state.kind !== "recorder.state" || Object.keys(state).length !== 2 || stopped
               || !["running", "paused", "stopping", "stopped"].includes(state.state)) throw new Error();

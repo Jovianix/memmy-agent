@@ -39,6 +39,24 @@ afterEach(async () => {
 });
 
 describe("Windows managed service", () => {
+  it("accepts persisted-event health alongside lifecycle status and updates capture coverage", async () => {
+    const { root, service, store } = setup();
+    const script = path.join(root, "recorder.mjs");
+    fs.appendFileSync(script, '\nconsole.log("[recorder-health] "+JSON.stringify({code:"event_recorded",timestamp:new Date().toISOString()}));');
+    store.write({ version: 1, applications: [{ executable }] });
+    await service.startObservationWithPermissions();
+    await vi.waitFor(() => expect(service.snapshot().observation.captureHealth?.lastEventAt).toEqual(expect.any(String)));
+    expect(service.snapshot().observation.state).toBe("running");
+    await service.stopObservation();
+    expect(service.snapshot().observation.state).toBe("stopped");
+  });
+  it("rejects content-bearing payloads on the content-free health channel", async () => {
+    const { root, service, store } = setup();
+    fs.appendFileSync(path.join(root, "recorder.mjs"), '\nsetTimeout(()=>console.log("[recorder-health] "+JSON.stringify({code:"event_recorded",timestamp:new Date().toISOString(),text:"PRIVATE_CONTENT"})),20);');
+    store.write({ version: 1, applications: [{ executable }] });
+    await service.startObservationWithPermissions();
+    await vi.waitFor(() => expect(service.snapshot().observation.state).toBe("failed"));
+  });
   it("preflights explicit consent without creating Mac defaults or a recording", async () => {
     const { root, service, store } = setup();
     store.write({ version: 1, applications: [] });
