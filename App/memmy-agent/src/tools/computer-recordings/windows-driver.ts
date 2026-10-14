@@ -85,6 +85,8 @@ export class WindowsTaskRecordingDriver implements TaskRecordingDriver {
     for (const frame of frames) {
       const part = parts.find((item) => item.mediaId === frame.partId);
       if (!frame.qpc || (frame.window && !("hwnd" in frame.window))) throw new Error("task_frame_platform_invalid");
+      if ((frame.repeated && !frame.sourceTicks) || (frame.sourceTicks && (!frame.window || BigInt(frame.sourceTicks) < BigInt(media.qpcOrigin)
+        || BigInt(frame.sourceTicks) > BigInt(frame.qpc) || (!frame.repeated && frame.sourceTicks !== frame.qpc)))) throw new Error("task_frame_source_clock_invalid");
       const expectedMs = Number(BigInt(frame.qpc) - BigInt(media.qpcOrigin)) * 1000 / Number(media.qpcFrequency);
       if (!part || Math.abs(expectedMs - frame.timeMs) > 2 || frame.timeMs < part.startMs - 2 || frame.timeMs > part.startMs + part.durationMs + 2
         || frame.partFrame !== (counts.get(frame.partId) ?? 0)) throw new Error("task_frame_clock_invalid");

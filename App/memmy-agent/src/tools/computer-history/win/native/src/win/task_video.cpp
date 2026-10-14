@@ -170,6 +170,7 @@ class Encoder {
   DWORD stream_ = 0;
   LONGLONG pendingTime_ = 0;
 };
+enum class CaptureResult { Frame, Empty, Unavailable };
 class WindowCapture {
  public:
   void Init() {
@@ -186,7 +187,7 @@ class WindowCapture {
     if (pool_) pool_.Close();
     session_ = nullptr; pool_ = nullptr; staging_ = nullptr; hwnd_ = 0;
   }
-  bool Frame(const protocol::ContextRecord& target, std::vector<std::uint8_t>& pixels, Json& transform, std::uint64_t& tick) {
+  CaptureResult Frame(const protocol::ContextRecord& target, std::vector<std::uint8_t>& pixels, Json& transform, std::uint64_t& tick) {
     if (hwnd_ != target.hwnd) {
       Close();
       const auto factory = winrt::get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
@@ -198,19 +199,19 @@ class WindowCapture {
       session_.StartCapture(); hwnd_ = target.hwnd;
     }
     auto frame = pool_.TryGetNextFrame();
-    if (!frame) return false;
-    // Drain queued frames to the newest real sample; never duplicate an earlier image.
+    if (!frame) return CaptureResult::Empty;
+    // Drain queued frames to the newest real sample; display repeats keep their source QPC separately.
     for (auto next = pool_.TryGetNextFrame(); next; next = pool_.TryGetNextFrame()) { frame.Close(); frame = std::move(next); }
     const auto content = frame.ContentSize();
-    if (content.Width <= 0 || content.Height <= 0) { frame.Close(); return false; }
+    if (content.Width <= 0 || content.Height <= 0) { frame.Close(); return CaptureResult::Unavailable; }
     if (content.Width != size_.Width || content.Height != size_.Height) {
       frame.Close(); size_ = content;
       pool_.Recreate(runtime_, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size_);
-      staging_ = nullptr; return false;
+      staging_ = nullptr; return CaptureResult::Unavailable;
     }
     RECT rectangle{};
     if (FAILED(DwmGetWindowAttribute(ToHwnd(target.hwnd), DWMWA_EXTENDED_FRAME_BOUNDS, &rectangle, sizeof(rectangle)))
-      || rectangle.right - rectangle.left != content.Width || rectangle.bottom - rectangle.top != content.Height) { frame.Close(); return false; }
+      || rectangle.right - rectangle.left != content.Width || rectangle.bottom - rectangle.top != content.Height) { frame.Close(); return CaptureResult::Unavailable; }
     auto access = frame.Surface().as<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
     com_ptr<ID3D11Texture2D> texture;
     check_hresult(access->GetInterface(__uuidof(ID3D11Texture2D), texture.put_void()));
@@ -240,7 +241,7 @@ class WindowCapture {
     tick = static_cast<std::uint64_t>(static_cast<long double>(relative) * static_cast<long double>(QpcFrequency()) / static_cast<long double>(kTicksPerSecond));
     transform = {{"sourceWidth", content.Width}, {"sourceHeight", content.Height}, {"offsetX", offsetX}, {"offsetY", offsetY},
       {"scale", scale}, {"sourceLeft", rectangle.left}, {"sourceTop", rectangle.top}};
-    frame.Close(); return true;
+    frame.Close(); return CaptureResult::Frame;
   }
  private:
   com_ptr<ID3D11Device> device_;
@@ -341,6 +342,16 @@ struct TaskVideo::Impl {
       if (!indexFile || !gapFile) throw std::runtime_error("index_open_failed");
       WindowCapture capture; capture.Init();
       std::vector<std::uint8_t> pixels(static_cast<std::size_t>(kWidth) * kHeight * 4);
+      std::vector<std::uint8_t> sourcePixels(pixels.size());
+      std::optional<protocol::ContextRecord> sourceWindow;
+      Json sourceTransform = nullptr;
+      std::string sourcePolicy;
+      std::uint64_t sourceTick = 0, sourceGeneration = 0;
+      const auto invalidate = [&] {
+        if (sourceWindow) std::fill(sourcePixels.begin(), sourcePixels.end(), 0);
+        sourceWindow.reset(); sourceTransform = nullptr; sourcePolicy.clear(); sourceTick = 0;
+        capture.Close();
+      };
       Encoder encoder;
       unsigned part = 1, partFrame = 0;
       std::uint64_t frameIndex = 0, partStart = origin, previous = origin;
@@ -373,7 +384,7 @@ struct TaskVideo::Impl {
           auto tick = begin;
           Json window = nullptr, transform = nullptr;
           std::string reason = paused.load() ? "paused" : "unauthorized";
-          bool captured = false;
+          bool captured = false, repeated = false;
           if (!paused.load()) {
             const auto generation = hooks.Generation();
             const auto hwnd = ForegroundWindow();
@@ -389,17 +400,39 @@ struct TaskVideo::Impl {
               const bool remote = text::EqualsOrdinalIgnoreCase(name, L"mstsc.exe") || text::EqualsOrdinalIgnoreCase(name, L"msrdc.exe")
                 || text::EqualsOrdinalIgnoreCase(name, L"wfica32.exe") || text::EqualsOrdinalIgnoreCase(name, L"cdviewer.exe");
               if (!remote && monitor == recordingMonitor && before->dpi == recordingDpi) {
-                try { captured = capture.Frame(*before, pixels, transform, tick); } catch (...) { capture.Close(); reason = "capture_failed"; }
-              } else capture.Close();
-              const auto after = ReadWindowContext(hwnd, refusal);
-              if (captured && (!hooks.Barrier(250) || hooks.Generation() != generation || ForegroundWindow() != hwnd || !after || !protocol::SameInstance(*before, *after)
-                || before->bounds != after->bounds || before->dpi != after->dpi || tick < origin || tick < hooks.GenerationQpc() || tick <= previous || Elapsed(QpcTicks(), tick, frequency) > 200)) captured = false;
+                const bool sameSource = sourceWindow && protocol::SameInstance(*sourceWindow, *before)
+                  && sourceWindow->bounds == before->bounds && sourceWindow->dpi == before->dpi
+                  && sourceGeneration == generation && sourcePolicy == policyFile.sha256;
+                if (sourceWindow && !sameSource) invalidate();
+                CaptureResult result = CaptureResult::Unavailable;
+                try { result = capture.Frame(*before, pixels, transform, tick); } catch (...) { reason = "capture_failed"; }
+                const auto after = ReadWindowContext(hwnd, refusal);
+                const bool verified = hooks.Barrier(250) && hooks.Generation() == generation && ForegroundWindow() == hwnd
+                  && after && protocol::SameInstance(*before, *after) && before->bounds == after->bounds && before->dpi == after->dpi;
+                if (!verified || result == CaptureResult::Unavailable) invalidate();
+                else if (result == CaptureResult::Frame) {
+                  const auto now = QpcTicks();
+                  if (tick < origin || tick < hooks.GenerationQpc() || tick <= sourceTick || tick > now || Elapsed(now, tick, frequency) > 200) invalidate();
+                  else {
+                    sourcePixels = pixels; sourceWindow = *before; sourceTransform = transform;
+                    sourceTick = tick; sourceGeneration = generation; sourcePolicy = policyFile.sha256; captured = true;
+                    // A real sample can arrive after a later display timestamp was already written.
+                    // Keep its source time; a derived display frame is not fresh export evidence.
+                    repeated = tick <= previous;
+                    if (repeated) tick = now;
+                  }
+                } else if (sourceWindow) {
+                  // An empty pool is normal for a static window. Revalidate the cached identity
+                  // on every tick; never carry its pixels through pause or a scope/foreground change.
+                  pixels = sourcePixels; transform = sourceTransform; tick = QpcTicks(); captured = true; repeated = true;
+                }
+              } else invalidate();
               if (captured) {
                 window = protocol::ContextToJson(*before, std::nullopt);
                 window.erase("title"); window.erase("minimized"); window.erase("generation");
               }
-            } else capture.Close();
-          } else capture.Close();
+            } else invalidate();
+          } else invalidate();
           if (!captured) { tick = QpcTicks(); transform = nullptr; std::fill(pixels.begin(), pixels.end(), 0); }
           if (tick <= previous && frameIndex != 0) tick = previous + 1;
           const double now = Elapsed(tick, origin, frequency);
@@ -410,8 +443,11 @@ struct TaskVideo::Impl {
           }
           encoder.Push(pixels, static_cast<LONGLONG>(Elapsed(tick, partStart, frequency) * 10000));
           const std::string partId = "part-" + text::ToUtf8(PartName(part, L""));
-          WriteAll(indexFile.get(), DumpJson({{"index", frameIndex}, {"timeMs", now}, {"qpc", std::to_string(tick)},
-            {"partId", partId.substr(0, partId.size() - 1)}, {"partFrame", partFrame}, {"window", window}, {"blank", !captured}, {"transform", transform}}) + "\n");
+          Json indexed = {{"index", frameIndex}, {"timeMs", now}, {"qpc", std::to_string(tick)},
+            {"partId", partId.substr(0, partId.size() - 1)}, {"partFrame", partFrame}, {"window", window}, {"blank", !captured},
+            {"transform", transform}, {"repeated", repeated}};
+          if (captured) indexed["sourceTicks"] = std::to_string(sourceTick);
+          WriteAll(indexFile.get(), DumpJson(indexed) + "\n");
           previous = tick; ++frameIndex; ++partFrame;
         }
         const double used = Elapsed(QpcTicks(), begin, frequency);
@@ -587,7 +623,7 @@ int TaskVideo::ExportFrames(const std::wstring& folder, const std::wstring& dest
       for (const auto& request : requests) {
         if (request.at("partId").get<std::string>() + "." != partId) continue;
         const auto frameId = request.at("frameId").get<std::size_t>();
-        if (frameId >= frames.size() || frames[frameId].at("blank").get<bool>() || frames[frameId].at("partFrame") != request.at("partFrame")
+        if (frameId >= frames.size() || frames[frameId].at("blank").get<bool>() || frames[frameId].value("repeated", false) || frames[frameId].at("partFrame") != request.at("partFrame")
           || frames[frameId].at("partId") != request.at("partId")) throw std::runtime_error("unverified_frame");
         selected.push_back(request);
       }

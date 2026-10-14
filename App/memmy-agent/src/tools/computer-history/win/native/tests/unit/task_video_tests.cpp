@@ -42,6 +42,20 @@ int wmain() {
     requests << R"([{"i":0,"phase":"before","frameId":0,"partId":"part-000001","partFrame":0},{"i":0,"phase":"after","frameId":3,"partId":"part-000002","partFrame":0}])";
     requests.close(); Require(memmy::win::TaskVideo::ExportFrames(root.wstring(), output.wstring()) == 0);
     Orientation(output / L"frames/0000_before.png"); Orientation(output / L"frames/0000_after.png");
+    // Display-only repeats cannot be exported as freshly captured action evidence.
+    std::ifstream index(root / L"frames.jsonl");
+    const std::string indexBytes{std::istreambuf_iterator<char>(index), {}}; index.close();
+    const auto newline = indexBytes.find('\n'); Require(newline != std::string::npos);
+    auto repeated = memmy::ParseJsonStrict(std::string_view(indexBytes).substr(0, newline), 16).value();
+    repeated["repeated"] = true;
+    std::ofstream changed(root / L"frames.jsonl", std::ios::trunc);
+    changed << memmy::DumpJson(repeated) << '\n' << indexBytes.substr(newline + 1); changed.close();
+    const auto repeatOutput = root / L"export-repeated"; fs::create_directory(repeatOutput);
+    std::ofstream repeatRequests(repeatOutput / L"frame-requests.json");
+    repeatRequests << R"([{"i":0,"phase":"before","frameId":0,"partId":"part-000001","partFrame":0}])"; repeatRequests.close();
+    Require(memmy::win::TaskVideo::ExportFrames(root.wstring(), repeatOutput.wstring()) != 0);
+    Require(!fs::exists(repeatOutput / L"frames/0000_before.png"));
+    std::ofstream restored(root / L"frames.jsonl", std::ios::trunc); restored << indexBytes; restored.close();
     // A corrupted sealed tail is refused while the verified preceding part remains usable.
     std::ofstream broken(root / L"parts/000002.mp4", std::ios::trunc); broken << "broken"; broken.close();
     Require(memmy::win::TaskVideo::Finalize(root.wstring()) == 0);

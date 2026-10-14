@@ -1612,9 +1612,79 @@ void CaseTaskVideoLifecycle() {
     if (line.empty()) continue; const auto frame = ParseLine(line);
     const auto tick = std::stoull(frame.at("qpc").get<std::string>()); const double time = frame.at("timeMs").get<double>();
     Expect(time > last && std::abs(time - static_cast<double>(tick - origin) * 1000.0 / static_cast<double>(frequency)) < 2, "QPC frame alignment"); last = time;
-    if (!frame.at("blank").get<bool>()) { ++captured; Expect(frame.at("window").at("pid") == fixture.Pid(), "authorized window only"); }
+    if (!frame.at("blank").get<bool>()) {
+      if (!frame.value("repeated", false)) ++captured;
+      Expect(frame.at("window").at("pid") == fixture.Pid(), "authorized window only");
+    }
   }
   Expect(captured > 10, "actual window pixels were sampled");
+}
+
+void CaseTaskVideoStaticFrames() {
+  Fixture fixture; fixture.Start(); fixture.RequireForeground('a');
+  Json rule = FullRule(fixture); rule["processStart"] = fixture.ProcessStart(); rule["hwnd"] = fixture.HwndA();
+  const Json allowed = {{"version", 1}, {"applications", Json::array({rule})}};
+  const auto policy = WritePolicy("task-static", Json::array({rule}));
+  const auto directory = g_paths.artifacts / L"task-video"; fs::create_directory(directory);
+  Observe recording;
+  recording.Proc().Start(g_paths.Recorder(), {L"record-task", L"--policy", policy.wstring(), L"--output-dir", directory.wstring(),
+    L"--seconds", L"30", L"--sample-ms", L"200", L"--input-hooks"});
+  if (!recording.TryWait("session.started", 12000)) {
+    recording.Proc().Save("task-start-failed");
+    if (recording.Proc().Stderr().find("task_video_start_failed") != std::string::npos) Skip("Windows Graphics Capture / hardware D3D device unavailable");
+    Fail("task recorder failed to acknowledge startup");
+  }
+  const auto now = [] {
+    LARGE_INTEGER counter{}; QueryPerformanceCounter(&counter); return static_cast<std::uint64_t>(counter.QuadPart);
+  };
+  Json phases = Json::array();
+  const auto hold = [&](const char* name, bool blank, DWORD milliseconds, std::uint64_t freshAfter = 0) {
+    // Settle the transition, then leave the window completely still.
+    Sleep(600); const auto begin = now(); Sleep(milliseconds);
+    phases.push_back({{"name", name}, {"blank", blank}, {"begin", std::to_string(begin)}, {"end", std::to_string(now())},
+      {"freshAfter", std::to_string(freshAfter)}});
+  };
+  for (int i = 0; i < 10; ++i) { fixture.Command("set-message task-static-" + std::to_string(i)); Sleep(100); }
+  hold("static", false, 2000); fixture.ExpectForeground('a', "during static recording");
+  recording.Send("pause"); recording.Wait("session.paused", 5000); hold("paused", true, 800);
+  recording.Send("resume"); recording.Wait("session.resumed", 5000); hold("resumed-static", false, 1500);
+  fixture.RequireForeground('b'); hold("unauthorized", true, 800); fixture.ExpectForeground('b', "during unauthorized recording");
+  const auto returnedAt = now(); fixture.RequireForeground('a'); hold("returned-static", false, 1500, returnedAt);
+  WriteFileBytes(policy, memmy::DumpJson({{"version", 1}, {"applications", Json::array()}})); hold("revoked", true, 800);
+  const auto restoredAt = now(); WriteFileBytes(policy, memmy::DumpJson(allowed)); hold("restored-static", false, 1500, restoredAt);
+  recording.Send("stop"); recording.Wait("session.stopped", 5000);
+  Expect(recording.Finish(5000, "task-static-recording") == 0, "static capture stopped within bound");
+  Expect(RunToEnd(g_paths.Recorder(), {L"finalize-task", L"--output-dir", directory.wstring()}, "task-static-finalize").exitCode == 0, "static task remux");
+  std::vector<Json> frames;
+  for (const auto& line : SplitLines(ReadFileBytes(directory / L"frames.jsonl"))) if (!line.empty()) frames.push_back(ParseLine(line));
+  Json summary = Json::array();
+  for (const auto& phase : phases) {
+    const auto begin = std::stoull(phase.at("begin").get<std::string>()), end = std::stoull(phase.at("end").get<std::string>());
+    std::size_t count = 0, blank = 0, repeated = 0;
+    for (const auto& frame : frames) {
+      const auto tick = std::stoull(frame.at("qpc").get<std::string>()); if (tick < begin || tick > end) continue;
+      ++count; if (frame.at("blank").get<bool>()) ++blank; if (frame.value("repeated", false)) ++repeated;
+    }
+    summary.push_back({{"phase", phase.at("name")}, {"frames", count}, {"blank", blank}, {"repeated", repeated}});
+  }
+  WriteFileBytes(g_paths.artifacts / L"static-frame-summary.json", memmy::DumpJson(summary));
+  for (std::size_t i = 0; i < phases.size(); ++i) {
+    const auto& phase = phases[i]; const auto& counts = summary[i]; const auto name = phase.at("name").get<std::string>();
+    const auto count = counts.at("frames").get<std::size_t>(), blank = counts.at("blank").get<std::size_t>();
+    Expect(count >= 5, name + ": enough video samples");
+    if (phase.at("blank").get<bool>()) { Expect(blank == count, name + ": no cached pixels outside recording consent"); continue; }
+    Expect(blank <= count / 10, name + ": static authorized window keeps its visible image instead of black frames");
+    Expect(counts.at("repeated").get<std::size_t>() > 0, name + ": display repeats retain their provenance");
+    const auto begin = std::stoull(phase.at("begin").get<std::string>()), end = std::stoull(phase.at("end").get<std::string>());
+    const auto freshAfter = std::stoull(phase.at("freshAfter").get<std::string>());
+    for (const auto& frame : frames) {
+      const auto tick = std::stoull(frame.at("qpc").get<std::string>());
+      if (tick < begin || tick > end || frame.at("blank").get<bool>()) continue;
+      const auto source = std::stoull(frame.at("sourceTicks").get<std::string>());
+      Expect(source <= tick && source >= freshAfter, name + ": source belongs to the current authorized interval");
+      Expect(frame.at("window").at("hwnd") == fixture.HwndA(), name + ": only the selected window is visible");
+    }
+  }
 }
 
 const std::map<std::string, std::function<void()>>& Cases() {
@@ -1651,6 +1721,7 @@ const std::map<std::string, std::function<void()>>& Cases() {
       {"input_hooks_lifecycle", CaseInputHooksLifecycle},
       {"stop_hotkey", CaseStopHotkey},
       {"task_video_lifecycle", CaseTaskVideoLifecycle},
+      {"task_video_static_frames", CaseTaskVideoStaticFrames},
   };
   return cases;
 }

@@ -22,6 +22,8 @@ macOS 最低版本为 12.3，支持 Apple Silicon 和 Intel。首次使用时，
 
 输出为 1920×1080 固定画布，按比例缩小并留黑边，采样上限 15 fps，H.264/MP4，无音频。事件与帧共享 QPC 时间轴，原始计数和频率以十进制字符串保存，避免 64 位精度损失；UTC 仅用于显示。暂停、未授权目标、不可用窗口和采集故障保留经过时间及明确缺口，使用新生成的黑色占位画面。
 
+Windows 的帧池暂时为空时，在窗口身份、前台/焦点代次、位置、DPI 和授权策略仍匹配的前提下保留最近一次验证过的画面，避免静止窗口闪黑。显示重复帧保留原始采集 `sourceTicks` 并标记 `repeated`，不作为新的操作前／后截图；暂停、失去授权或身份校验失败会清空缓存，恢复后重新采集。定位过程、方案和前后对照见[静止画面修复记录](../../../../../docs/architecture/windows-task-recording-static-frames-2026-10-13.md)。
+
 macOS 使用 `mac/task-recorder.swift`：一个进程内的 listen-only CGEvent tap 与一个 ScreenCaptureKit 独立窗口流。只采集本次选中、符合现有应用观察规则的前台原生窗口，绑定 Bundle ID、PID、进程启动时间、可执行路径、CGWindowID、窗口位置和显示缩放；浏览器、远程桌面与系统表面不支持。跨显示器的窗口、独立窗口流未包含的重叠菜单／子窗口、无法验证的窗口写入黑帧。现有规则损坏时拒绝任务录制，不沿用后台历史的宽松回退。
 
 macOS 的 `clock.kind` 为 `mach_host`，使用 Core Media host clock 与 SCK 原始 sample PTS，统一换算为纳秒字符串；`qpc` 保持 `null`，不伪装成 Windows 时钟。Retina 点击坐标保留屏幕点坐标，通过来源窗口与画布变换转换到输出像素。静止窗口的视频重复帧记录 `sourceTicks` 和 `repeated`，导出时不能作为新采集的操作前／后截图。文本不读取 Unicode 字符串；快捷键只在可验证的键盘布局下映射。拖拽、多击、额外鼠标按钮、丢失事件及无法映射的输入明确标记不完整。
@@ -100,9 +102,10 @@ Windows 测试路径已加入既有 CI：
 
 - `task_video.media_integrity`：真实 MF 编码、无重编码合并、帧抽取、图像朝向与损坏尾片恢复；无需真实桌面。
 - `integration.task_video_lifecycle`：受控前台窗口像素、分片、暂停／继续、原生互斥与 QPC 索引；无交互桌面或 WGC 设备时明确跳过。
+- `integration.task_video_static_frames`：静止窗口连续显示、暂停／继续、未授权窗口、返回以及撤销／恢复授权；重复画面保留来源时间并隔离旧授权区间的缓存。
 - 现有历史、严格 schema、macOS 路径、安装资源和生命周期回归。
 
-尚未在本机执行 MSVC 编译、Windows 原生测试、真实 Electron 录播链路、两次 20 分钟稳定性测试及干净安装验收。CI 文件的加入不代表这些检查已通过。按需求文档的交付标准，仍须在 Windows 11 x64 上完成这些验收。
+2026-10-13 已通过 WSL 联动 Windows 11 x64 真实桌面完成 MSVC 编译、原生媒体与生命周期测试、静止画面回归和 Electron 录制／暂停／继续／视频回看验证，定位与前后结果见上述修复记录。两次 20 分钟稳定性测试及干净安装验收仍未完成；CI 文件的加入不代表这些检查已通过。
 
 新增 `.github/workflows/macos-task-recording-validation.yml`，在 Mac 上编译两种架构的生产 helper，运行真实 AVFoundation 编码／解码、时间戳、色彩朝向、无重编码合并、PNG 提取和损坏尾部恢复测试。测试用合成媒体仅编入 `MEMMY_RECORDING_TESTS` 二进制，不进入安装包。原有 Electron/ASAR 测试覆盖新增 helper 在无需 Swift 的安装环境中解析执行。
 
