@@ -1620,6 +1620,50 @@ void CaseTaskVideoLifecycle() {
   Expect(captured > 10, "actual window pixels were sampled");
 }
 
+void CaseTaskVideoIdle() {
+  Fixture fixture; fixture.Start(); fixture.RequireForeground('a');
+  Json rule = FullRule(fixture); rule["processStart"] = fixture.ProcessStart(); rule["hwnd"] = fixture.HwndA();
+  const auto policy = WritePolicy("task-idle", Json::array({rule}));
+  const auto directory = g_paths.artifacts / L"task-video"; fs::create_directory(directory);
+  WriteFileBytes(directory / L"recording-options.json", R"({"version":1,"idleTimeoutMs":10000})");
+  Observe recording;
+  recording.Proc().Start(g_paths.Recorder(), {L"record-task", L"--policy", policy.wstring(), L"--output-dir", directory.wstring(),
+    L"--seconds", L"60", L"--sample-ms", L"200", L"--input-hooks"});
+  if (!recording.TryWait("session.started", 12000)) {
+    recording.Proc().Save("task-start-failed");
+    if (recording.Proc().Stderr().find("task_video_start_failed") != std::string::npos) Skip("Windows Graphics Capture / hardware D3D device unavailable");
+    Fail("task recorder failed to acknowledge startup");
+  }
+  fixture.Command("set-message idle-first"); Sleep(16000);
+  const auto idle = ParseLine(ReadFileBytes(directory / L"idle-spans.json"));
+  Expect(idle.at("activeStartMs").is_number(), "static image automatically suspends encoding after 10 seconds");
+  Expect(fs::exists(directory / L"parts/000001.json"), "captured prefix is durably sealed during idle wait");
+  const auto before = ReadFileBytes(directory / L"frames.jsonl"); Sleep(1000);
+  Expect(before == ReadFileBytes(directory / L"frames.jsonl"), "no frames written during idle wait");
+  fixture.Command("set-message idle-image-changed"); Sleep(2200);
+  const auto resumed = ParseLine(ReadFileBytes(directory / L"idle-spans.json"));
+  Expect(resumed.at("activeStartMs").is_null() && resumed.at("spans").size() == 1, "image change resumes capture automatically");
+  Expect(ReadFileBytes(directory / L"frames.jsonl").size() > before.size(), "changed frame immediately reaches the video index");
+  // Ending while idle must omit the final waiting period as well.
+  Sleep(12500);
+  recording.Send("stop"); recording.Wait("session.stopped", 5000);
+  Expect(recording.Finish(5000, "task-idle-recording") == 0, "idle capture stops within bound");
+  Expect(RunToEnd(g_paths.Recorder(), {L"finalize-task", L"--output-dir", directory.wstring()}, "task-idle-finalize").exitCode == 0, "idle video remux");
+  const auto media = ParseLine(ReadFileBytes(directory / L"native-media.json"));
+  const auto source = media.at("durationMs").get<double>(), video = media.at("videoDurationMs").get<double>();
+  double skipped = 0;
+  for (const auto& span : media.at("idleSpans")) skipped += span.at("endMs").get<double>() - span.at("startMs").get<double>();
+  Expect(media.at("complete").get<bool>() && media.at("idleSpans").size() == 2, "complete video with two idle intervals");
+  Expect(skipped > 8500 && std::abs(source - skipped - video) < 2, "video duration omits waiting without changing source clock");
+  double lastSource = -1, lastVideo = -1;
+  for (const auto& line : SplitLines(ReadFileBytes(directory / L"frames.jsonl"))) {
+    if (line.empty()) continue;
+    const auto frame = ParseLine(line);
+    const auto time = frame.at("timeMs").get<double>(), presentation = frame.value("videoTimeMs", time);
+    Expect(time > lastSource && presentation > lastVideo, "source and presentation clocks remain strictly ordered");
+    lastSource = time; lastVideo = presentation;
+  }
+}
 void CaseTaskVideoStaticFrames() {
   Fixture fixture; fixture.Start(); fixture.RequireForeground('a');
   Json rule = FullRule(fixture); rule["processStart"] = fixture.ProcessStart(); rule["hwnd"] = fixture.HwndA();
@@ -1722,6 +1766,7 @@ const std::map<std::string, std::function<void()>>& Cases() {
       {"stop_hotkey", CaseStopHotkey},
       {"task_video_lifecycle", CaseTaskVideoLifecycle},
       {"task_video_static_frames", CaseTaskVideoStaticFrames},
+      {"task_video_idle", CaseTaskVideoIdle},
   };
   return cases;
 }

@@ -10,7 +10,7 @@ import { collectorGate, type CollectorGate } from "../computer-history/core/coll
 export class RecordingError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
-export type RecordingResult = Pick<RecordingSession, "durationMs" | "video" | "parts" | "gaps" | "qpc" | "clock" | "videoIntegrity" | "timelineCompleteness" | "error"> & {
+export type RecordingResult = Pick<RecordingSession, "durationMs" | "video" | "parts" | "gaps" | "qpc" | "clock" | "idleSpans" | "videoIntegrity" | "timelineCompleteness" | "error"> & {
   endReason?: RecordingSession["taskEndReason"];
 };
 export interface TaskRecordingHandle {
@@ -19,11 +19,12 @@ export interface TaskRecordingHandle {
   resume(): Promise<void>;
   stop(): Promise<RecordingResult>;
   timeMs(): number;
+  idleStatus?(): { paused: boolean; videoTimeMs: number } | undefined;
 }
 export interface TaskRecordingDriver {
   configuration?(): Promise<RecordingConfiguration>;
   openPermission?(permission: RecordingPermission, mode: "request" | "settings"): Promise<RecordingConfiguration>;
-  start(input: { directory: string; applications: string[]; onEvent: (event: Omit<RecordingEvent, "id" | "sequence">) => void }): Promise<TaskRecordingHandle>;
+  start(input: { directory: string; applications: string[]; skipIdle?: boolean; onEvent: (event: Omit<RecordingEvent, "id" | "sequence">) => void }): Promise<TaskRecordingHandle>;
   recover(directory: string): Promise<RecordingResult>;
   exportFlow(directory: string, session: RecordingSession, events: RecordingEvent[], destination: string): Promise<string[]>;
 }
@@ -80,6 +81,8 @@ export class RecordingSessionService {
     if (this.active?.session.id === id) {
       const snapshot = structuredClone(this.active.session);
       if (this.active.handle && (snapshot.state === "recording" || snapshot.state === "paused")) snapshot.durationMs = Math.min(1_200_000, this.active.handle.timeMs());
+      const idle = this.active.handle?.idleStatus?.();
+      if (idle) { snapshot.idlePaused = idle.paused; snapshot.recordedDurationMs = idle.videoTimeMs; }
       return snapshot;
     }
     const failed = this.failedManifests.get(id); if (failed) return structuredClone(failed);
@@ -182,7 +185,7 @@ export class RecordingSessionService {
     this.active = active;
     active.start = (async () => {
       try {
-        active.handle = await this.options.driver.start({ directory: this.folder(session.id), applications: session.applications,
+        active.handle = await this.options.driver.start({ directory: this.folder(session.id), applications: session.applications, skipIdle: parsed.data.skipIdle,
           onEvent: (event) => this.append(active, event) });
         session.state = "recording"; this.save(session);
         void active.handle.finished.then((result) => this.settle(active, result), (error) => this.settleFailure(active, error)).catch(() => {});

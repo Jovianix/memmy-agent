@@ -1,6 +1,23 @@
 import { z } from "zod";
 
 const time = z.number().finite().nonnegative();
+export const RecordingIdleSpanSchema = z.object({ startMs: time, endMs: time }).strict().refine((span) => span.endMs > span.startMs);
+export const RecordingIdleSpansSchema = z.array(RecordingIdleSpanSchema).max(12000).refine((spans) =>
+  spans.every((span, index) => index === 0 || span.startMs >= spans[index - 1]!.endMs), "idle spans must be ordered and disjoint");
+/** Source timestamps remain intact; only the video's presentation clock skips idle spans. */
+export function recordingVideoTime(sourceMs: number, spans: readonly { startMs: number; endMs: number }[] = []): number {
+  return Math.max(0, sourceMs - spans.reduce((total, span) => total + Math.max(0, Math.min(sourceMs, span.endMs) - span.startMs), 0));
+}
+export function recordingSourceTime(videoMs: number, spans: readonly { startMs: number; endMs: number }[] = []): number {
+  let source = videoMs;
+  for (const span of spans) { if (source < span.startMs) break; source += span.endMs - span.startMs; }
+  return source;
+}
+/** An event during omitted waiting belongs to the retained static image, before the next change. */
+export function recordingEventVideoTime(sourceMs: number, spans: readonly { startMs: number; endMs: number }[] = []): number {
+  const video = recordingVideoTime(sourceMs, spans);
+  return Math.max(0, video - (spans.some(span => sourceMs >= span.startMs && sourceMs < span.endMs) ? 1 : 0));
+}
 const id = z.string().uuid();
 const bounds = z.object({ left: z.number().finite(), top: z.number().finite(), right: z.number().finite(), bottom: z.number().finite() }).strict();
 export const WindowsRecordingWindowSchema = z.object({
@@ -35,6 +52,7 @@ export const RecordingEventSchema = z.object({
 }).strict();
 export const RecordingFrameSchema = z.object({
   index: z.number().int().nonnegative(), timeMs: time, qpc: ticks.optional(), monotonicTicks: ticks.optional(),
+  videoTimeMs: time.optional(),
   sourceTicks: ticks.optional(), repeated: z.boolean().optional(),
   gapReason: z.enum(["paused", "unauthorized", "unavailable", "capture_failed"]).optional(),
   partId: z.string().regex(/^part-[0-9]{6}$/u), partFrame: z.number().int().nonnegative(),
@@ -53,13 +71,15 @@ export const RecordingSessionSchema = z.object({
   taskEndReason: z.enum(["user_stopped", "completed", "cancelled", "duration_limit", "app_exit", "process_exit", "capture_failed"]).nullable(),
   error: z.string().nullable(), qpc: z.object({ origin: z.string().regex(/^[0-9]+$/u), frequency: z.string().regex(/^[1-9][0-9]*$/u) }).strict().nullable(),
   clock: RecordingClockSchema.optional(),
+  idleSpans: RecordingIdleSpansSchema.optional(),
+  idlePaused: z.boolean().optional(), recordedDurationMs: time.optional(),
   video: z.object({ mediaId: z.literal("recording"), width: z.number().int().positive().max(1920), height: z.number().int().positive().max(1080),
-    fps: z.number().positive().max(15), audio: z.literal(false) }).strict().nullable(),
+    fps: z.number().positive().max(15), audio: z.literal(false), durationMs: time.optional() }).strict().nullable(),
   parts: z.array(RecordingPartSchema), gaps: z.array(RecordingGapSchema),
   privacy: z.object({ rawVisibleFrames: z.literal(true), audio: z.literal(false), localOnly: z.literal(true), retentionHours: z.literal(48) }).strict(),
 }).strict();
 export const RecordingStartSchema = z.object({ title: z.string().trim().min(1).max(200),
-  applications: z.array(z.string().min(1)).min(1).max(32), consent: z.literal(true),
+  applications: z.array(z.string().min(1)).min(1).max(32), consent: z.literal(true), skipIdle: z.boolean().optional(),
 }).strict();
 export const RecordingPermissionsSchema = z.object({ accessibility: z.boolean(), inputMonitoring: z.boolean(), screenRecording: z.boolean() }).strict();
 export const RecordingConfigurationSchema = z.object({ platform: z.enum(["windows", "macos"]), supported: z.boolean(),

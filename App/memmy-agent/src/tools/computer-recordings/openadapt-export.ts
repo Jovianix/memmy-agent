@@ -83,6 +83,7 @@ export async function exportOpenAdaptFlow(input: {
     videoIntegrity: session.videoIntegrity, timelineCompleteness: session.timelineCompleteness, taskEndReason: session.taskEndReason,
     coordinateSpace: "window_pixels", missing, conversions: provenance, gaps: session.gaps,
     qpc: session.qpc, clock: session.clock ?? (session.qpc ? { kind: "qpc", ...session.qpc } : null), platform: session.platform, sourceParts: session.parts,
+    idleSpans: session.idleSpans ?? [], sourceTimeMeaning: "elapsed execution time; video presentation time omits idle spans",
     sourceEventsSha256: crypto.createHash("sha256").update(fs.readFileSync(path.join(destination, "memmy-source-events.jsonl"))).digest("hex"),
     afterFrameMeaning: "next verified sampled frame; not a settled-state or business-success assertion",
   });

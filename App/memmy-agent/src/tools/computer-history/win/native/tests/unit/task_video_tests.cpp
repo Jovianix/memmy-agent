@@ -1,6 +1,7 @@
 #include "win/task_video.h"
 #include "win/system.h"
 #include "common/json.h"
+#include "common/idle_video_timeline.h"
 #include <wincodec.h>
 #include <winrt/base.h>
 #include <filesystem>
@@ -32,6 +33,16 @@ void Orientation(const fs::path& file) {
 int wmain() {
   const fs::path root = fs::temp_directory_path() / (L"memmy-task-video-" + std::to_wstring(GetCurrentProcessId()));
   try {
+    memmy::IdleVideoTimeline idle(true);
+    Require(idle.Observe(0, true) && idle.Observe(9999, false));
+    Require(!idle.Observe(10000, false) && !idle.Observe(40000, false));
+    Require(idle.VideoTime(40000) == 10000);
+    Require(idle.Observe(40000, true) && idle.VideoTime(40000) == 10000);
+    Require(idle.Spans().size() == 1 && idle.Spans()[0] == std::pair<double, double>{10000, 40000});
+    Require(idle.Observe(41000, true) && !idle.Observe(51000, false));
+    idle.Finish(70000); Require(idle.VideoTime(70000) == 21000 && idle.Spans().size() == 2);
+    memmy::IdleVideoTimeline original(false);
+    Require(original.Observe(60000, false) && original.VideoTime(60000) == 60000);
     fs::create_directory(root);
     Require(memmy::win::TaskVideo::WriteFixture(root.wstring()) == 0);
     Require(memmy::win::TaskVideo::Finalize(root.wstring()) == 0);
