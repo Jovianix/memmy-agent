@@ -157,6 +157,7 @@ export interface ComputerHistorySnapshot {
 }
 
 export interface ComputerHistoryCaptureHealth {
+  content?: import("./platform-driver.js").HistoryContentQuality;
   status: "starting" | "healthy" | "degraded" | "reconnecting" | "inactive";
   lastEventAt: string | null;
   lastHeartbeatAt: string | null;
@@ -1088,7 +1089,7 @@ export class ComputerHistoryDemoService {
     return this.observationSettings.read();
   }
 
-  updateObservationSettings(input: unknown): ObservationSettings {
+  updateObservationSettings(input: unknown): ObservationSettings | Promise<ObservationSettings> {
     this.clearBrowserAuthority();
     try {
       const next = this.observationSettings.write(input);
@@ -1714,9 +1715,10 @@ export class ComputerHistoryDemoService {
       : (expectsHeartbeat ? !this.captureLastHeartbeatAt : !this.captureLastEventAt) ? "starting"
       : "healthy";
     return { status, lastEventAt: this.captureLastEventAt, lastHeartbeatAt: this.captureLastHeartbeatAt,
+      ...(this.platformDriver?.contentQuality?.() ? { content: this.platformDriver.contentQuality() } : {}),
       issues: status === "inactive" ? [] : issues,
       limitations: [windows ? "foreground_events_and_accessibility_only" : "foreground_accessibility_only",
-        "private_and_unverifiable_browsers_excluded", "screenshots_and_audio_not_recorded"] };
+        ...(windows ? [] : ["private_and_unverifiable_browsers_excluded"]), "screenshots_and_audio_not_recorded"] };
   }
 
   private cancelRecorderReconnect(): void {

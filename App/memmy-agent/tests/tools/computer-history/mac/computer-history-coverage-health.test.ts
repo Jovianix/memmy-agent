@@ -341,6 +341,8 @@ describe("capture health protocol", () => {
   });
 
   it("reports missing macOS heartbeat and recovers without requiring user events", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(os, "release").mockReturnValue("26.0.0");
     active(); await vi.advanceTimersByTimeAsync(60_001);
     expect(status()).toMatchObject({ status: "degraded", issues: [{ code: "heartbeat_missing", count: 1 }] });
     health("heartbeat"); expect(status().status).toBe("healthy");
@@ -416,17 +418,19 @@ describe("capture health protocol", () => {
   it("keeps legacy Windows event-only health compatible without calling idle a failure", async () => {
     await onWindows(async () => {
       active(); health("event_recorded"); await vi.advanceTimersByTimeAsync(70_000);
-      expect(status()).toMatchObject({ status: "healthy", issues: [], limitations: ["foreground_events_and_accessibility_only", "private_and_unverifiable_browsers_excluded", "screenshots_and_audio_not_recorded"] });
+      expect(status()).toMatchObject({ status: "healthy", issues: [], limitations: ["foreground_events_and_accessibility_only", "screenshots_and_audio_not_recorded"] });
     });
   });
 
-  it("discloses excluded private and unverifiable Windows browsers even with a healthy heartbeat", async () => {
+  it("reports Windows capture scope without claiming private browsers are excluded", async () => {
     await onWindows(async () => {
       active(); health("heartbeat");
       expect(status()).toMatchObject({ status: "healthy", issues: [],
-        limitations: expect.arrayContaining(["foreground_events_and_accessibility_only", "private_and_unverifiable_browsers_excluded"]) });
+        limitations: expect.arrayContaining(["foreground_events_and_accessibility_only"]) });
+      expect(status().limitations).not.toContain("private_and_unverifiable_browsers_excluded");
     });
-    expect(status().limitations).not.toContain("foreground_events_and_accessibility_only");
+    expect(status().limitations).toContain(process.platform === "win32"
+      ? "foreground_events_and_accessibility_only" : "foreground_accessibility_only");
   });
 
   it("uses Windows heartbeats to confirm idle capture and reports a missing heartbeat despite new events", async () => {

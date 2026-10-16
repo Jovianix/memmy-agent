@@ -3174,7 +3174,7 @@ export class WebSocketChannel extends BaseChannel {
           snapshot = this.computerHistory.connectWeChat();
           break;
         case "settings":
-          return httpJsonResponse(this.computerHistory.updateObservationSettings(body.settings) as unknown as Record<string, any>);
+          return httpJsonResponse(await this.computerHistory.updateObservationSettings(body.settings) as unknown as Record<string, any>);
         case "model-select": {
           if (body.model_preset !== undefined && body.model_preset !== null
             && (typeof body.model_preset !== "string" || !body.model_preset.trim())) {

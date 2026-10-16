@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { DEFAULT_OBSERVATION_SETTINGS, evaluateObservation, parseObservationSettings } from "../core/observation-settings.js";
+import { windowsApplicationAlias } from "../core/application-identity.js";
 import { WeChatHistoryConsentStore } from "../mac/wechat-consent.js";
 import path from "node:path";
 import { resolveNativeCollector } from "./native-helper.js";
@@ -103,15 +104,18 @@ export class WindowsHistoryRecorder {
     catch { throw new Error("windows_recording_write_failed"); }
   }
   private observationAllowed(record: HistoryEvent): boolean {
-    if (!this.options.observationSettingsFile || !record.application?.executable) return true;
+    if (!record.application?.executable) return true;
     const file = this.options.observationSettingsFile;
     // Missing policy preserves the established default; a corrupt live policy stops capture.
-    const settings = fs.existsSync(file) ? parseObservationSettings(JSON.parse(fs.readFileSync(file, "utf8")))
+    const settings = file && fs.existsSync(file) ? parseObservationSettings(JSON.parse(fs.readFileSync(file, "utf8")))
       : DEFAULT_OBSERVATION_SETTINGS;
-    const bundleId = `win32.${path.win32.basename(record.application.executable, ".exe").toLowerCase()}`;
-    return evaluateObservation(settings, { bundleId,
+    const bundleId = windowsApplicationAlias(record.application.executable);
+    return evaluateObservation(settings, { bundleId, executable: record.application.executable,
+      browser: record.details?.browser === true,
+      url: typeof record.details?.url === "string" ? record.details.url : null,
+      privateBrowsingUnknown: record.details?.browser === true && record.details?.browserMode !== "normal",
       weChatChatAccess: new WeChatHistoryConsentStore(this.options.weChatConsentFile).read().enabled,
-    }).observe;
+    }, { ignorePrivateBrowsing: true, observeUnknownURL: true }).observe;
   }
   private receive(event: NativeEvent): void {
     if (this.failure) return;
@@ -138,7 +142,9 @@ export class WindowsHistoryRecorder {
         const { policy, revision } = readNativePolicy(this.options.policyFile);
         const normalized = this.normalizer.normalizeEvents(event, policy, revision);
         for (const record of normalized) {
-          if (!this.observationAllowed(record)) { this.normalizer.reset(); return; }
+          // Keep the in-memory native baseline while discarding excluded content.
+          // The next frame may be a delta, even while this site remains excluded.
+          if (!this.observationAllowed(record)) return;
           if (this.stateValue !== "running") { this.normalizer.reset(); break; }
           if (readNativePolicy(this.options.policyFile).revision !== revision) { this.normalizer.reset(); return; }
           this.persist(record);
@@ -203,7 +209,9 @@ export class WindowsHistoryRecorder {
     if (this.closeTimer) clearTimeout(this.closeTimer);
     try {
       this.reader.end();
-      if (!this.failure && (!this.terminal || code !== 0)) this.failure = new Error("windows_collector_incomplete");
+      if (!this.failure && (!this.terminal || code !== 0)) {
+        this.failure = new Error(!this.started && code === 4 ? "windows_collector_already_running" : "windows_collector_incomplete");
+      }
       if (!this.failure) this.writer.complete({ eventType: "recording_stopped", timestamp: new Date().toISOString(), details: { reason: this.stopReason } });
     } catch (error) { this.failure ??= new Error(this.safeCode(error, "windows_recording_write_failed")); }
     try { this.writer.close(); } catch { this.failure ??= new Error("windows_recording_flush_failed"); }

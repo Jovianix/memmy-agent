@@ -515,6 +515,10 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
             {t("memory.nav.computerHistory")}
           </h3>
           <p id="computer-history-record-description" className="memory-panel__subtitle">{t(windows ? "computerHistory.windows.description" : "computerHistory.recordDescription")}</p>
+          {recording && snapshot?.observation.captureHealth?.content ? <p className="memory-panel__subtitle" role="status">
+            {t(`computerHistory.windows.content.${snapshot.observation.captureHealth.content.status}`)}
+            {" · "}{new Date(snapshot.observation.captureHealth.content.timestamp).toLocaleTimeString()}
+          </p> : null}
         </div>
       </header>
       <TaskRecordingsPanel client={props.client} human />
