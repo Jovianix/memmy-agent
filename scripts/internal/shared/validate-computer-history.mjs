@@ -77,6 +77,7 @@ function tests(name, cwd, files, env = environment) {
   const output = path.join(directory, `${name}.json`);
   try {
     run(name, cwd, [binary(cwd, "vitest/vitest.mjs"), "run", ...files, "--maxWorkers=2",
+      "--exclude=**/.history-migration/**", "--exclude=**/.history-ci/**", "--exclude=**/.recording-ci/**",
       "--reporter=default", "--reporter=json", `--outputFile=${output}`], env);
   } finally {
     if (fs.existsSync(output)) {
@@ -126,9 +127,12 @@ try {
     `--exclude=${nativeTest}`]);
   tests("frontend-tests", frontend, frontendTests);
   tests("recording-media-proxy-tests", root, ["App/shell/desktop/tests/recording-media-proxy.test.ts", "App/shell/desktop/tests/task-recording-exit.test.ts"]);
-  tests("contract-packaging-tests", root, ["tests/computer-history-contract.test.ts", "tests/computer-history-packaging.test.mjs",
-    "tests/computer-history-windows-packaging.test.mjs", "tests/windows-history-workflow.test.ts"],
-  { ...environment, ...(options["--native-bin"] ? { MEMMY_WINDOWS_HISTORY_TEST_BIN_DIR: options["--native-bin"] } : {}) });
+  tests("contract-tests", root, ["tests/computer-history-contract.test.ts", "tests/windows-history-workflow.test.ts"]);
+  // The Windows Vite module runner cannot load electron-builder's ESM graph.
+  // Keep the Node runner limited to MJS packaging tests: TS source imports need Vite resolution.
+  tests("packaging-tests", root, ["tests/computer-history-packaging.test.mjs", "tests/computer-history-windows-packaging.test.mjs",
+    ...(process.platform === "win32" ? ["--experimental.viteModuleRunner=false"] : [])],
+    { ...environment, ...(options["--native-bin"] ? { MEMMY_WINDOWS_HISTORY_TEST_BIN_DIR: options["--native-bin"] } : {}) });
   for (const platform of ["core", "mac"]) {
     run(`summary-cli-${platform}`, agent, [`dist/tools/computer-history/${platform}/summarize-history.js`, "--help"]);
   }

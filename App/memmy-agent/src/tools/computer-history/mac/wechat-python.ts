@@ -19,7 +19,7 @@ const discovery: MacWeChatPythonDiscovery = {
   xcodeApplications() {
     try {
       return fs.readdirSync("/Applications").filter(name => /^Xcode.*\.app$/u.test(name)).sort()
-        .map(name => path.join("/Applications", name));
+        .map(name => path.posix.join("/Applications", name));
     } catch { return []; }
   },
   executable(file) {
@@ -41,9 +41,9 @@ export function resolveMacWeChatPython(probe: MacWeChatPythonDiscovery = discove
     && (!cached.python || probe.executable(cached.python))) return cached.python;
   const selected = probe.developerDirectory();
   const candidates = [
-    ...(selected ? [path.join(selected, "usr/bin/python3")] : []),
+    ...(selected ? [path.posix.join(selected, "usr/bin/python3")] : []),
     "/Library/Developer/CommandLineTools/usr/bin/python3",
-    ...probe.xcodeApplications().map(app => path.join(app, "Contents/Developer/usr/bin/python3")),
+    ...probe.xcodeApplications().map(app => path.posix.join(app, "Contents/Developer/usr/bin/python3")),
   ];
   const python = [...new Set(candidates)].find(file => file !== "/usr/bin/python3" && probe.executable(file)) ?? null;
   if (probe === discovery) cached = { expiresAt: Date.now() + 5_000, python };

@@ -335,8 +335,7 @@ describe("ComputerHistorySubPage", () => {
     document.body.classList.remove("memmy-platform-windows");
   });
 
-  it.each(["darwin", "win32"].flatMap((platform) => ["cancel", "close", "escape"].map((dismissal) => [platform, dismissal])))
-    ("keeps WeChat disabled after %s risk dialog %s and starts a fresh countdown on reopening", async (platform, dismissal) => {
+  it.each(["darwin", "win32"].flatMap((platform) => ["cancel", "close", "escape"].map((dismissal) => [platform, dismissal])))("keeps WeChat disabled after %s risk dialog %s and starts a fresh countdown on reopening", async (platform, dismissal) => {
       vi.useFakeTimers();
       window.memmy = { platform, getFullDiskAccessStatus: vi.fn().mockResolvedValue(true) } as unknown as NonNullable<Window["memmy"]>;
       if (platform === "win32") document.body.classList.add("memmy-platform-windows");
