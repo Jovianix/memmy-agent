@@ -25,7 +25,7 @@ with two workers, checks both summary CLI paths and builds the frontend.
 Optional native smoke tests cover lifecycle only; they do not activate windows
 or inject input. Full foreground/IME tests and App acceptance are separate.
 Each run saves logs, Vitest JSON reports, skipped test names and results.json.
-Requires installed repository and Agent dependencies; downloads nothing.`);
+Requires installed repository and Agent dependencies; Windows builds need Go 1.22.12.`);
     process.exit(0);
   }
   if (!["--report-dir", "--native-bin"].includes(argument) || options[argument]) {
@@ -103,6 +103,7 @@ try {
   }
   run("agent-types", agent, [binary(agent, "typescript/bin/tsc"), "-p", "tsconfig.json", "--noEmit"]);
   run("agent-build", agent, [binary(agent, "typescript/bin/tsc"), "-p", "tsconfig.build.json"]);
+  run("agent-assets", agent, ["scripts/copy-build-assets.mjs"]);
   run("frontend-types", frontend, [binary(frontend, "typescript/bin/tsc"), "-p", "tsconfig.json", "--noEmit"]);
   run("agent-lint", agent, [binary(agent, "eslint/bin/eslint.js"),
     "src/tools/computer-recordings/**/*.ts", "tests/tools/computer-recordings/**/*.ts",
