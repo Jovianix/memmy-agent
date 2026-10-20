@@ -81,3 +81,5 @@ Host PR 目标为上游 `MemTensor/memmy-agent:survey_master`。该分支在指�
 从独立插件 Windows CI 和 Host Linux CI 下载的固定版本、提交及 SHA-256 制品已完成 5 项跨仓受控检查，不读取对方仓库源码。CI 制品是开发候选；正式发布与真实 Windows 模型验收仍保持原门槛，云端字段继续留空。
 
 共享采集的拒绝授权测试直接模拟 Host 预检拒绝结果，覆盖所有运行平台；不依赖仅适用于 macOS 的 TCC 权限读取。Windows 插件服务测试已通过，采集测试使用该平台无关夹具继续验证拒绝后没有进程或租约泄漏。
+
+Windows 全部测试及 MSVC 原生构建已通过。Host kit 构建脚本将生成模块的绝对路径转换成 file URL 后再导入，修复 Windows 盘符路径被 ESM 当成协议的问题；实际 Windows 宿主 Node 已验证原盘符导入失败、file URL 导入成功，未访问桌面。

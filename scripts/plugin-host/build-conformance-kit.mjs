@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { readFile, writeFile, mkdir, rm, cp, readdir } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const output = path.resolve(process.argv[2] || path.join(root, ".tmp", "plugin-host-conformance"));
@@ -54,7 +54,7 @@ async function copyDependency(name, resolver = require) {
 }
 for (const dependency of ["pngjs", "better-sqlite3", "sqlite-vec"]) await copyDependency(dependency);
 await writeFile(path.join(output, "host-kit.mjs"), 'export * from "./runtime/host-kit.mjs";\n');
-const kit = await import(path.join(output, "host-kit.mjs"));
+const kit = await import(pathToFileURL(path.join(output, "host-kit.mjs")).href);
 const release = process.env.MEMMY_HOST_RELEASE_TAG
   ? await publishedHostRelease(process.env.GITHUB_REPOSITORY, process.env.MEMMY_HOST_RELEASE_TAG, sourceCommit, version) : null;
 if (release && dirty) throw new Error("Published Host artifacts must come from a clean source checkout");
