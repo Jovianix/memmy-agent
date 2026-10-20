@@ -75,3 +75,7 @@ Host PR 目标为上游 `MemTensor/memmy-agent:survey_master`。该分支在指�
 解决 HomePage 唯一冲突时保留上游始终可用的 Host 录音按钮，另由插件贡献 Teach Mode 对话快捷入口；点击插件入口只准备对话指令。保留上游录制归档、滚轮隔离、样式与翻译修改。整合后渲染器类型检查、生产构建及 175 项相关测试通过，3 项维持跳过。HomePage 全套为 82 通过、11 失败；以当前上游原始 HomePage 重跑，失败项目逐项相同，没有新增失败。
 
 此前固定制品及受控验收仍对应原 `508348b1` Host 候选，PR 分支新增的界面整合验证单独记录。Host 正式版本、真实 Windows 桌面和模型验收完成前，不将开发候选作为正式插件发布。远端 PR、来源提交与下载链接记录在交付清单中。
+
+[Host 草稿 PR #684](https://github.com/MemTensor/memmy-agent/pull/684) 已创建并确认可合并。上游首次贡献者的 Actions 等待维护者批准，fork 已执行相同的 Host 兼容流程。首次运行 Linux 全部通过；Windows 检查暴露生成技能发现混用 JavaScript 与 native realpath、无法正确识别 8.3 短路径的问题，现已统一为与 Backend 异步 realpath 一致的原生规范路径。实际 Windows 宿主 Node 的短路径检查通过，包含技能发现、篡改撤下和停用。其余协议测试夹具明确使用所模拟的沙箱平台、平台路径与 file URL，不改变 Windows 默认沙箱或账号准入规则。修复后本地相关 Backend 55 通过、1 跳过，Agent 技能发现 3 项通过；远端复核结果继续记录在交付清单。
+
+从独立插件 Windows CI 和 Host Linux CI 下载的固定版本、提交及 SHA-256 制品已完成 5 项跨仓受控检查，不读取对方仓库源码。CI 制品是开发候选；正式发布与真实 Windows 模型验收仍保持原门槛，云端字段继续留空。

@@ -1,4 +1,5 @@
 import { InstalledPluginSchema, type InstalledPlugin } from "@memmy/local-api-contracts";
+import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginService } from "../../../../services/plugin-service.js";
@@ -45,7 +46,7 @@ function createService(): PluginService {
     list: vi.fn(() => [plugin]),
     get: vi.fn(() => plugin),
     readUi: vi.fn(async (_id, slot) => `<main>${slot}</main>`),
-    openArtifact: vi.fn(async () => ({ path: new URL(import.meta.url).pathname, name: "report.txt", mediaType: "text/plain" })),
+    openArtifact: vi.fn(async () => ({ path: fileURLToPath(import.meta.url), name: "report.txt", mediaType: "text/plain" })),
     install: vi.fn(async () => plugin),
     update: vi.fn(async () => plugin),
     configure: vi.fn(() => plugin),

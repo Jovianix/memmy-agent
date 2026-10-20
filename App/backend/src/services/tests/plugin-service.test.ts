@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInMemoryPluginRegistry, type PluginRelease } from "../../adapters/outbound/plugin-registry/index.js";
 import { createAppStateStore, type AppStateStore } from "../../infrastructure/app-state-store/index.js";
@@ -254,8 +255,8 @@ describe("PluginService", () => {
   });
 
   it("rewrites result paths to the copies published in the conversation workspace", async () => {
-    const sourcePath = "/plugin-data/review-1/outputs/review.md";
-    const publishedPath = "/workspace/outputs/com.example.review/review-1/review.md";
+    const sourcePath = join(tmpdir(), "plugin-data", "review-1", "outputs", "review.md");
+    const publishedPath = join(tmpdir(), "workspace", "outputs", "com.example.review", "review-1", "review.md");
     const localArtifactService: PluginLocalArtifactService = {
       host: vi.fn(async (_plugin, artifact) => ({ ...artifact, path: publishedPath })),
       open: vi.fn(async () => ({ path: sourcePath, name: "review.md", mediaType: "text/markdown" })),
@@ -269,7 +270,7 @@ describe("PluginService", () => {
           id: "review",
           name: "review.md",
           mediaType: "text/markdown",
-          uri: "file:///plugin-data/review-1/outputs/review.md"
+          uri: pathToFileURL(sourcePath).href
         }
       };
       yield { type: "result", output: { data: { outputs: [{ path: sourcePath }] } } };

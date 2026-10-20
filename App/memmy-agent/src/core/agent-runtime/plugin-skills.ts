@@ -20,20 +20,21 @@ export function listPluginSkills(root = PLUGIN_SKILLS_ROOT, dataRoot = pluginDat
     for (const entry of entries) {
       try {
         if (!/^[a-z0-9][a-z0-9._-]{0,127}$/.test(entry.pluginId) || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(entry.name)) continue;
-        const ownerRoot = fs.realpathSync(path.join(dataRoot, entry.pluginId));
-        const directory = fs.realpathSync(entry.directory);
+        // Match the native canonical paths written by Backend fs.promises.realpath, including Windows 8.3 aliases.
+        const ownerRoot = fs.realpathSync.native(path.join(dataRoot, entry.pluginId));
+        const directory = fs.realpathSync.native(entry.directory);
         if (!within(ownerRoot, directory) || typeof entry.files !== "object" || !entry.files["SKILL.md"]) continue;
         const files = Object.entries(entry.files);
         if (files.length > 100) continue;
         let bytes = 0;
         if (!files.every(([name, hash]) => {
           const file = path.resolve(directory, name), stat = fs.lstatSync(file);
-          return within(directory, file) && fs.realpathSync(file) === file && stat.isFile() && !stat.isSymbolicLink()
+          return within(directory, file) && fs.realpathSync.native(file) === file && stat.isFile() && !stat.isSymbolicLink()
             && (bytes += stat.size) <= 20_000_000 && createHash("sha256").update(fs.readFileSync(file)).digest("hex") === hash;
         })) continue;
         if (!Object.entries(entry.checks ?? {}).every(([name, hash]) => {
           const file = path.resolve(ownerRoot, name), stat = fs.lstatSync(file);
-          return within(ownerRoot, file) && fs.realpathSync(file) === file && stat.isFile() && !stat.isSymbolicLink()
+          return within(ownerRoot, file) && fs.realpathSync.native(file) === file && stat.isFile() && !stat.isSymbolicLink()
             && stat.size <= 2_000_000 && createHash("sha256").update(fs.readFileSync(file)).digest("hex") === hash;
         })) continue;
         result.push({ name: entry.name, path: path.join(directory, "SKILL.md"), source: "plugin" });
