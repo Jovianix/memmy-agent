@@ -40,6 +40,8 @@ node scripts/plugin-host/build-conformance-kit.mjs /tmp/plugin-host-kit
 
 Windows 打包额外用 MSVC/CMake 构建共享原生任务录制器，并在 staging/unpacked 检查可执行文件与哈希。正式 Host kit 由 release.published 流程读取 GitHub 实际标签和发布记录生成；开发 kit 的 release 为 null。插件发布据此生成最低 Host 版本，并继续探测运行时能力。
 
+正式发布兼容检查通过后，流水线将 Host kit 及校验文件附加到该 GitHub Release，下载文件名增加 linux-x64 / win32-x64 后缀。插件 CI 直接消费对应平台的 ZIP URL 与 SHA-256，不依赖临时 Actions 制品的外层包装。
+
 截至本地验证：
 
 | 检查 | 结果与实际范围 |

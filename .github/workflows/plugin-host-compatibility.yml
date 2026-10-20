@@ -58,3 +58,34 @@ jobs:
             ${{ runner.temp }}/plugin-host-conformance-*.zip
             ${{ runner.temp }}/plugin-host-conformance-*.zip.sha256
           if-no-files-found: error
+  publish-host-kit:
+    if: github.event_name == 'release'
+    needs: host
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - artifact: ubuntu-latest
+            platform: linux
+          - artifact: windows-latest
+            platform: win32
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-host-conformance-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/host-kit-input
+      - name: Attach fixed Host kit and SHA-256 to its published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MEMMY_HOST_TAG: ${{ github.event.release.tag_name }}
+          MEMMY_HOST_REPOSITORY: ${{ github.repository }}
+          MEMMY_KIT_PLATFORM: ${{ matrix.platform }}
+        run: |
+          artifact_version="${MEMMY_HOST_TAG#v}"
+          artifact_base="plugin-host-conformance-${artifact_version}"
+          release_asset="${RUNNER_TEMP}/${artifact_base}-${MEMMY_KIT_PLATFORM}-x64.zip"
+          mv "${RUNNER_TEMP}/host-kit-input/${artifact_base}.zip" "${release_asset}"
+          mv "${RUNNER_TEMP}/host-kit-input/${artifact_base}.zip.sha256" "${release_asset}.sha256"
+          gh release upload "${MEMMY_HOST_TAG}" "${release_asset}" "${release_asset}.sha256" --repo "${MEMMY_HOST_REPOSITORY}"
