@@ -43,6 +43,8 @@ jobs:
       - name: Native observer logic
         working-directory: App/native-computer-history/apps/OpenComputerHistoryWindows
         run: go test ./...
+      - name: Verify source provenance
+        run: node -e "const cp=require('node:child_process');const status=cp.execFileSync('git',['status','--porcelain'],{encoding:'utf8'});if(status.trim()){console.error(status);process.exit(1)}"
       - name: Build shared native task recorder
         if: runner.os == 'Windows'
         run: node scripts/internal/win/build-plugin-native-recorder.mjs "${{ runner.temp }}/plugin-native-recorder.exe"

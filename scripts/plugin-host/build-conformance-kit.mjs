@@ -12,7 +12,9 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const output = path.resolve(process.argv[2] || path.join(root, ".tmp", "plugin-host-conformance"));
 const version = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version;
 const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-const dirty = Boolean(execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).trim());
+const sourceChanges = execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).trim();
+const dirty = Boolean(sourceChanges);
+if (dirty && process.env.CI === "true") throw new Error(`CI Host artifacts require a clean source checkout:\n${sourceChanges}`);
 await rm(output, { recursive: true, force: true }); await mkdir(path.join(output, "runtime"), { recursive: true });
 await build({ absWorkingDir: root,
   entryPoints: ["App/backend/src/tests/support/plugin-host-harness.ts"], outfile: path.join(output, "runtime", "host-kit.mjs"),
