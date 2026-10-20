@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComputerHistoryDemoService } from "../../../src/tools/computer-history/mac/computer-history-api.js";
 import { collectorGate } from "../../../src/tools/computer-history/core/collector-gate.js";
 
@@ -29,6 +29,8 @@ process.on('SIGTERM',()=>process.exit(0));
   const service = new ComputerHistoryDemoService({ recorderScript, permissionReader: async () => ({ supported: true, accessibility: authorized, inputMonitoring: authorized }),
     historyDirectory: path.join(root, "histories"), recordingDirectory: path.join(root, "recordings"),
     workflowDirectory: path.join(root, "workflows"), observationSettingsFile: path.join(root, "settings.json"), weChatConsentFile: path.join(root, "consent.json") });
+  // Windows has no TCC prompt; simulate a denied Host preflight result directly.
+  if (!authorized) vi.spyOn(service, "checkPermissions").mockResolvedValue({ supported: true, accessibility: false, inputMonitoring: false });
   services.push(service);
   const child = () => (service as unknown as { segment: { child: { pid: number } } }).segment?.child;
   return { service, root, pid: () => child()?.pid };
