@@ -45,7 +45,7 @@ for (const source of ["src/templates", "src/skills", "src/tools"]) {
   const destination = path.join("dist", path.relative("src", source));
   fs.cpSync(source, destination, {
     recursive: true,
-    filter: (entry) => !excludedSkillRoots.has(path.resolve(entry))
+    filter: (entry) => !excludedSkillRoots.has(path.resolve(entry)) && path.resolve(entry) !== path.resolve("src/tools/computer-history/win/native")
       && !entry.endsWith(".ts") && path.basename(entry) !== ".gitkeep",
   });
 }

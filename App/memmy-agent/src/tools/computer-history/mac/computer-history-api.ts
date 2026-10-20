@@ -1,3 +1,5 @@
+import type { EventCaptureSubscription, CaptureCheckpoint } from "../core/event-capture-source.js";
+import { collectorGate, CollectorBusyError } from "../core/collector-gate.js";
 import { computerHistoryPermissionError } from "../../computer-use/mac-permission-settings.js";
 import { isMacNativeRuntimeSupported } from "../../computer-use/mac-native-runtime-support.js";
 import {
@@ -414,6 +416,94 @@ function boundedInterval(value: string | undefined, fallback: number, minimum: n
 }
 
 export class ComputerHistoryDemoService {
+  private readonly eventSubscriptions = new Set<string>();
+  private eventCaptureIntent: "running" | "paused" | "stopped" | null = null;
+  private eventCaptureBootstrap: "paused" | "stopped" | null = null;
+  private eventCaptureOperation: Promise<unknown> = Promise.resolve();
+  get eventCaptureActive(): boolean { return this.eventSubscriptions.size > 0; }
+
+  /** Share the existing authorized stream, including across ten-minute rotations. */
+  acquireEventCapture(): Promise<EventCaptureSubscription> {
+    return this.serializeEventCapture(async () => {
+      if (this.shuttingDown) throw new ComputerHistoryApiError(409, "capture_shutting_down");
+      if (this.recorderTransition) await this.recorderTransition;
+      const prior = this.eventCaptureIntent ?? (this.observationState === "running" ? "running" : this.observationState === "paused" ? "paused" : "stopped");
+      if (this.observationState !== "running") {
+        this.eventCaptureBootstrap = prior === "running" ? null : prior;
+        try {
+          await this.startObservationWithPermissions(this.observationState === "paused", true);
+          if ((this.observationState as ObservationState) !== "running") throw new ComputerHistoryApiError(403, "capture_permission_required");
+        } finally { this.eventCaptureBootstrap = null; }
+      }
+      if (this.shuttingDown || this.observationState !== "running" || !this.segment?.child) throw new ComputerHistoryApiError(503, "capture_not_running");
+      this.eventCaptureIntent ??= prior;
+      this.saveRecordingIntent(this.eventCaptureIntent);
+      const id = crypto.randomUUID(); this.eventSubscriptions.add(id);
+      let released = false;
+      return {
+        checkpoint: () => this.eventCheckpoint(() => released),
+        release: () => this.serializeEventCapture(async () => {
+          if (released) return; released = true; this.eventSubscriptions.delete(id);
+          if (this.eventSubscriptions.size) return;
+          const intent = this.eventCaptureIntent; this.eventCaptureIntent = null;
+          if (intent === "running" || this.shuttingDown) return;
+          if (intent === "paused" && this.observationState === "running") await this.pauseObservation();
+          else if (this.observationState !== "stopped") await this.stopObservation();
+        })
+      };
+    });
+  }
+  private serializeEventCapture<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.eventCaptureOperation.catch(() => undefined).then(operation);
+    this.eventCaptureOperation = next; return next;
+  }
+  private historyLease: (() => void) | null = null;
+  get recorderBusy(): boolean { return this.observationState === "running" || this.observationState === "stopping" || this.recorderTransition !== null; }
+  private async eventCheckpoint(released: () => boolean): Promise<CaptureCheckpoint> {
+    if (this.recorderTransition) await this.recorderTransition;
+    const child = this.segment?.child;
+    const fence = child ? await this.checkpointRecorder(child) : { complete: false };
+    const streams: CaptureCheckpoint["streams"] = [];
+    if (fs.existsSync(this.segmentsDirectory)) for (const entry of fs.readdirSync(this.segmentsDirectory, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const file = path.join(this.segmentsDirectory, entry.name, "events.jsonl");
+      try { const stat = fs.lstatSync(file); if (stat.isFile() && !stat.isSymbolicLink()) streams.push({ id: entry.name, file, size: stat.size }); } catch { /* A rotated empty segment is not a stream. */ }
+    }
+    const health = this.captureHealth();
+    const unavailable = health.issues.some(issue => issue.code === "observer_unavailable" || issue.code === "observer_notifications_unavailable");
+    return { streams: streams.sort((a, b) => a.id.localeCompare(b.id)),
+      running: !released() && this.observationState === "running" && !this.shuttingDown && !!this.segment?.child && this.captureObserverReadyAt > 0 && !unavailable,
+      complete: fence.complete,
+      limitations: [...health.limitations,
+        ...(!fence.complete ? ["The native-to-disk checkpoint could not be confirmed; the fragment may omit pending observations."] : [])] };
+  }
+  private checkpointRecorder(child: ChildProcessWithoutNullStreams): Promise<{ complete: boolean }> {
+    const id = crypto.randomUUID();
+    return new Promise(resolve => {
+      let buffered = "", done = false;
+      const finish = (complete: boolean) => {
+        if (done) return; done = true; clearTimeout(timer);
+        child.stdout.off("data", onData); child.off("exit", failed); child.off("error", failed);
+        resolve({ complete });
+      };
+      const failed = () => finish(false);
+      const onData = (chunk: Buffer) => {
+        buffered += chunk.toString("utf8");
+        if (buffered.length > 32_768) buffered = buffered.slice(-16_384);
+        let end: number;
+        while ((end = buffered.indexOf("\n")) >= 0) {
+          const line = buffered.slice(0, end); buffered = buffered.slice(end + 1);
+          if (!line.startsWith("[recorder-checkpoint] ")) continue;
+          try { const result = JSON.parse(line.slice(22)); if (result.id === id) finish(result.complete === true); } catch { /* Only the requested checkpoint is accepted. */ }
+        }
+      };
+      const timer = setTimeout(failed, 12_000); timer.unref();
+      child.stdout.on("data", onData); child.once("exit", failed); child.once("error", failed);
+      if (!child.stdin.writable || child.exitCode !== null || child.signalCode !== null) return failed();
+      child.stdin.write(`${JSON.stringify({ kind: "checkpoint", id })}\n`, error => { if (error) failed(); });
+    });
+  }
+
   private readonly recorderScript: string;
   private readonly historyDirectory: string;
   private readonly recordingDirectory: string;
@@ -616,6 +706,7 @@ export class ComputerHistoryDemoService {
   }
 
   private saveRecordingIntent(state: "running" | "paused" | "stopped"): void {
+    if (state === "running" && this.eventCaptureBootstrap) state = this.eventCaptureBootstrap;
     fs.mkdirSync(this.historyDirectory, { recursive: true });
     // A failed pause/stop write must still revoke the previous running intent.
     if (state !== "running") fs.rmSync(this.recordingIntentFile, { force: true });
@@ -1291,7 +1382,7 @@ export class ComputerHistoryDemoService {
 
   /** Lightweight status for the menu bar; avoids reading summaries and Skill links. */
   observationStatus(): { state: ObservationState } {
-    return { state: this.observationState };
+    return { state: this.observationState === "running" && this.eventCaptureIntent ? this.eventCaptureIntent : this.observationState };
   }
 
   snapshot(): ComputerHistorySnapshot {
@@ -1311,7 +1402,7 @@ export class ComputerHistoryDemoService {
     return {
       memorySync: this.memoryAdapter.status(),
       observation: {
-        state: this.observationState,
+        state: this.observationState === "running" && this.eventCaptureIntent ? this.eventCaptureIntent : this.observationState,
         startedAt: this.observationStartedAt,
         segmentId: this.segment?.id ?? null,
         segmentStartedAt: this.segment?.startedAt ?? null,
@@ -1496,7 +1587,7 @@ export class ComputerHistoryDemoService {
       // corroboration/veto rather than granting permission to unknown windows.
       ...(process.platform === "win32" ? ["--browser-authority", this.browserAuthorityPath] : []),
     ], {
-      env: process.env,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     segment.child = child;
@@ -1762,6 +1853,7 @@ export class ComputerHistoryDemoService {
       const child = segment.child;
       segment.child = null;
       const finalize = () => {
+        this.historyLease?.(); this.historyLease = null;
         // Finalization writes the closed evidence before its first await. A
         // fresh same-bucket open then invalidates any pending model response.
         void this.finalizeSegment(segment);
@@ -2193,7 +2285,12 @@ export class ComputerHistoryDemoService {
     }).catch((error) => this.failObservation(error instanceof Error ? error.message : String(error)));
   }
 
-  startObservation(): ComputerHistorySnapshot {
+  startObservation(forEventSubscription = false): ComputerHistorySnapshot {
+    if (!forEventSubscription && this.eventCaptureBootstrap) { this.eventCaptureBootstrap = null; this.eventCaptureIntent = "running"; }
+    if (this.eventCaptureActive && this.observationState === "running") {
+      this.eventCaptureIntent = "running"; this.saveRecordingIntent("running"); return this.snapshot();
+    }
+    if (collectorGate.taskActive) throw new CollectorBusyError();
     this.assertNativeRecordingCompatibility();
     if (this.shuttingDown || this.recorderTransition || this.recorderExitDrain || this.observationState === "stopping") {
       throw new ComputerHistoryApiError(409, "Computer History is finishing a recorder transition");
@@ -2219,6 +2316,7 @@ export class ComputerHistoryDemoService {
     this.browserAuthoritySuspended = false;
     this.publishBrowserAuthority?.();
     try {
+      this.historyLease ??= collectorGate.acquire("history");
       this.spawnRecorder(segment);
     } catch (error) {
       this.failObservation(error instanceof Error ? error.message : String(error));
@@ -2249,7 +2347,9 @@ export class ComputerHistoryDemoService {
   }
 
   /** Missing consent is an onboarding state, before creating any recording. */
-  async startObservationWithPermissions(resume = false): Promise<ComputerHistorySnapshot> {
+  async startObservationWithPermissions(resume = false, forEventSubscription = false): Promise<ComputerHistorySnapshot> {
+    if (!forEventSubscription && this.eventCaptureBootstrap) { this.eventCaptureBootstrap = null; this.eventCaptureIntent = "running"; }
+    if (collectorGate.taskActive) throw new CollectorBusyError();
     this.assertNativeRecordingCompatibility();
     const version = ++this.permissionStartVersion;
     const status = await this.checkPermissions();
@@ -2263,7 +2363,7 @@ export class ComputerHistoryDemoService {
       }
       return this.snapshot();
     }
-    return resume ? this.resumeObservation() : this.startObservation();
+    return resume ? this.resumeObservation(forEventSubscription) : this.startObservation(forEventSubscription);
   }
 
   private assertNativeRecordingCompatibility(): void {
@@ -2322,6 +2422,9 @@ export class ComputerHistoryDemoService {
 
   /** Keeps the current segment but stops writing to it. */
   async pauseObservation(): Promise<ComputerHistorySnapshot> {
+    if (this.eventCaptureActive && this.observationState === "running" && !this.shuttingDown) {
+      this.eventCaptureIntent = "paused"; this.saveRecordingIntent("paused"); return this.snapshot();
+    }
     if (this.recorderTransition || this.shuttingDown) {
       throw new ComputerHistoryApiError(409, "Computer History is finishing a recorder transition");
     }
@@ -2344,20 +2447,26 @@ export class ComputerHistoryDemoService {
         this.completeObservationStop();
         return;
       }
+      this.historyLease?.(); this.historyLease = null;
       this.observationState = "paused";
       this.saveRecordingIntent("paused");
     });
     return this.snapshot();
   }
 
-  resumeObservation(): ComputerHistorySnapshot {
+  resumeObservation(forEventSubscription = false): ComputerHistorySnapshot {
+    if (this.eventCaptureActive && this.observationState === "running") {
+      this.eventCaptureIntent = "running"; this.saveRecordingIntent("running"); return this.snapshot();
+    }
+    if (collectorGate.taskActive) throw new CollectorBusyError();
     if (this.observationState !== "paused") {
       throw new ComputerHistoryApiError(409, "Computer History is not paused");
     }
-    return this.startObservation();
+    return this.startObservation(forEventSubscription);
   }
 
   private completeObservationStop(): void {
+    this.historyLease?.(); this.historyLease = null;
     this.browserAuthoritySuspended = true;
     this.clearBrowserAuthority();
     this.cancelRecorderReconnect();
@@ -2371,6 +2480,9 @@ export class ComputerHistoryDemoService {
   }
 
   async stopObservation(): Promise<ComputerHistorySnapshot> {
+    if (this.eventCaptureActive && this.observationState === "running" && !this.shuttingDown) {
+      this.eventCaptureIntent = "stopped"; this.saveRecordingIntent("stopped"); return this.snapshot();
+    }
     this.browserAuthoritySuspended = true;
     this.clearBrowserAuthority();
     ++this.permissionStartVersion;
@@ -2421,6 +2533,7 @@ export class ComputerHistoryDemoService {
       // Shutdown is best effort; a failed segment must not block app exit.
     }
     await Promise.all([...this.recorderChildren].map((child) => this.stopRecorderChild(child)));
+    this.historyLease?.(); this.historyLease = null;
     await this.memoryAdapter.close();
   }
 
@@ -3087,6 +3200,7 @@ export class ComputerHistoryDemoService {
    * still being written to.
    */
   private cleanupExpiredRecordings(): void {
+    if (this.eventCaptureActive) return;
     if (!fs.existsSync(this.recordingDirectory)) return;
     this.recoverInterruptedSegments();
     const cutoff = Date.now() - RAW_RETENTION_MS;

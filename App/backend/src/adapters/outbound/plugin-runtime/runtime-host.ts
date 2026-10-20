@@ -28,6 +28,7 @@ export function createPluginRuntimeHost(registry: PluginAdapterRegistry): Plugin
   const active = new Map<string, ActivePlugin>();
 
   return {
+    isBusy(pluginId) { return (active.get(pluginId)?.calls.size ?? 0) > 0; },
     supports(adapterId) {
       return registry.has(adapterId);
     },

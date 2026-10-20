@@ -1,3 +1,5 @@
+import { invokeNativePluginService, shutdownNativePlugins } from "../../tools/plugin-host/native-services.js";
+import { SkillsLoader } from "../../core/agent-runtime/skills.js";
 import { historySummaryRuntime } from "../../providers/history-summary-runtime.js";
 import crypto from "node:crypto";
 import * as childProcess from "node:child_process";
@@ -3183,6 +3185,21 @@ export class WebSocketChannel extends BaseChannel {
     if (got === "/api/settings") return this.handleSettings(request);
     if (got === "/api/commands") return this.handleCommands(request);
     if (got === "/api/computer-history") return this.handleComputerHistory(request, "snapshot");
+    if (got === "/api/plugin-host/services") {
+      if (!this.checkApiToken(request)) return httpError(401, "Unauthorized");
+      if (String(request?.method ?? "GET").toUpperCase() !== "POST") return httpError(405, "Method not allowed");
+      try {
+        const raw = JSON.parse(String(request.body ?? "{}"));
+        let skills: Array<{ name: string; path: string }> | undefined;
+        if (raw.service === "event-sessions" && raw.input?.action === "configuration") {
+          const selected = typeof raw.input.conversationId === "string" ? this.workspaceEnvironmentSession(raw.input.conversationId) : null;
+          const workspace = selected?.ok && selected.context.cwd ? selected.context.cwd : this.workspacePath;
+          skills = new SkillsLoader(workspace).listSkills(false).map(({ name, path }) => ({ name, path }));
+        }
+        return httpJsonResponse(await invokeNativePluginService(raw, () => this.computerHistory.recorderBusy,
+          { history: this.computerHistory, toolNames: this.runtimeToolNames?.() ?? [], skills }));
+      } catch (error) { return httpError(409, error instanceof Error ? error.message : "Plugin host service failed"); }
+    }
     if (got === "/api/computer-history/observation/status") return this.handleComputerHistory(request, "observation-status");
     if (got === "/api/computer-history/settings") return this.handleComputerHistory(request, "settings");
     if (got === "/api/computer-history/apps") return this.handleComputerHistory(request, "apps");
@@ -3348,6 +3365,7 @@ export class WebSocketChannel extends BaseChannel {
     nativeExcelControl.stop();
     // Recording is scoped to the app: closing it finalizes the open segment
     // rather than leaving a recorder running behind the user's back.
+    await shutdownNativePlugins();
     await this.computerHistory.shutdown();
     if (typeof this.server?.close === "function") {
       await new Promise<void>((resolve) => this.server.close(() => resolve()));

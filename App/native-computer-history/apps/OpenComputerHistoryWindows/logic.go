@@ -19,6 +19,7 @@ const inputSettle = time.Second
 const workerDeadline = 4 * time.Second
 
 var version = "dev"
+var checkpointID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 var appIDPattern = regexp.MustCompile(`^win32\.[a-z0-9._-]{1,128}$`)
 var windowIDPattern = regexp.MustCompile(`^[0-9]{1,20}$`)
 
@@ -292,4 +293,17 @@ func pureSelfTest() error {
 		return fmt.Errorf("typing not coalesced")
 	}
 	return nil
+}
+
+// A boundary must not leave the last typing burst waiting for its idle timer.
+func (s *scheduler) flushTyping() {
+	if s.typing == nil {
+		return
+	}
+	if len(s.pending) >= 16 {
+		s.pending = s.pending[1:]
+		s.dropped++
+	}
+	s.pending = append(s.pending, *s.typing)
+	s.typing = nil
 }

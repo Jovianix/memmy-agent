@@ -102,6 +102,7 @@ export async function createLocalBackend(options: CreateLocalBackendOptions): Pr
   }
   const appStateStore = createAppStateStore({ databasePath: options.databasePath });
   let server: Awaited<ReturnType<typeof createLocalApiServer>> | null = null;
+  let pluginLifecycle: import("./services/index.js").BackendServices["pluginLifecycle"];
   let pluginService: PluginService | null = null;
 
   try {
@@ -185,6 +186,8 @@ export async function createLocalBackend(options: CreateLocalBackendOptions): Pr
       trustedBundledPluginRoots: bundledCatalog ? [bundledCatalog.trustedArtifactRoot] : undefined
     });
     pluginService = services.plugins;
+    pluginLifecycle = services.pluginLifecycle;
+    await pluginLifecycle?.start();
     if (bundledCatalog) {
       const failures = await suppressBundledPlugins({
         plugins: services.plugins,
@@ -294,6 +297,7 @@ export async function createLocalBackend(options: CreateLocalBackendOptions): Pr
       memory: options.memoryBaseUrl ? { baseUrl: options.memoryBaseUrl } : undefined
     });
     await writeRuntimeConfigFile(runtimeConfig, options.runtimeConfigPath ?? resolveDefaultRuntimeConfigPath());
+    pluginLifecycle?.startUpdates();
     const boundServer = server;
     const boundPluginService = services.plugins;
     return {
@@ -308,14 +312,16 @@ export async function createLocalBackend(options: CreateLocalBackendOptions): Pr
         try {
           await boundServer.close();
         } finally {
-          await boundPluginService.shutdown();
+          if (pluginLifecycle) await pluginLifecycle.close();
+          else await boundPluginService.shutdown();
           appStateStore.close();
         }
       }
     };
   } catch (error) {
     await server?.close().catch(() => undefined);
-    await pluginService?.shutdown();
+    if (pluginLifecycle) await pluginLifecycle.close();
+    else await pluginService?.shutdown();
     appStateStore.close();
     throw error;
   }
@@ -327,7 +333,7 @@ function configuredPluginRegistry(
   authHeaders?: () => Record<string, string>
 ): PluginRegistry | undefined {
   const baseUrl = resolvePluginRegistryBaseUrl(env);
-  const remoteRegistry = baseUrl ? createHttpPluginRegistry({ baseUrl, authHeaders }) : undefined;
+  const remoteRegistry = baseUrl ? createHttpPluginRegistry({ baseUrl, authHeaders, trustedNativeOrigin: resolveCloudClientConfig(env).baseUrl }) : undefined;
   return bundledRegistry
     ? createCompositePluginRegistry(bundledRegistry, remoteRegistry)
     : remoteRegistry;

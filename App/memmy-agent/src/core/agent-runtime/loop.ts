@@ -942,6 +942,7 @@ export class AgentLoop {
     });
     this.runner = new AgentRunner();
     this.tools = this.createToolRegistry("init", this.workspace);
+    this.context.skills.availableTools = () => this.tools.toolNames;
     this.commands = new CommandRouter();
     registerBuiltinCommands(this.commands);
     this.consolidator = new Consolidator({
@@ -1129,7 +1130,8 @@ export class AgentLoop {
   }
 
   private projectReadonlySkillRoots(): readonly string[] {
-    const roots = [path.join(this.workspace, "skills"), BUILTIN_SKILLS_DIR]
+    const roots = [path.join(this.workspace, "skills"), BUILTIN_SKILLS_DIR,
+      ...this.context.skills.listSkills(false).filter(entry => entry.source === "plugin").map(entry => path.dirname(entry.path))]
       .flatMap((root) => {
         try {
           return fs.statSync(root).isDirectory() ? [fs.realpathSync(root)] : [];

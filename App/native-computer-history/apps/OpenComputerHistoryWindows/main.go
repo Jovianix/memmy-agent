@@ -132,6 +132,7 @@ func observe(parent int, consent string) error {
 	if err := watchParent(ctx, parent, cancel); err != nil {
 		return err
 	}
+	checkpoints := make(chan string, 16)
 	// EOF is a lifetime signal as well as an explicit stop. No untrusted stdin
 	// instruction can disable native privacy checks or introduce typed text.
 	go func() {
@@ -140,10 +141,18 @@ func observe(parent int, consent string) error {
 		for s.Scan() {
 			var command struct {
 				Kind string `json:"kind"`
+				ID   string `json:"id"`
 			}
 			if json.Unmarshal(s.Bytes(), &command) == nil && command.Kind == "stop" {
 				cancel()
 				return
+			}
+			if command.Kind == "checkpoint" && checkpointID.MatchString(command.ID) {
+				select {
+				case checkpoints <- command.ID:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 		cancel()
@@ -159,7 +168,9 @@ func observe(parent int, consent string) error {
 		return err
 	}
 	actions := make(chan action, 128)
+	checkpointIncomplete := false
 	if err := installHooks(ctx, actions); err != nil {
+		checkpointIncomplete = true
 		diagnostic("input_monitoring_unavailable")
 	}
 	var current *worker
@@ -181,10 +192,38 @@ func observe(parent int, consent string) error {
 	ready := false
 	lastSnapshot := ""
 	lastWindow := ""
+	type checkpoint struct {
+		id string
+		at time.Time
+	}
+	var pendingCheckpoints []checkpoint
 	for {
+		if len(pendingCheckpoints) > 0 {
+			settled := len(actions) == 0 && len(schedule.pending) == 0 && schedule.typing == nil && ready
+			remaining := pendingCheckpoints[:0]
+			for _, point := range pendingCheckpoints {
+				if settled || time.Since(point.at) >= 8*time.Second {
+					if err := emit(map[string]any{"kind": "session.checkpoint", "id": point.id, "complete": settled && !checkpointIncomplete, "sequence": sequence}); err != nil {
+						return err
+					}
+				} else {
+					remaining = append(remaining, point)
+				}
+			}
+			pendingCheckpoints = remaining
+		}
 		select {
 		case <-ctx.Done():
 			return nil
+		case id := <-checkpoints:
+			if len(pendingCheckpoints) < 16 {
+				pendingCheckpoints = append(pendingCheckpoints, checkpoint{id, time.Now()})
+			}
+			// Drain the already queued hooks before sealing the native watermark.
+			for count := len(actions); count > 0; count-- {
+				schedule.add(<-actions, time.Now())
+			}
+			schedule.flushTyping()
 		case a := <-actions:
 			schedule.add(a, time.Now())
 		case now := <-tick.C:
@@ -193,6 +232,7 @@ func observe(parent int, consent string) error {
 				lastHeartbeat = now
 			}
 			if schedule.dropped > 0 || hookDropped() > 0 {
+				checkpointIncomplete = true
 				diagnostic("enrichment_backlog")
 				schedule.dropped = 0
 			}
@@ -216,6 +256,7 @@ func observe(parent int, consent string) error {
 			result, readErr := current.request(requestCtx, workerRequest{ID: sequence, Action: a, Full: full, ConsentPath: consent})
 			requestCancel()
 			if readErr != nil {
+				checkpointIncomplete = true
 				current.stop()
 				current = nil
 				ready = false
@@ -230,9 +271,11 @@ func observe(parent int, consent string) error {
 				continue
 			}
 			if result.Truncated {
+				checkpointIncomplete = true
 				diagnostic("ax_snapshot_budget_exceeded")
 			}
 			if !result.OK {
+				checkpointIncomplete = true
 				failures++
 				if failures >= 2 {
 					ready = false

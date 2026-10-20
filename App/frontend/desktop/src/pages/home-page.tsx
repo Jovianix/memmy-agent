@@ -1,3 +1,4 @@
+import { PluginConversationRecording } from "./plugin-conversation-recording.js";
 /** Home page module. */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction, type UIEvent } from "react";
 import type { AgentGatewayStartupIssue, InstalledPlugin, PluginArtifactRef, PluginCommandContribution, PluginScenarioContribution } from "@memmy/local-api-contracts";
@@ -1602,10 +1603,13 @@ export function HomePage() {
       setInstalledPlugins([]);
       return () => { active = false; };
     }
-    void clients.plugins.list()
+    const refresh = () => { void clients.plugins.list()
       .then((plugins) => { if (active) setInstalledPlugins(plugins); })
-      .catch(() => { if (active) setInstalledPlugins([]); });
-    return () => { active = false; };
+      .catch(() => { /* Keep the last known contributions while status is unavailable. */ }); };
+    refresh();
+    const timer = setInterval(refresh, 5_000);
+    window.addEventListener("memmy:plugins-changed", refresh);
+    return () => { active = false; clearInterval(timer); window.removeEventListener("memmy:plugins-changed", refresh); };
   }, [clients, pluginUiPluginKey]);
   const input = composerDrafts[chatScopeKey] ?? "";
   const composerCommandDraft = resolveComposerCommandDraft(
@@ -2396,6 +2400,10 @@ export function HomePage() {
   };
   const invokePinnedPluginCommand = (target: PluginCommandTarget) => {
     if (!clients || legalFlowCardOpen) return;
+    if (target.plugin.manifest.conversation && target.command.agentSkillId) {
+      setCurrentComposerDraft(`$${target.command.agentSkillId}`);
+      inputRef.current?.focus(); return;
+    }
     recordingEntry.closeCompact();
     const conversationId = state.agent.currentChatId ?? state.agent.currentSessionKey ?? chatScopeKey;
     void pressPinnedPluginCommand({
@@ -3089,6 +3097,7 @@ export function HomePage() {
     // should open immediately — we fire the invoke side-effect and then return
     // false so the caller still sends the agent message.
     if (pluginInvocation?.contribution.agentSkillId) {
+      if (pluginInvocation.plugin.manifest.conversation) return false;
       if (pluginInvocation.contribution.capabilityId && clients && pendingAttachments.length === 0) {
         const { plugin, contribution, arguments: commandArguments } = pluginInvocation;
         const conversationId = state.agent.currentChatId ?? state.agent.currentSessionKey ?? chatScopeKey;
@@ -4158,6 +4167,7 @@ export function HomePage() {
   // Shared by the title bar and the preview toolbar so the recordings stay one
   // click away whichever of the two is showing. While the recording tab is
   // open, the tab's own close button is the control.
+  const RecordingEntryIcon = topbarPluginCommand?.plugin.manifest.conversation ? resolveContributionIcon(topbarPluginCommand.command.icon) : Mic;
   const recordingToggle = topbarPluginCommand && !recordingEntry.open ? (
     <button
       type="button"
@@ -4166,12 +4176,12 @@ export function HomePage() {
       aria-pressed={false}
       title={topbarPluginCommand.command.name}
       data-recording-toggle
-      onClick={toggleRecordingEntry}
+      onClick={() => topbarPluginCommand.plugin.manifest.conversation ? invokePinnedPluginCommand(topbarPluginCommand) : toggleRecordingEntry()}
     >
       {/* The composer chip for this same command draws a microphone, so the
           title bar does too; picking the plugin's manifest icon here made one
           action appear as two different ones. */}
-      <Mic size={15} aria-hidden="true" />
+      <RecordingEntryIcon size={15} aria-hidden="true" />
     </button>
   ) : null;
 
@@ -4364,6 +4374,9 @@ export function HomePage() {
                     <HomeContextChips chips={contextChips} onRemove={removeComposerContextChip} />
                   </div>
                 ) : null}
+                <PluginConversationRecording client={clients?.plugins} config={clients?.runtimeConfig} plugins={installedPlugins}
+                  conversationId={state.agent.currentChatId ?? state.agent.currentSessionKey ?? null}
+                  onPrompt={(text) => { setCurrentComposerDraft(text); inputRef.current?.focus(); }} />
                 <ComposerHighlightedTextarea
                   textareaRef={inputRef}
                   value={composerInput}
@@ -4596,6 +4609,9 @@ export function HomePage() {
           <div ref={composerOverlayRef} className="agent-conversation-composer">
             <div className="agent-conversation-content agent-conversation-content--composer agent-conversation-column">
               <div className="agent-composer-flow">
+                <PluginConversationRecording client={clients?.plugins} config={clients?.runtimeConfig} plugins={installedPlugins}
+                  conversationId={state.agent.currentChatId ?? state.agent.currentSessionKey ?? null}
+                  onPrompt={(text) => { setCurrentComposerDraft(text); inputRef.current?.focus(); }} />
                 {statusPanel.open && !slashMenuOpen && (
                   <div className="agent-composer-popover absolute left-0 bottom-full mb-3 z-30 w-full" style={{ right: 0 }}>
                     <AgentStatusPanel state={statusPanel} closeLabel={t("common.close")} loadingLabel={t("home.agent.connecting")} onClose={() => setStatusPanel({ open: false })} />

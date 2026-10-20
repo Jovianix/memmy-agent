@@ -1,5 +1,5 @@
 /** HTTPS-backed trusted plugin registry. */
-import { PluginManifestSchema } from "@memmy/local-api-contracts";
+import { PluginManifestSchema, PluginCatalogSchema } from "@memmy/local-api-contracts";
 import { z } from "zod";
 import type { PluginRegistry } from "./index.js";
 
@@ -9,7 +9,8 @@ const PluginReleaseSchema = z.object({
   artifact: z.object({
     url: z.string().min(1),
     sha256: z.string().regex(/^[a-f0-9]{64}$/i)
-  }).optional()
+  }).optional(),
+  nativeExecutionAllowed: z.boolean().optional()
 });
 
 export interface CreateHttpPluginRegistryOptions {
@@ -17,6 +18,8 @@ export interface CreateHttpPluginRegistryOptions {
   fetchFn?: typeof fetch;
   /** Supplies account credentials so the registry can gate entitlement-restricted releases. */
   authHeaders?: () => Record<string, string>;
+  /** Native execution is accepted only from an explicitly trusted registry origin. */
+  trustedNativeOrigin?: string;
 }
 
 export function createHttpPluginRegistry(options: CreateHttpPluginRegistryOptions): PluginRegistry {
@@ -25,6 +28,14 @@ export function createHttpPluginRegistry(options: CreateHttpPluginRegistryOption
   const fetchFn = options.fetchFn ?? fetch.bind(globalThis);
 
   return {
+    async catalog() {
+      const response = await fetchFn(new URL("/api/v1/plugins/catalog", baseUrl), {
+        headers: { accept: "application/json", ...options.authHeaders?.() },
+        redirect: "error", signal: AbortSignal.timeout(15_000)
+      });
+      if (!response.ok) throw new Error(`Plugin catalog request failed with ${response.status}`);
+      return PluginCatalogSchema.parse(JSON.parse(await readLimitedText(response)));
+    },
     async resolve(pluginId, version) {
       const url = new URL(`/api/v1/plugins/${encodeURIComponent(pluginId)}`, baseUrl);
       if (version) url.searchParams.set("version", version);
@@ -52,7 +63,13 @@ export function createHttpPluginRegistry(options: CreateHttpPluginRegistryOption
       if (release.manifest.id !== pluginId || (version && release.manifest.version !== version)) {
         throw Object.assign(new Error("Plugin registry returned a different release"), { code: "plugin_invalid" });
       }
-      return release;
+      if (release.nativeExecutionAllowed === undefined) return release;
+      return { ...release,
+        nativeExecutionAllowed: release.nativeExecutionAllowed
+          && options.trustedNativeOrigin !== undefined
+          && new URL(options.trustedNativeOrigin).origin === baseUrl.origin,
+        registryOrigin: baseUrl.origin
+      };
     }
   };
 }

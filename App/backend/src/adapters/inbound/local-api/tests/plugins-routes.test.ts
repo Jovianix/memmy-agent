@@ -41,6 +41,7 @@ const plugin = InstalledPluginSchema.parse({
 
 function createService(): PluginService {
   return {
+    catalog: vi.fn(async () => []), isBusy: () => false,
     list: vi.fn(() => [plugin]),
     get: vi.fn(() => plugin),
     readUi: vi.fn(async (_id, slot) => `<main>${slot}</main>`),
@@ -81,6 +82,22 @@ function createApp(
 }
 
 describe("plugin routes", () => {
+  it("keeps declared status polling out of chat events and rejects hidden state changes", async () => {
+    const service = createService(), onEvent = vi.fn();
+    const capture = structuredClone(plugin);
+    capture.manifest.skills = [{ id: "capture-start", name: "Capture", description: "Capture authorized events", entry: "skills/capture/SKILL.md" }];
+    capture.manifest.conversation = { recordingCapabilityId: "run", recordingSkillId: "capture-start" };
+    vi.mocked(service.get).mockReturnValue(capture);
+    app = createApp(service, onEvent);
+    const url = `/api/v1/plugins/${plugin.id}/capabilities/run/invoke`;
+    const response = await app.inject({ method: "POST", url, payload: { conversationId: "chat-a", origin: "user", background: true, input: { action: "status" } } });
+    expect(response.statusCode).toBe(200); expect(onEvent).not.toHaveBeenCalled();
+    const hiddenStart = await app.inject({ method: "POST", url, payload: { conversationId: "chat-a", origin: "user", background: true, input: { action: "start" } } });
+    expect(hiddenStart.statusCode).toBe(400);
+    expect((await app.inject({ method: "POST", url, payload: { conversationId: "chat-a", origin: "user", input: { action: "stop" } } })).statusCode).toBe(200);
+    expect(onEvent).toHaveBeenCalled();
+  });
+
   it("installs and manages plugins by id", async () => {
     const plugins = createService();
     const refreshAgentTools = vi.fn(async () => undefined);

@@ -18,6 +18,8 @@ const PermissionsSchema = z.array(PluginPermissionSchema);
 export interface PluginRecord extends InstalledPlugin {
   artifactHash: string | null;
   rootPath: string | null;
+  nativeExecutionAllowed?: boolean;
+  registryOrigin?: string | null;
 }
 
 export interface SavePluginInput {
@@ -25,6 +27,8 @@ export interface SavePluginInput {
   state: PluginState;
   artifactHash?: string | null;
   rootPath?: string | null;
+  nativeExecutionAllowed?: boolean;
+  registryOrigin?: string | null;
 }
 
 export interface PluginRepository {
@@ -58,6 +62,8 @@ interface PluginRow {
   config_json: string;
   artifact_hash: string | null;
   root_path: string | null;
+  native_execution_allowed: number;
+  registry_origin: string | null;
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -86,14 +92,16 @@ export function createPluginRepository(db: DatabaseSync): PluginRepository {
       const now = new Date().toISOString();
       db.prepare(
         `INSERT INTO installed_plugins (
-          id, version, manifest_json, state, artifact_hash, root_path, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          id, version, manifest_json, state, artifact_hash, root_path, native_execution_allowed, registry_origin, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           version = excluded.version,
           manifest_json = excluded.manifest_json,
           state = excluded.state,
           artifact_hash = excluded.artifact_hash,
           root_path = excluded.root_path,
+          native_execution_allowed = excluded.native_execution_allowed,
+          registry_origin = excluded.registry_origin,
           last_error = NULL,
           updated_at = excluded.updated_at`
       ).run(
@@ -103,6 +111,8 @@ export function createPluginRepository(db: DatabaseSync): PluginRepository {
         state,
         input.artifactHash ?? null,
         input.rootPath ?? null,
+        input.nativeExecutionAllowed ? 1 : 0,
+        input.registryOrigin ?? null,
         now,
         now
       );
@@ -166,6 +176,8 @@ const SELECT_PLUGIN = `SELECT
   config_json,
   artifact_hash,
   root_path,
+  native_execution_allowed,
+  registry_origin,
   last_error,
   created_at,
   updated_at
@@ -188,5 +200,6 @@ function toPluginRecord(row: PluginRow): PluginRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at
   });
-  return { ...installed, artifactHash: row.artifact_hash, rootPath: row.root_path };
+  return { ...installed, artifactHash: row.artifact_hash, rootPath: row.root_path,
+    nativeExecutionAllowed: row.native_execution_allowed === 1, registryOrigin: row.registry_origin };
 }

@@ -1,3 +1,4 @@
+import { PLUGIN_HOST_CAPABILITIES } from "./plugin-host-capabilities.js";
 /** Plugin installation and lifecycle service. */
 import {
   CapabilityCallSchema,
@@ -28,6 +29,8 @@ export type { PluginArtifactManager } from "../adapters/outbound/plugin-artifact
 export type { PluginRuntimeHost } from "../adapters/outbound/plugin-runtime/index.js";
 
 export interface PluginService {
+  catalog(): Promise<import("@memmy/local-api-contracts").PluginCatalogItem[]>;
+  isBusy(id: string): boolean;
   list(): InstalledPlugin[];
   get(id: string): InstalledPlugin;
   readUi(id: string, slot: PluginUiSlot): Promise<string>;
@@ -56,12 +59,28 @@ export interface CreatePluginServiceOptions {
   localArtifactService?: PluginLocalArtifactService;
   /** Resolves whether the signed-in account holds a manifest-declared entitlement. */
   isEntitlementGranted?: (entitlement: string) => boolean;
+  platform?: NodeJS.Platform;
+  hostVersion?: string;
+  hasResourceLease?: (id: string) => boolean;
+  releaseResources?: (id: string) => Promise<void>;
+  activateGeneratedSkills?: (id: string) => Promise<void>;
 }
 
 export function createPluginService(options: CreatePluginServiceOptions): PluginService {
   const skillManager = options.skillManager ?? noopPluginSkillManager;
   const localArtifacts = options.localArtifactService ?? createPluginLocalArtifactService();
-  const isEntitlementGranted = options.isEntitlementGranted ?? (() => true);
+  const isEntitlementGranted = options.isEntitlementGranted ?? (() => false);
+  const compatible = (manifest: import("@memmy/local-api-contracts").PluginManifest) => {
+    if (manifest.platforms && !manifest.platforms.includes((options.platform ?? process.platform) as "win32" | "darwin" | "linux")) {
+      throw pluginError("plugin_incompatible", "This plugin does not support this operating system");
+    }
+    if (manifest.minimumHostVersion && (!options.hostVersion || compareVersions(options.hostVersion, manifest.minimumHostVersion) < 0)) {
+      throw pluginError("plugin_incompatible", `Requires Memmy ${manifest.minimumHostVersion} or later`);
+    }
+  };
+  const missingFeatures = (manifest: import("@memmy/local-api-contracts").PluginManifest) =>
+    (manifest.requiredHostCapabilities ?? []).filter(feature => !(PLUGIN_HOST_CAPABILITIES as readonly string[]).includes(feature));
+  const busy = (id: string) => Boolean(options.runtimeHost.isBusy?.(id) || options.hasResourceLease?.(id));
   // Enforced here rather than only in the reconciler so a direct local-API call cannot bypass it.
   const assertEntitled = (manifest: { id: string; requiredEntitlement?: string }) => {
     const entitlement = manifest.requiredEntitlement;
@@ -77,12 +96,14 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     return plugin;
   };
   const activateContributions = async (plugin: PluginRecord, secrets: Readonly<Record<string, string>>) => {
-    await options.runtimeHost.activate(plugin, secrets);
+    await skillManager.activate(plugin);
     try {
-      await skillManager.activate(plugin);
+      await options.runtimeHost.activate(plugin, secrets);
+      await options.activateGeneratedSkills?.(plugin.id);
     } catch (error) {
       await options.runtimeHost.deactivate(plugin.id).catch(() => undefined);
       await skillManager.deactivate(plugin.id).catch(() => undefined);
+      await options.releaseResources?.(plugin.id).catch(() => undefined);
       throw error;
     }
   };
@@ -92,10 +113,13 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
       skillManager.deactivate(pluginId)
     ]);
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    await options.releaseResources?.(pluginId);
     if (failure) throw failure.reason;
   };
 
-  return {
+  const service: PluginService = {
+    catalog: () => options.registry.catalog?.() ?? Promise.resolve([]),
+    isBusy: busy,
     list() {
       return options.repository.list().map(publicPlugin);
     },
@@ -119,6 +143,8 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     async install(pluginId, version) {
       const release = await options.registry.resolve(pluginId, version);
       const manifest = PluginManifestSchema.parse(release.manifest);
+      compatible(manifest);
+      if (missingFeatures(manifest).length) throw pluginError("plugin_incompatible", `Missing Host capabilities: ${missingFeatures(manifest).join(", ")}`);
       if (manifest.id !== pluginId || (version && manifest.version !== version)) {
         throw pluginError("plugin_invalid", "Registry returned a different plugin release");
       }
@@ -141,6 +167,8 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
         return publicPlugin(options.repository.save({
           manifest,
           state: manifest.permissions.length ? "pending_approval" : "installed",
+          nativeExecutionAllowed: release.nativeExecutionAllowed,
+          registryOrigin: release.registryOrigin,
           ...artifact
         }));
       } catch (error) {
@@ -150,9 +178,12 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     },
 
     async update(id, version) {
+      if (busy(id)) throw pluginError("conflict", "Plugin is recording or executing; update deferred");
       const previous = required(id);
       const release = await options.registry.resolve(id, version);
       const manifest = PluginManifestSchema.parse(release.manifest);
+      compatible(manifest);
+      if (missingFeatures(manifest).length) throw pluginError("plugin_incompatible", `Missing Host capabilities: ${missingFeatures(manifest).join(", ")}`);
       if (manifest.id !== id || (version && manifest.version !== version)) {
         throw pluginError("plugin_invalid", "Registry returned a different plugin release");
       }
@@ -169,12 +200,18 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
       }
 
       const artifact = await options.artifactManager.install({ ...release, manifest });
+      if (busy(id)) {
+        if (artifact.rootPath !== previous.rootPath) await options.artifactManager.remove(artifact);
+        throw pluginError("conflict", "Plugin became busy; update deferred");
+      }
       const approvedPermissions = previous.approvedPermissions.filter((approved) =>
         manifest.permissions.some((declared) => permissionKey(approved) === permissionKey(declared))
       );
       const pendingApproval = !samePermissions(approvedPermissions, manifest.permissions);
       const draft: PluginRecord = {
         ...previous,
+        nativeExecutionAllowed: release.nativeExecutionAllowed,
+        registryOrigin: release.registryOrigin,
         version: manifest.version,
         manifest,
         approvedPermissions,
@@ -184,10 +221,15 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
       try {
         validateConfig(draft, draft.config);
         const secrets = pendingApproval ? {} : readSecrets(draft, options.secretStore);
-        if (previous.state === "active") await deactivateContributions(id);
+        if (previous.state === "active") {
+          options.repository.setState(id, "disabling");
+          await deactivateContributions(id);
+        }
         let updated = options.repository.save({
           manifest,
           state: draft.state,
+          nativeExecutionAllowed: release.nativeExecutionAllowed,
+          registryOrigin: release.registryOrigin,
           ...artifact
         });
         updated = options.repository.setApprovedPermissions(id, approvedPermissions);
@@ -203,7 +245,8 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
           manifest: previous.manifest,
           state: previous.state === "active" ? "disabled" : previous.state,
           artifactHash: previous.artifactHash,
-          rootPath: previous.rootPath
+          rootPath: previous.rootPath,
+          nativeExecutionAllowed: previous.nativeExecutionAllowed, registryOrigin: previous.registryOrigin
         });
         restored = options.repository.setApprovedPermissions(id, previous.approvedPermissions);
         restored = options.repository.setConfig(id, previous.config);
@@ -268,6 +311,8 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
 
     async enable(id) {
       const plugin = required(id);
+      compatible(plugin.manifest);
+      if (missingFeatures(plugin.manifest).length) throw pluginError("plugin_incompatible", "Required Host capabilities are unavailable");
       if (plugin.state === "active") return publicPlugin(plugin);
       assertEntitled(plugin.manifest);
       if (!hasAllPermissions(plugin)) {
@@ -388,6 +433,9 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     async restoreActive() {
       for (const plugin of options.repository.list().filter((candidate) => candidate.state === "active")) {
         try {
+          compatible(plugin.manifest);
+          if (missingFeatures(plugin.manifest).length) throw pluginError("plugin_incompatible", "Required Host capabilities are unavailable");
+          assertEntitled(plugin.manifest);
           if (!hasAllPermissions(plugin)) throw new Error("Plugin permissions have changed");
           validateConfig(plugin, plugin.config);
           await activateContributions(plugin, readSecrets(plugin, options.secretStore));
@@ -402,6 +450,23 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
         .filter((plugin) => plugin.state === "active" || plugin.state === "enabling")
         .map((plugin) => deactivateContributions(plugin.id)));
     }
+  };
+  // Serialize lifecycle mutations per plugin. Internal calls use the unwrapped
+  // service, so uninstall -> disable cannot deadlock against its own queue.
+  const queues = new Map<string, Promise<unknown>>();
+  const serial = <T>(id: string, operation: () => Promise<T>): Promise<T> => {
+    const next = (queues.get(id) ?? Promise.resolve()).catch(() => undefined).then(operation);
+    queues.set(id, next);
+    void next.finally(() => { if (queues.get(id) === next) queues.delete(id); }).catch(() => undefined);
+    return next;
+  };
+  return { ...service,
+    install: (id, version) => serial(id, () => service.install(id, version)),
+    update: (id, version) => serial(id, () => service.update(id, version)),
+    enable: id => serial(id, () => service.enable(id)),
+    disable: id => serial(id, () => service.disable(id)),
+    uninstall: id => serial(id, () => service.uninstall(id)),
+    approvePermissions: (id, permissions) => serial(id, () => service.approvePermissions(id, permissions))
   };
 }
 
@@ -431,8 +496,24 @@ function replacePublishedPaths(value: unknown, paths: ReadonlyMap<string, string
 }
 
 function publicPlugin(plugin: PluginRecord): InstalledPlugin {
-  const { artifactHash: _artifactHash, rootPath: _rootPath, ...result } = plugin;
+  const { artifactHash: _artifactHash, rootPath: _rootPath,
+    nativeExecutionAllowed: _native, registryOrigin: _origin, ...result } = plugin;
   return result;
+}
+
+export function compareVersions(left: string, right: string): number {
+  const split = (value: string) => { const [core, ...suffix] = value.split("-"); return { core: core!.split(".").map(Number), suffix: suffix.join("-") }; };
+  const a = split(left), b = split(right);
+  for (let i = 0; i < 3; i++) { const delta = (a.core[i] ?? 0) - (b.core[i] ?? 0); if (delta) return delta; }
+  if (!a.suffix || !b.suffix) return a.suffix === b.suffix ? 0 : a.suffix ? -1 : 1;
+  const ap = a.suffix.split("."), bp = b.suffix.split(".");
+  for (let i = 0; i < Math.max(ap.length, bp.length); i++) {
+    if (ap[i] === bp[i]) continue;
+    if (ap[i] === undefined || bp[i] === undefined) return ap[i] === undefined ? -1 : 1;
+    const an = /^\d+$/.test(ap[i]!), bn = /^\d+$/.test(bp[i]!);
+    return an && bn ? Number(ap[i]) - Number(bp[i]) : an !== bn ? an ? -1 : 1 : ap[i]! < bp[i]! ? -1 : 1;
+  }
+  return 0;
 }
 
 function validateConfig(plugin: PluginRecord, config: Record<string, unknown>): void {
