@@ -15,6 +15,7 @@ App/memmy-agent/package-lock.json
 sessions/
 artifacts/literature-review-*.json
 .*
+!.gitattributes
 !.github/
 !.github/workflows/
 !.github/workflows/*.yml
