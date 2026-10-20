@@ -65,3 +65,13 @@ Windows 打包额外用 MSVC/CMake 构建共享原生任务录制器，并在 st
 本地实现与验证不等同远端交付。创建插件独立远端仓库、推送及 Host PR 需要有效 GitHub 登录。Host 合入并正式发布后，再用无系统 Node 的 Windows 测试机完成真实模型四步对话、事件边界、试运行及独立输出核验。插件发布流程验证此证据并阻止提前发布。
 
 云服务目前在本仓库只有 catalog/resolve/download 读取接口；后续实际写入发布入口和部署权限须由云服务提供，不能用本地开发 Registry 代替。插件仓库提供匿名云端回读及制品哈希检查脚本。交付清单中的云端字段本轮保留 null，并记录暂缓原因。
+
+## 远端交付补齐
+
+GitHub 登录已恢复，Teach Mode 源码与 `v0.3.0` 标签已推送到独立私有仓库 [Jovianix/teach-mode](https://github.com/Jovianix/teach-mode)。独立仓库的 [Linux / Windows CI](https://github.com/Jovianix/teach-mode/actions/runs/39404505540) 均通过。云端接入继续按本轮约定留空。
+
+Host PR 目标为上游 `MemTensor/memmy-agent:survey_master`。该分支在指定基线后新增四个提交，当前为 `96aeb0ac7fd53f28273ab3184be74417225829ee`；fork 的 main 落后指定基线 356 个提交，不能作为本次 PR 的基线。为保留原验收记录，`codex/teach-mode-host-baseline` 仍停在 `508348b1`，另建 `codex/teach-mode-host-survey-master` 整合这四个上游提交。
+
+解决 HomePage 唯一冲突时保留上游始终可用的 Host 录音按钮，另由插件贡献 Teach Mode 对话快捷入口；点击插件入口只准备对话指令。保留上游录制归档、滚轮隔离、样式与翻译修改。整合后渲染器类型检查、生产构建及 175 项相关测试通过，3 项维持跳过。HomePage 全套为 82 通过、11 失败；以当前上游原始 HomePage 重跑，失败项目逐项相同，没有新增失败。
+
+此前固定制品及受控验收仍对应原 `508348b1` Host 候选，PR 分支新增的界面整合验证单独记录。Host 正式版本、真实 Windows 桌面和模型验收完成前，不将开发候选作为正式插件发布。远端 PR、来源提交与下载链接记录在交付清单中。

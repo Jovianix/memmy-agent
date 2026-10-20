@@ -128,7 +128,7 @@ import {
 import { SHARED_ROW_PRIMARY_RESERVE, useSharedRowWidth } from "./sidebar-resize.js";
 import { Mic, Pause, Plus, Send } from "./memory/memory-prototype-icons.js";
 import { resolveWorkspaceEnvironmentScope, useWorkspaceEnvironment } from "./use-workspace-environment.js";
-import { ArrowDown, ArrowRight, BookOpenText, CalendarCheck2, Check, ChevronDown, Folder, History, PanelRight, Plus as LucidePlus, RotateCw, SlidersHorizontal, SquareSlash, Target, X } from "lucide-react";
+import { ArrowDown, ArrowRight, AudioLines, BookOpenText, CalendarCheck2, Check, ChevronDown, Folder, History, PanelRight, Plus as LucidePlus, RotateCw, SlidersHorizontal, SquareSlash, Target, X } from "lucide-react";
 
 export { agentChatScopeKey, updateComposerDraftForScope };
 export { hydrateAgentThreadInBackground };
@@ -492,23 +492,6 @@ export function collectPluginCommandTargets(plugins: InstalledPlugin[], reserved
  */
 export function selectPinnedPluginCommands(targets: PluginCommandTarget[]): PluginCommandTarget[] {
   return targets.filter((target) => target.command.pinned === true);
-}
-
-/**
- * Selects the command a plugin offered for the conversation top bar.
- *
- * The top bar belongs to the conversation, not to any one plugin, so a button
- * only appears there because a plugin asked for it. Recording an interview is
- * the case this exists for: it is a place the user works alongside the
- * conversation rather than a step in it, and it has to stay reachable while
- * the conversation moves on. When several plugins ask, the first one wins —
- * two buttons for one slot would leave the user guessing which is which.
- *
- * @param targets Available plugin commands.
- * @returns The target whose command claims the top bar, if any.
- */
-export function selectTopbarPluginCommand(targets: PluginCommandTarget[]): PluginCommandTarget | null {
-  return targets.find((target) => target.command.topbar === true) ?? null;
 }
 
 /**
@@ -2372,9 +2355,6 @@ export function HomePage() {
     COMPOSER_GOAL_COMMAND,
     ...slashCommands.map((command) => command.command)
   ]);
-  // No plugin, no button: the top bar is the conversation's, and only a plugin
-  // that asked for a place there gets one.
-  const topbarPluginCommand = selectTopbarPluginCommand(selectConversationPinnedCommands(pluginCommandTargets, visiblePluginCalls));
   const conversationPinnedCommands = selectConversationPinnedCommands(pluginCommandTargets, visiblePluginCalls);
   const togglePluginCallVisibility = (callId: string) => {
     setHiddenPluginCalls((current) => {
@@ -4167,21 +4147,31 @@ export function HomePage() {
   // Shared by the title bar and the preview toolbar so the recordings stay one
   // click away whichever of the two is showing. While the recording tab is
   // open, the tab's own close button is the control.
-  const RecordingEntryIcon = topbarPluginCommand?.plugin.manifest.conversation ? resolveContributionIcon(topbarPluginCommand.command.icon) : Mic;
-  const recordingToggle = topbarPluginCommand && !recordingEntry.open ? (
+  const conversationPluginCommand = conversationPinnedCommands.find(target => target.command.topbar && target.plugin.manifest.conversation);
+  const ConversationPluginIcon = conversationPluginCommand ? resolveContributionIcon(conversationPluginCommand.command.icon) : Mic;
+  const conversationPluginShortcut = conversationPluginCommand ? (
     <button
       type="button"
       className="thread-toolbar__button"
-      aria-label={topbarPluginCommand.command.name}
-      aria-pressed={false}
-      title={topbarPluginCommand.command.name}
-      data-recording-toggle
-      onClick={() => topbarPluginCommand.plugin.manifest.conversation ? invokePinnedPluginCommand(topbarPluginCommand) : toggleRecordingEntry()}
+      aria-label={conversationPluginCommand.command.name}
+      title={conversationPluginCommand.command.name}
+      data-plugin-conversation-toggle
+      onClick={() => invokePinnedPluginCommand(conversationPluginCommand)}
     >
-      {/* The composer chip for this same command draws a microphone, so the
-          title bar does too; picking the plugin's manifest icon here made one
-          action appear as two different ones. */}
-      <RecordingEntryIcon size={15} aria-hidden="true" />
+      <ConversationPluginIcon size={15} aria-hidden="true" />
+    </button>
+  ) : null;
+  const recordingToggle = !recordingEntry.open ? (
+    <button
+      type="button"
+      className="thread-toolbar__button"
+      aria-label={t("recording.page.title")}
+      aria-pressed={false}
+      title={t("recording.page.title")}
+      data-recording-toggle
+      onClick={toggleRecordingEntry}
+    >
+      <AudioLines size={15} aria-hidden="true" />
     </button>
   ) : null;
 
@@ -4190,14 +4180,10 @@ export function HomePage() {
       key={`${previewScope.kind}:${previewScope.key}`}
       scope={previewScope}
       hidden={!recordingEntry.open || pluginArtifactPreview !== null || recorderPaneOpen}
-      extraTabs={recordingEntry.open && topbarPluginCommand ? [{
+      extraTabs={recordingEntry.open ? [{
         id: "interview-recording",
-        // The label and icon come from the plugin that asked for the button, so
-        // the tab and the button that opens it read as one thing.
-        label: topbarPluginCommand.command.name,
-        // Same microphone as the title-bar button that opens this tab: one
-        // action, one icon.
-        icon: <Mic size={12} aria-hidden="true" />,
+        label: t("recording.page.title"),
+        icon: <AudioLines size={12} aria-hidden="true" />,
         render: () => <RecordingEntryPage session={recordingEntry.session}
           uploadBlocked={panelRecorders.length > 0}
           onStart={panelRecorders.length > 0 ? () => reopenPluginRecording(true) : undefined}
@@ -4219,7 +4205,7 @@ export function HomePage() {
       onWidthChange={setPreviewPanelWidth}
       sharedRowWidth={workspaceLayoutWidth}
       sharedRowReservedWidth={SHARED_ROW_PRIMARY_RESERVE}
-      toolbarStart={recordingToggle}
+      toolbarStart={<>{conversationPluginShortcut}{recordingToggle}</>}
       toolbarEnd={previewToggle}
       emptyLabel={t("workspaceArtifact.noFiles")}
       emptyDetail={previewRootLabel}
@@ -4283,7 +4269,7 @@ export function HomePage() {
           key={chatScopeKey}
           title={activeConversationTitleDisplay}
           titleTrailing={activeImTitleDisplay ? <ImChannelTitleIcon slug={activeImTitleDisplay.slug} name={activeImTitleDisplay.channelName} /> : null}
-          actions={recordingToggle}
+          actions={<>{conversationPluginShortcut}{recordingToggle}</>}
           messages={state.agent.messages}
           panelOpen={headerPanelControlHidden}
           onOpenPanel={threadPanel.open}
