@@ -17286,6 +17286,20 @@ body:has(.sidebar-shell) .window-drag-region {
 .recording-bar__note--done {
   color: var(--color-status-success);
 }
+.recording-bar--activity {
+  min-height: 56px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+}
+.recording-bar--activity .recording-bar__clock {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-ink);
+}
+.recording-bar--activity .recording-bar__title { display: inline-flex; align-items: center; gap: 6px; }
+.recording-bar__indicator { width: 7px; height: 7px; flex: none; border-radius: 50%; background: currentColor; opacity: .4; }
+.recording-bar--activity.recording-bar--live .recording-bar__indicator { color: var(--color-status-error); opacity: 1; }
+.recording-bar__goal { min-width: 0; flex: 1 1 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: color-mix(in srgb, var(--color-text-ink) 65%, transparent); }
 .recording-waveform {
   display: flex;
   align-items: center;

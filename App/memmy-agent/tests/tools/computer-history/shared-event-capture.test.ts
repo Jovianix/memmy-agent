@@ -7,7 +7,7 @@ import { collectorGate } from "../../../src/tools/computer-history/core/collecto
 
 const roots: string[] = [], services: ComputerHistoryDemoService[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(service => service.shutdown())); roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })); });
-function fixture(authorized = true) {
+function fixture(authorized = true, health = ["observer_ready", "heartbeat"]) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared-history-capture-")); roots.push(root);
   const recorderScript = path.join(root, "recorder.cjs");
   fs.writeFileSync(recorderScript, `
@@ -15,7 +15,7 @@ const fs = require('node:fs'), readline = require('node:readline');
 const file = process.argv[process.argv.indexOf('--out') + 1];
 fs.appendFileSync(file, JSON.stringify({ recordType:'human_event', eventType:'recording_started', timestamp:new Date().toISOString() })+'\\n');
 const mark = code => console.log('[recorder-health] '+JSON.stringify({code,timestamp:new Date().toISOString()}));
-mark('observer_ready'); mark('heartbeat');
+${JSON.stringify(health)}.forEach(mark);
 readline.createInterface({input:process.stdin}).on('line', line => {
  const input=JSON.parse(line); if(input.kind !== 'checkpoint') return;
  setTimeout(() => {
@@ -36,6 +36,15 @@ process.on('SIGTERM',()=>process.exit(0));
   return { service, root, pid: () => child()?.pid };
 }
 describe("Computer History capture subscriptions", () => {
+  it.each([{ health: ['heartbeat'] }, { health: ['heartbeat', 'observer_unavailable'] }])("keeps an alive collector with incomplete coverage running ($health)", async ({ health }) => {
+    const f = fixture(true, health), subscription = await f.service.acquireEventCapture();
+    const point = await subscription.checkpoint();
+    expect(point.running).toBe(true);
+    expect(point.complete).toBe(false);
+    expect(f.pid()).toBeDefined();
+    await subscription.release();
+    expect(f.service.recorderBusy).toBe(false);
+  });
   it("shares one actual collector and waits for its persisted checkpoint without stopping background History", async () => {
     const f = fixture(); await f.service.startObservationWithPermissions();
     const firstPid = f.pid(), a = await f.service.acquireEventCapture(), b = await f.service.acquireEventCapture();
@@ -50,7 +59,7 @@ describe("Computer History capture subscriptions", () => {
     const f = fixture(), a = await f.service.acquireEventCapture(), b = await f.service.acquireEventCapture();
     expect(f.service.snapshot().observation.state).toBe("stopped");
     expect(JSON.parse(fs.readFileSync(path.join(f.root, "histories/recording-intent.json"), "utf8")).state).toBe("stopped");
-    await a.release(); expect((await b.checkpoint()).running).toBe(true);
+    await a.release(); expect((await a.checkpoint()).running).toBe(false); expect((await b.checkpoint()).running).toBe(true);
     await b.release(); expect(f.service.recorderBusy).toBe(false); expect(collectorGate.busy).toBe(false);
     await b.release();
   });

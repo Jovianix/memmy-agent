@@ -90,7 +90,7 @@ export class PluginEventSessions {
         if (!initial.running) throw new Error("capture_not_running");
         session = { schemaVersion: 1, id: randomUUID(), pluginId: owner, conversationId,
           goal: goal.trim(), state: "recording", startedAt: this.now(), endedAt: null, eventCount: 0, eventTypes: {}, applications: [],
-          availability: "pending", eventsSha256: null, limitations: initial.limitations, error: null, ranges: [] };
+          availability: initial.complete === false ? "partial" : "pending", eventsSha256: null, limitations: initial.limitations, error: null, ranges: [] };
         fs.mkdirSync(this.folder(owner, session.id), { recursive: true, mode: 0o700 });
         fd = fs.openSync(path.join(this.folder(owner, session.id), "events.jsonl"), "wx", 0o600);
         this.save(session);
@@ -117,6 +117,7 @@ export class PluginEventSessions {
   private async collect(active: Active, checkpoint?: CaptureCheckpoint) {
     const point = checkpoint ?? await active.subscription.checkpoint();
     if (!point.running && active.session.state === "recording") throw new Error("capture_source_stopped");
+    if (point.complete === false) active.session.availability = "partial";
     active.session.limitations = [...new Set([...active.session.limitations, ...point.limitations])];
     const start = Date.parse(active.session.startedAt), end = Date.parse(active.session.endedAt ?? this.now());
     if (end < start) throw new Error("capture_clock_changed");

@@ -470,11 +470,17 @@ export class ComputerHistoryDemoService {
       try { const stat = fs.lstatSync(file); if (stat.isFile() && !stat.isSymbolicLink()) streams.push({ id: entry.name, file, size: stat.size }); } catch { /* A rotated empty segment is not a stream. */ }
     }
     const health = this.captureHealth();
-    const unavailable = health.issues.some(issue => issue.code === "observer_unavailable" || issue.code === "observer_notifications_unavailable");
+    // Coverage errors describe an unreadable foreground window or a restarting
+    // UIA provider, not the lifetime of the shared collector. Ending the lease
+    // here would turn a recoverable snapshot error into a real recording stop.
+    const current = this.segment?.child;
     return { streams: streams.sort((a, b) => a.id.localeCompare(b.id)),
-      running: !released() && this.observationState === "running" && !this.shuttingDown && !!this.segment?.child && this.captureObserverReadyAt > 0 && !unavailable,
-      complete: fence.complete,
+      running: !released() && this.observationState === "running" && !this.shuttingDown && !!current
+        && current.exitCode === null && current.signalCode === null,
+      complete: fence.complete && this.captureObserverReadyAt > 0 && health.status === "healthy",
       limitations: [...health.limitations,
+        ...health.issues.map(issue => `Capture coverage is incomplete (${issue.code}).`),
+        ...(this.captureObserverReadyAt === 0 ? ["The accessibility observer is still starting; no readable window has been confirmed yet."] : []),
         ...(!fence.complete ? ["The native-to-disk checkpoint could not be confirmed; the fragment may omit pending observations."] : [])] };
   }
   private checkpointRecorder(child: ChildProcessWithoutNullStreams): Promise<{ complete: boolean }> {

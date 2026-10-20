@@ -9,7 +9,7 @@ import { PluginConversationRecording } from "../plugin-conversation-recording.js
 
 let node: HTMLDivElement, root: Root;
 beforeEach(() => { (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true; node = document.createElement("div"); document.body.appendChild(node); root = createRoot(node); });
-afterEach(async () => { await act(async () => root.unmount()); node.remove(); });
+afterEach(async () => { await act(async () => root.unmount()); node.remove(); vi.useRealTimers(); });
 function fixture() {
   const plugin = { id: "fixture.capture", version: "0.2.0", state: "active", manifest: { name: "Capture Plugin",
     conversation: { recordingCapabilityId: "capture", recordingSkillId: "capture-start", creatorSkillId: "next-step" },
@@ -28,9 +28,38 @@ function fixture() {
   const render = (conversationId = "chat-a") => act(async () => root.render(<I18nProvider language="zh-CN"><PluginConversationRecording
     client={client} plugins={[plugin]} conversationId={conversationId} onPrompt={onPrompt} /></I18nProvider>));
   const click = async (label: string) => act(async () => [...node.querySelectorAll("button")].find(button => button.textContent === label)!.click());
-  return { plugin, client, invoke, onPrompt, render, click };
+  const refresh = (patch: Partial<EventCaptureSession>) => act(async () => { session = { ...session, ...patch }; window.dispatchEvent(new Event("memmy:plugins-changed")); });
+  return { plugin, client, invoke, onPrompt, render, click, refresh };
 }
 describe("conversation-owned recording", () => {
+  it("shows an advancing video-style recording bar only for an actual active session and freezes its end time", async () => {
+    vi.useFakeTimers(); const f = fixture(); await f.render();
+    expect(node.querySelector('.recording-bar--activity.recording-bar--live')).not.toBeNull();
+    expect(node.querySelector('[role="timer"]')?.textContent).toBe("01:05");
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(node.querySelector('[role="timer"]')?.textContent).toBe("01:07");
+    await f.click("结束录制");
+    expect(node.querySelector('[role="timer"]')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(node.querySelector('time')?.textContent).toBe("01:07");
+    expect(f.onPrompt).not.toHaveBeenCalled();
+  });
+  it("shows partial coverage without treating a live recording as stopped", async () => {
+    const f = fixture(); await f.render(); await f.refresh({ availability: "partial" });
+    expect(node.querySelector('[role="timer"]')).not.toBeNull();
+    expect(node.textContent).toContain("采集部分可用");
+    expect(node.textContent).not.toContain("录制失败");
+    await f.refresh({ state: "failed", endedAt: new Date().toISOString(), error: "capture_source_stopped" });
+    expect(node.querySelector('.recording-bar--live')).toBeNull();
+    expect(node.querySelector('[role="timer"]')).toBeNull();
+    expect(node.textContent).toContain("录制失败");
+  });
+  it("does not start a timer before a recording exists, and supports recordings longer than an hour", async () => {
+    const f = fixture(); f.invoke.mockResolvedValueOnce({ callId: "call", event: { type: "result", output: { sessions: [] } } });
+    await f.render(); expect(node.querySelector('[role="timer"]')).toBeNull();
+    await f.refresh({ startedAt: new Date(Date.now() - 3665_000).toISOString() });
+    expect(node.querySelector('[role="timer"]')?.textContent).toBe("01:01:05");
+  });
   it("queries state without contributing polling calls to the conversation", async () => {
     const f = fixture(); await f.render();
     expect(f.invoke).toHaveBeenLastCalledWith("fixture.capture", "capture", expect.objectContaining({ background: true, origin: "user", input: { action: "status" } }));

@@ -43,6 +43,16 @@ jobs:
       - name: Native observer logic
         working-directory: App/native-computer-history/apps/OpenComputerHistoryWindows
         run: go test ./...
+      - name: Windows PowerShell UIA snapshot serialization
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $source = Get-Content -Raw 'App/native-computer-history/apps/OpenComputerHistoryWindows/worker.ps1'
+          $worker = Join-Path $env:RUNNER_TEMP 'plugin-history-worker-selftest.ps1'
+          [IO.File]::WriteAllText($worker, $source, [Text.UTF8Encoding]::new($true))
+          $powershell = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+          $probe = & $powershell -NoProfile -NonInteractive -MTA -ExecutionPolicy Bypass -File $worker -SelfTest | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $probe.workerApiCompiled -or -not $probe.pureSelfTest -or $probe.desktopAccess -ne $false) { throw 'UIA worker serialization regression' }
       - name: Verify source provenance
         run: node -e "const cp=require('node:child_process');const status=cp.execFileSync('git',['status','--porcelain'],{encoding:'utf8'});if(status.trim()){console.error(status);process.exit(1)}"
       - name: Build shared native task recorder

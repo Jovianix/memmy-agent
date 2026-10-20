@@ -22,6 +22,14 @@ function fixture() {
     advance: (amount: number) => { time += amount; }, stopped: () => { running = false; } };
 }
 describe("conversation event fragments", () => {
+  it("retains a transient incomplete boundary even when capture recovers before stop", async () => {
+    const f = fixture(), original = f.checkpoint.getMockImplementation()!;
+    f.checkpoint.mockImplementationOnce(async () => ({ ...await original(), complete: false, limitations: ["observer_unavailable"] }));
+    const session = await f.service.start("test.capture", "chat-a", "Goal", true);
+    f.advance(10); f.event("after recovery"); f.advance(10);
+    expect(await f.service.stop("test.capture", "chat-a", session.id)).toMatchObject({ state: "ready", eventCount: 1, availability: "partial" });
+    expect(f.release).toHaveBeenCalledOnce();
+  });
   it("marks an unconfirmed native boundary partial and keeps post-stop observations outside the fragment", async () => {
     const f = fixture(), session = await f.service.start("test.capture", "chat-a", "Goal", true);
     f.advance(10); f.event("inside");
