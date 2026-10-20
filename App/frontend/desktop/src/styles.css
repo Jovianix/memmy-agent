@@ -2100,7 +2100,6 @@ body.memmy-thread-panel-fullscreen .sidebar-restore-button {
 .thread-tab:focus-visible,
 .thread-overview-item:focus-visible,
 .thread-overview__title:focus-visible,
-.thread-overview__more:focus-visible,
 .thread-tree__node:focus-visible,
 .thread-changes__button:focus-visible,
 .thread-prompt-list__item:focus-visible,
@@ -2707,7 +2706,7 @@ body.memmy-thread-panel-fullscreen .app-frame-main {
 }
 
 .thread-overview--popover .thread-overview__section {
-  padding-top: 16px;
+  padding-top: 8px;
 }
 
 .thread-overview__title {
@@ -2784,25 +2783,6 @@ body.memmy-thread-panel-fullscreen .app-frame-main {
   line-height: 22px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.thread-overview__more {
-  align-self: flex-start;
-  height: 32px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: color-mix(in srgb, var(--color-text-ink) 50%, transparent);
-  font-family: var(--font-sans);
-  font-size: 12px;
-  line-height: 20px;
-  cursor: pointer;
-}
-
-.thread-overview__more:hover {
-  background: color-mix(in srgb, var(--color-text-ink) 5%, transparent);
-  color: var(--color-text-ink);
 }
 
 .thread-tree {
@@ -13725,7 +13705,7 @@ body.memmy-platform-windows :is(
   margin-top: 20px;
 }
 
-.ch__settings-card {
+.ch__settings-card, .ch__browser-enhancement-card {
   margin-bottom: 56px;
   overflow: hidden;
   border: 1px solid var(--ch-border);
@@ -13756,8 +13736,29 @@ body.memmy-platform-windows :is(
   line-height: 1.5;
 }
 
-.ch__settings-card > section[aria-label] {
+.ch__browser-enhancement-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 20px 22px;
   border: 0;
+  background: transparent;
+  color: var(--ch-prose);
+  text-align: left;
+  cursor: pointer;
+}
+.ch__browser-enhancement-heading > span { min-width: 0; }
+.ch__browser-enhancement-heading .ch__setting-label,
+.ch__browser-enhancement-heading .ch__setting-description { display: block; }
+.ch__browser-enhancement-heading > svg { flex: none; }
+.ch__browser-enhancement-expanded { transform: rotate(180deg); }
+
+.ch__settings-card > section[aria-label] {
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
   border-radius: 0;
   padding: 0;
 }

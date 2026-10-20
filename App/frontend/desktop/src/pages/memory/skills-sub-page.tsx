@@ -289,14 +289,14 @@ export function SkillsSubPage(props: SkillsSubPageProps) {
 
   useEffect(() => {
     void refresh().catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [props.client, t, demoEnabled]);
 
   useEffect(() => {
     if (props.openRequest) {
       openSkill(props.openRequest.id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [props.openRequest?.requestId]);
 
   return (
@@ -541,7 +541,7 @@ function SkillDrawer(props: {
           {awaitingObservedReview ? (
             <section className="memory-detail-card">
               <p>{t("memory.skills.observedCandidateReview")}</p>
-              {props.onApprove ? <button type="button" disabled={approving} onClick={() => {
+              {props.onApprove ? <button className="memory-skill-editor__button" type="button" disabled={approving} onClick={() => {
                 if (!readyDetail) return;
                 setApproving(true);
                 setApproveError(null);
@@ -1072,7 +1072,7 @@ function parseJsonString(value: unknown): unknown {
   }
 
   const trimmed = value.trim();
-  if (!trimmed || !/^[\[{"]/.test(trimmed)) {
+  if (!trimmed || !(trimmed.startsWith("[") || trimmed.startsWith("{") || trimmed.startsWith('"'))) {
     return value;
   }
 

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { windowsApplicationId, windowsPathKey } from "./application-identity.js";
+import { windowsApplicationAlias, windowsApplicationId, windowsPathKey } from "./application-identity.js";
 
 // Shared application and website observation settings for both desktop platforms.
 //
@@ -47,9 +47,8 @@ export interface ObservationSubject {
   browser?: boolean;
   /** Absolute URL of the focused page, when the record has a usable one. */
   url?: string | null;
-  /** A verified private browser window is excluded whatever the rules say. */
+  /** Semantic browser sources check these before policy; native History does not exclude a whole window by mode. */
   privateBrowsing?: boolean;
-  /** Windows browser privacy state is not yet verifiable per window. */
   privateBrowsingUnknown?: boolean;
 }
 
@@ -58,7 +57,6 @@ export interface ObservationDecision {
   /** Why the record was dropped, for status output and tests. */
   reason:
     | "observed"
-    | "private_browsing"
     | "separate_source_consent"
     | "system_surface"
     | "wechat_consent_required"
@@ -73,12 +71,9 @@ export interface ObservationDecision {
 // An allowlist default fails silently in the worst possible way: the UI says
 // it is recording while nothing is written, and the gap is only discovered
 // days later when the history is asked for and turns out to be empty. What
-// protects the user here is the blocklist, pause, the exclusion of private
-// windows, secure-input suppression, local-only storage and the retention
-// window — none of which depend on which way this default points.
-//
-// Browser windows with an unknown private state are also excluded by the
-// recorder, even when the application default is otherwise permissive.
+// protects the user here is the blocklist, pause, secure-input suppression,
+// local-only storage and the retention window — none of which depend on which
+// way this default points.
 export const DEFAULT_OBSERVATION_SETTINGS: ObservationSettings = {
   memory: { syncEnabled: true },
   observation: {
@@ -163,6 +158,14 @@ function resolveAxis(
 
 /** Application axis only: native bindings are compiled before a page URL is known. */
 export function applicationObservationDecision(settings: ObservationSettings, subject: ObservationSubject): ObservationDecision {
+  // Browser extension observations identify the browser family, not its EXE.
+  // Without that path, a matching exclusion cannot be ruled out. Path-specific
+  // allows still require an exact executable match below.
+  if (!subject.executable && subject.bundleId?.toLowerCase().startsWith("win32.")
+    && settings.observation.rules.some((rule) => rule.scope === "app" && rule.executable
+      && rule.behavior === "do_not_observe" && sameApplication(windowsApplicationAlias(rule.executable), subject.bundleId!))) {
+    return { observe: false, reason: "application_blocked" };
+  }
   const appRules = settings.observation.rules.filter((rule): rule is ApplicationRule => rule.scope === "app" && (
     rule.executable ? !!subject.executable && windowsPathKey(rule.executable) === windowsPathKey(subject.executable)
       : !!subject.bundleId && sameApplication(rule.bundleID, subject.bundleId)
@@ -181,7 +184,6 @@ export function evaluateObservation(
     && subject.weChatChatAccess !== true) {
     return { observe: false, reason: "wechat_consent_required" };
   }
-  if (!options.ignorePrivateBrowsing && (subject.privateBrowsing || subject.privateBrowsingUnknown)) return { observe: false, reason: "private_browsing" };
   if (subject.bundleId && SYSTEM_SURFACE_BUNDLE_IDS.has(subject.bundleId)) {
     return { observe: false, reason: "system_surface" };
   }

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { markRecordingOcu } from "../../tools/computer-recordings/service.js";
+import { redactBrowserAuthArguments } from "../../utils/browser-auth-privacy.js";
 import path from "node:path";
 import { LLMProvider, LLMResponse, ToolCallRequest } from "../../providers/base.js";
 import {
@@ -1497,8 +1498,16 @@ export class AgentRunner {
     ];
     // Preserve the current request, final exchange and newest screenshot even if
     // they cannot fit. The final request guard then returns a local error.
+    const ensureLegalStart = (candidate: Record<string, any>[]): Record<string, any>[] => {
+      const firstNonSystem = candidate.findIndex((message) => message.role !== "system");
+      const firstUser = candidate.findIndex((message) => message.role === "user");
+      if (firstNonSystem >= 0 && firstUser > firstNonSystem) {
+        return [...candidate.slice(0, firstNonSystem), ...candidate.slice(firstUser)];
+      }
+      return candidate;
+    };
     const mandatory = build();
-    if (!fits(mandatory)) return mandatory.map((message) => ({ ...message }));
+    if (!fits(mandatory)) return ensureLegalStart(mandatory).map((message) => ({ ...message }));
     for (let index = exchanges.length - 1; index >= 0; index -= 1) {
       if (retained.has(index)) continue;
       retained.add(index);
@@ -1522,7 +1531,7 @@ export class AgentRunner {
         end = start;
       }
     }
-    return build().map((message) => ({ ...message }));
+    return ensureLegalStart(build()).map((message) => ({ ...message }));
   }
 
   private prepareMessagesForModel(
@@ -1696,6 +1705,7 @@ export class AgentRunner {
           () => this.executeTools(spec, response.toolCalls, externalLookupCounts, workspaceViolationCounts));
         const completed: Record<string, any>[] = [];
         for (const item of executed) {
+          item.call.arguments = redactBrowserAuthArguments(item.call.name, item.call.arguments);
           toolCalls.push(item.call);
           toolEvents.push(item.event);
           const toolMessage = { role: "tool", tool_call_id: item.call.id, name: item.call.name, content: item.result };
