@@ -147,6 +147,17 @@ describe("PluginService", () => {
       expect(runtimeHost.activate).toHaveBeenCalledOnce();
     } finally { await service.shutdown(); }
   });
+  it("keeps an active worker on duplicate enable while its restored tools are being refreshed", async () => {
+    const refresh = Promise.withResolvers<void>();
+    const { service, runtimeHost } = await persistedFailure({ gatewayReady: Promise.resolve(), onRestored: () => refresh.promise });
+    try {
+      await service.restoreActive();
+      await vi.waitFor(() => expect(service.get(release.manifest.id).state).toBe("active"));
+      expect((await service.enable(release.manifest.id)).state).toBe("active");
+      expect(runtimeHost.activate).toHaveBeenCalledOnce();
+      expect(runtimeHost.deactivate).not.toHaveBeenCalled();
+    } finally { refresh.resolve(); await service.shutdown(); }
+  });
   it.each(["disable", "uninstall"] as const)("cancels a deferred recovery on %s and never resurrects it", async action => {
     const gateway = Promise.withResolvers<void>();
     const { service, runtimeHost } = await persistedFailure({ gatewayReady: gateway.promise });

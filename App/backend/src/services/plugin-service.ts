@@ -535,6 +535,9 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     install: (id, version) => serial(id, () => service.install(id, version)),
     update: (id, version) => serial(id, () => service.update(id, version)),
     enable: async id => {
+      // A successful restore can still be refreshing the Agent catalog. A
+      // duplicate enable must not tear down that already active worker.
+      if (options.repository.get(id)?.state === "active") return serial(id, () => service.enable(id));
       const previous = recoveries.get(id); cancelRecovery(id);
       await previous?.promise;
       return serial(id, () => service.enable(id));

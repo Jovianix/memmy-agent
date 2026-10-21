@@ -113,7 +113,7 @@ Windows 诊断时间线（UTC）说明了实际先后关系：
 
 该对话会话于 `03:54:36.558Z` 开始、`03:55:17.348Z` 结束，保存 2 条实际 Electron 窗口事件。会话未确认全区间 native-to-disk 完整性，仍如实为 `ready / partial`，没有将其写成完整采集通过。文件 SHA-256 为 `bfb8676639ea2d4a2e8901e8482338cb588251e72035f9c4f671dfdfa33af1ae`，与清单一致。后续健康片段不继承历史异常的结论来自上表同进程、具有真实窗口变化的范围验证。
 
-本轮相关专项共 **364 通过、13 跳过**：Backend 插件、账号与升级兼容 147 通过 / 1 跳过；事件采集与落盘 57 通过；MCP 连接、调用与注册表刷新 73 通过 / 2 跳过；Desktop 服务启动和 Windows 运行时归属 87 通过 / 10 跳过。Contracts、Backend、Agent 生产代码及 Desktop 编译、Go 原生测试和 Windows 交叉编译通过。
+本轮相关专项共 **365 通过、13 跳过**：Backend 插件、账号与升级兼容 148 通过 / 1 跳过；事件采集与落盘 57 通过；MCP 连接、调用与注册表刷新 73 通过 / 2 跳过；Desktop 服务启动和 Windows 运行时归属 87 通过 / 10 跳过。覆盖恢复等待期间再次启用，以及恢复成功、工具仍在刷新时重复启用；后者不应拆掉已正常运行的 worker。Contracts、Backend、Agent 生产代码及 Desktop 编译、Go 原生测试和 Windows 交叉编译通过。
 
 扩展检查没有全部通过，以下失败涉及的断言、代码位置或配置均未在本轮修改：Agent 全量测试类型检查的 `runner-image-text-fallback.test.ts:117` 与 `websocket-http-routes.test.ts:1283`；Desktop 打包边界测试要求 `bundled-plugins` 的 `filter: ["**/*"]`，而现有 YAML 未写该字段；额外的 MCP HTTP probe 测试假定 `unreachable-host.test:80` 不可连接，本环境实际返回可连接。没有放宽这些测试来计入通过数。
 
