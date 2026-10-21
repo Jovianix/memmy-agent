@@ -22,6 +22,40 @@ function fixture() {
     advance: (amount: number) => { time += amount; }, stopped: () => { running = false; } };
 }
 describe("conversation event fragments", () => {
+  it("does not inherit a range-aware baseline gap before the fragment began", async () => {
+    const f = fixture(), original = f.checkpoint.getMockImplementation()!;
+    f.checkpoint.mockImplementationOnce(async () => ({ ...await original(), complete: false, rangeEvaluated: true,
+      limitations: ["Capture coverage is incomplete (privacy_unknown)."] }));
+    const session = await f.service.start("test.capture", "chat-a", "Healthy new interval", true);
+    f.advance(1); f.event("inside"); f.advance(1);
+    expect(await f.service.stop("test.capture", "chat-a", session.id)).toMatchObject({ availability: "available", eventCount: 1 });
+  });
+  it("freezes the first authorized stop cutoff during a slow periodic checkpoint and coalesces polls", async () => {
+    vi.useFakeTimers();
+    const f = fixture(), session = await f.service.start("test.capture", "chat-a", "Goal", true);
+    const original = f.checkpoint.getMockImplementation()!;
+    let unblock!: () => void;
+    const barrier = new Promise<void>(resolve => { unblock = resolve; });
+    f.checkpoint.mockImplementationOnce(async () => { await barrier; return original(); });
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      f.advance(10); f.event("before stop");
+      await expect(f.service.stop("test.capture", "other-chat", session.id)).rejects.toThrow("conversation");
+      expect(f.service.list("test.capture", "chat-a")[0]!.endedAt).toBeNull();
+      const first = f.service.stop("test.capture", "chat-a", session.id);
+      const cutoff = f.service.list("test.capture", "chat-a")[0]!.endedAt;
+      f.advance(1_000); f.event("after accepted stop");
+      expect(f.service.stop("test.capture", "chat-a", session.id)).toBe(first);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(f.checkpoint).toHaveBeenCalledTimes(2); // baseline and one in-flight poll
+      unblock();
+      const ended = await first;
+      expect(ended).toMatchObject({ endedAt: cutoff, state: "ready", eventCount: 1 });
+      expect(f.service.readEvents("test.capture", "chat-a", session.id).events).toMatchObject([{ event: { details: { value: "before stop" } } }]);
+      expect(f.checkpoint).toHaveBeenCalledTimes(3);
+      expect(f.checkpoint).toHaveBeenLastCalledWith({ from: session.startedAt, through: cutoff });
+    } finally { unblock(); vi.useRealTimers(); }
+  });
   it("retains a transient incomplete boundary even when capture recovers before stop", async () => {
     const f = fixture(), original = f.checkpoint.getMockImplementation()!;
     f.checkpoint.mockImplementationOnce(async () => ({ ...await original(), complete: false, limitations: ["observer_unavailable"] }));

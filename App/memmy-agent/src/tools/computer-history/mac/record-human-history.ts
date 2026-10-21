@@ -914,9 +914,9 @@ export async function run(
   helper.once("close", () => { helperClosed = true; childClosedResolve(); });
   const checkpoints = !process.stdin.isTTY ? recorderCheckpoints({
     input: process.stdin,
-    ...(windows ? { requestNative: (id: string) => {
+    ...(windows ? { requestNative: (id: string, range?: import("../core/event-capture-source.js").CaptureRange) => {
       if (!helper.stdin?.writable) throw new Error("native checkpoint unavailable");
-      helper.stdin.write(JSON.stringify({ kind: "checkpoint", id }) + "\n");
+      helper.stdin.write(JSON.stringify({ kind: "checkpoint", id, ...range }) + "\n");
     } } : {}),
     persist: async () => {
       await processing; await flushKeys();

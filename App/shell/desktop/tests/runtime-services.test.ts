@@ -985,6 +985,7 @@ describe("AgentGatewaySupervisor", () => {
       resolveProbe = resolve;
     }));
     const harness = createSupervisorHarness({ probe });
+    let ready = false; void harness.supervisor.ready.then(() => { ready = true; });
     const agentGateway: { startupIssue?: "model_config_invalid" } = {};
     const onStart = vi.fn();
     const onSettled = vi.fn();
@@ -997,6 +998,7 @@ describe("AgentGatewaySupervisor", () => {
     const second = start();
     expect(second).toBe(first);
     expect(probe).toHaveBeenCalledTimes(1);
+    expect(ready).toBe(false);
     resolveProbe("ready");
     await expect(first).resolves.toBeNull();
     await expect(start()).resolves.toBeNull();
@@ -1156,6 +1158,7 @@ describe("AgentGatewaySupervisor", () => {
       resolveProbe = resolve;
     }));
     const harness = createSupervisorHarness({ probe });
+    let ready = false; void harness.supervisor.ready.then(() => { ready = true; });
 
     const first = harness.supervisor.ensureStarted();
     const second = harness.supervisor.ensureStarted();
@@ -1166,6 +1169,7 @@ describe("AgentGatewaySupervisor", () => {
     await Promise.all([first, second]);
 
     expect(harness.supervisor.ownership).toBe("external");
+    expect(ready).toBe(true);
     expect(harness.spawn).not.toHaveBeenCalled();
     expect(harness.children).toEqual([]);
   });
@@ -1201,6 +1205,7 @@ describe("AgentGatewaySupervisor", () => {
         emitChildClose(child, 1);
       })
     });
+    let ready = false; void harness.supervisor.ready.then(() => { ready = true; });
 
     await expect(harness.supervisor.ensureStarted()).rejects.toThrow("invalid runtime config");
     harness.supervisor.startRecovery();
@@ -1210,12 +1215,14 @@ describe("AgentGatewaySupervisor", () => {
 
     expect(harness.spawn).toHaveBeenCalledTimes(2);
     expect(harness.supervisor.hasReachedReady).toBe(false);
+    expect(ready).toBe(false);
     await vi.advanceTimersByTimeAsync(999);
     expect(harness.spawn).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(1);
 
     expect(harness.spawn).toHaveBeenCalledTimes(3);
     expect(harness.supervisor.hasReachedReady).toBe(true);
+    expect(ready).toBe(true);
     expect(harness.supervisor.restartTimer).toBeNull();
   });
 

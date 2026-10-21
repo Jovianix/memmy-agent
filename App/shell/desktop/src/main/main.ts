@@ -1219,6 +1219,7 @@ async function startLocalApi(services: ManagedRuntimeServices | null): Promise<D
       ?? (app.isPackaged ? join(process.resourcesPath, "bundled-plugins") : undefined),
     memoryBaseUrl: memoryControl.baseUrl,
     memoryReady: services?.memory.ready,
+    agentGatewayReady: services?.agentGatewayReady,
     runtimeConfigPath: process.env.MEMMY_HOME ? join(process.env.MEMMY_HOME, "runtime.json") : undefined
   });
   const agentGateway: NonNullable<DesktopRuntimeConfig["agentGateway"]> =

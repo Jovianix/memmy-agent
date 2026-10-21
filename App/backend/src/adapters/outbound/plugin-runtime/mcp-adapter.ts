@@ -125,6 +125,13 @@ export function createMcpPluginAdapter(options: CreateMcpPluginAdapterOptions = 
       const session: McpPluginSession = { pluginId: context.plugin.id, client, config, capabilityTools: {}, controllers: new Map(), calls: new Map(), closing: false };
       const approved = new Set(context.plugin.approvedPermissions.flatMap(p => p.type === "host-service" ? p.services : []));
       const hostControllers = new Set<AbortController>();
+      const abortActivation = () => {
+        session.closing = true;
+        for (const controller of hostControllers) controller.abort();
+        void client.close().catch(() => undefined);
+      };
+      context.signal?.throwIfAborted();
+      context.signal?.addEventListener("abort", abortActivation, { once: true });
       client.setRequestHandler?.(HostRequestSchema, async request => {
         if (!approved.has(request.params.service) || !options.hostServices) throw new Error("Host service permission denied");
         const controller = new AbortController(); hostControllers.add(controller);
@@ -159,11 +166,14 @@ export function createMcpPluginAdapter(options: CreateMcpPluginAdapterOptions = 
         const missing = Object.values(capabilityTools).filter((tool) => !available.has(tool));
         if (missing.length) throw new Error(`MCP tools not found: ${missing.join(", ")}`);
         session.capabilityTools = capabilityTools;
+        context.signal?.throwIfAborted();
         return session;
       } catch (error) {
         session.closing = true;
         await client.close().catch(() => undefined);
         throw error;
+      } finally {
+        context.signal?.removeEventListener("abort", abortActivation);
       }
     },
 

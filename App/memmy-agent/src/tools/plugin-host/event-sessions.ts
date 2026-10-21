@@ -9,13 +9,15 @@ const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 const controls = /^recording_(?:started|stopped|paused|resumed)$/;
 const maxBytes = 64 * 1024 * 1024;
 type Active = { session: EventCaptureSession; subscription: EventCaptureSubscription;
-  positions: Map<string, number>; skipLeading: Set<string>; fd: number; bytes: number };
+  positions: Map<string, number>; skipLeading: Set<string>; fd: number; bytes: number;
+  stopping?: Promise<EventCaptureSession> };
 
 /** Durable, owner/conversation-scoped snapshots of the shared authorized stream. */
 export class PluginEventSessions {
   private readonly active = new Map<string, Active>();
   private readonly failed = new Map<string, EventCaptureSession>();
   private pending: Promise<unknown> = Promise.resolve();
+  private polling: Promise<void> | null = null;
   private readonly timer: ReturnType<typeof setInterval>;
   private closing = false;
   constructor(private readonly options: { dataRoot: string; source: EventCaptureSource; now?: () => number }) {
@@ -35,12 +37,20 @@ export class PluginEventSessions {
         } catch { /* Never advertise invalid manifests. */ }
       }
     }
-    this.timer = setInterval(() => { void this.serial(async () => {
+    this.timer = setInterval(() => { void this.poll(); }, 1_000); this.timer.unref();
+  }
+  private poll(): Promise<void> {
+    if (this.polling) return this.polling;
+    const pass = this.serial(async () => {
       for (const active of [...this.active.values()]) {
+        if (active.session.state !== "recording") continue;
         try { await this.collect(active); }
         catch (error) { await this.fail(active, error); }
       }
-    }).catch(() => undefined); }, 1_000); this.timer.unref();
+    }).catch(() => undefined);
+    this.polling = pass;
+    void pass.finally(() => { if (this.polling === pass) this.polling = null; });
+    return pass;
   }
   private now() { return new Date(this.options.now?.() ?? Date.now()).toISOString(); }
   isBusy(owner: string) { return [...this.active.values()].some(active => active.session.pluginId === owner); }
@@ -86,11 +96,15 @@ export class PluginEventSessions {
       let fd: number | undefined;
       let session: EventCaptureSession | undefined;
       try {
-        const initial = await subscription.checkpoint();
+        const initial = await subscription.checkpoint({ from: this.now() });
         if (!initial.running) throw new Error("capture_not_running");
         session = { schemaVersion: 1, id: randomUUID(), pluginId: owner, conversationId,
           goal: goal.trim(), state: "recording", startedAt: this.now(), endedAt: null, eventCount: 0, eventTypes: {}, applications: [],
-          availability: initial.complete === false ? "partial" : "pending", eventsSha256: null, limitations: initial.limitations, error: null, ranges: [] };
+          // The initial fence establishes source positions BEFORE startedAt.
+          // Range-aware sources re-evaluate this fragment's own interval below.
+          availability: !initial.rangeEvaluated && initial.complete === false ? "partial" : "pending", eventsSha256: null,
+          limitations: initial.rangeEvaluated ? initial.limitations.filter(value => !/coverage is incomplete|observer is still starting|checkpoint could not be confirmed/i.test(value)) : initial.limitations,
+          error: null, ranges: [] };
         fs.mkdirSync(this.folder(owner, session.id), { recursive: true, mode: 0o700 });
         fd = fs.openSync(path.join(this.folder(owner, session.id), "events.jsonl"), "wx", 0o600);
         this.save(session);
@@ -115,7 +129,8 @@ export class PluginEventSessions {
     });
   }
   private async collect(active: Active, checkpoint?: CaptureCheckpoint) {
-    const point = checkpoint ?? await active.subscription.checkpoint();
+    const point = checkpoint ?? await active.subscription.checkpoint({ from: active.session.startedAt,
+      ...(active.session.endedAt ? { through: active.session.endedAt } : {}) });
     if (!point.running && active.session.state === "recording") throw new Error("capture_source_stopped");
     if (point.complete === false) active.session.availability = "partial";
     active.session.limitations = [...new Set([...active.session.limitations, ...point.limitations])];
@@ -169,12 +184,20 @@ export class PluginEventSessions {
     this.save(active.session);
   }
   stop(owner: string, conversationId: string, id: string, cancel = false) {
-    return this.serial(async () => {
-      const saved = this.authorized(owner, conversationId, id), active = this.active.get(id);
-      if (!active) return saved;
-      active.session.endedAt = this.now(); active.session.state = "finalizing"; this.save(active.session);
+    // Validate ownership before freezing a boundary, even while a checkpoint
+    // is in flight. The first accepted stop owns the cutoff and cancellation.
+    let saved: EventCaptureSession;
+    try { saved = this.authorized(owner, conversationId, id); }
+    catch (error) { return Promise.reject(error); }
+    const active = this.active.get(id);
+    if (!active) return Promise.resolve(saved);
+    if (active.stopping) return active.stopping;
+    active.session.endedAt ??= this.now(); active.session.state = "finalizing";
+    this.save(active.session);
+    const stopping = this.serial(async () => {
+      if (!this.active.has(id)) return this.read(owner, id);
       try {
-        const point = await active.subscription.checkpoint();
+        const point = await active.subscription.checkpoint({ from: active.session.startedAt, through: active.session.endedAt! });
         if (point.complete !== true) {
           active.session.availability = "partial";
           if (!active.session.limitations.includes("Native-to-disk completion was not confirmed.")) active.session.limitations.push("Native-to-disk completion was not confirmed.");
@@ -189,6 +212,8 @@ export class PluginEventSessions {
       } catch (error) { await this.fail(active, error); return this.read(owner, id); }
       finally { if (this.active.delete(id)) await active.subscription.release(); }
     });
+    active.stopping = stopping;
+    return stopping;
   }
   private evidenceHash(session: EventCaptureSession) {
     const file = path.join(this.folder(session.pluginId, session.id), "events.jsonl"), stat = fs.lstatSync(file);

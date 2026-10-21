@@ -148,6 +148,27 @@ afterEach(() => {
 });
 
 describe("MCP connection helpers", () => {
+  it("refreshes restored plugin tools into the registry replaced during Agent initialization", async () => {
+    const root = tempRoot();
+    setConfigPath(path.join(root, "config.yaml"));
+    const servers = { plugins: { command: "plugin-bridge" } };
+    saveConfig(new Config({ tools: { mcpServers: servers } }));
+    const names = ["plugin_manage"];
+    setMcpRuntimeForTest(runtimeFor({ "plugin-bridge": fakeSession(names) }) as any);
+    const initial = new ToolRegistry();
+    const state = { mcpServers: servers, mcpStacks: await connectMcpServers(servers, initial) };
+    const current = new ToolRegistry();
+    for (const [, tool] of initial) current.register(tool);
+    try {
+      names.push("plugin_record_and_replay_cb7d2519");
+      await expect(reloadServers(state, current)).resolves.toMatchObject({ ok: true });
+      expect(current.has("mcp_plugins_plugin_record_and_replay_cb7d2519")).toBe(true);
+      expect(initial.has("mcp_plugins_plugin_record_and_replay_cb7d2519")).toBe(false);
+      names.pop();
+      await reloadServers(state, current);
+      expect(current.toolNames).toEqual(["mcp_plugins_plugin_manage"]);
+    } finally { await state.mcpStacks.plugins!.aclose(); }
+  });
   it("refreshes an already connected plugin catalog after install and disable without closing the transport", async () => {
     const root = tempRoot();
     setConfigPath(path.join(root, "config.yaml"));

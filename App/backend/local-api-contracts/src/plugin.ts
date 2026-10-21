@@ -376,6 +376,8 @@ export const InstalledPluginSchema = z.object({
   version: z.string().min(1),
   manifest: PluginManifestSchema,
   state: PluginStateSchema,
+  /** Persisted user choice, independent of current runtime availability. */
+  desiredEnabled: z.boolean().optional(),
   approvedPermissions: z.array(PluginPermissionSchema),
   config: z.record(z.string(), z.unknown()),
   lastError: z.string().nullable(),

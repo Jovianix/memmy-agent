@@ -1,4 +1,5 @@
-import type { EventCaptureSubscription, CaptureCheckpoint } from "../core/event-capture-source.js";
+import type { EventCaptureSubscription, CaptureCheckpoint, CaptureRange } from "../core/event-capture-source.js";
+import { CaptureCoverageGaps } from "../core/coverage-gaps.js";
 import { collectorGate, CollectorBusyError } from "../core/collector-gate.js";
 import { computerHistoryPermissionError } from "../../computer-use/mac-permission-settings.js";
 import { isMacNativeRuntimeSupported } from "../../computer-use/mac-native-runtime-support.js";
@@ -441,7 +442,7 @@ export class ComputerHistoryDemoService {
       const id = crypto.randomUUID(); this.eventSubscriptions.add(id);
       let released = false;
       return {
-        checkpoint: () => this.eventCheckpoint(() => released),
+        checkpoint: range => this.eventCheckpoint(() => released, range),
         release: () => this.serializeEventCapture(async () => {
           if (released) return; released = true; this.eventSubscriptions.delete(id);
           if (this.eventSubscriptions.size) return;
@@ -459,10 +460,12 @@ export class ComputerHistoryDemoService {
   }
   private historyLease: (() => void) | null = null;
   get recorderBusy(): boolean { return this.observationState === "running" || this.observationState === "stopping" || this.recorderTransition !== null; }
-  private async eventCheckpoint(released: () => boolean): Promise<CaptureCheckpoint> {
+  private async eventCheckpoint(released: () => boolean, range?: CaptureRange): Promise<CaptureCheckpoint> {
+    const through = range?.through ?? new Date().toISOString();
+    if (range && (!Number.isFinite(Date.parse(range.from)) || !Number.isFinite(Date.parse(through)) || Date.parse(through) < Date.parse(range.from))) throw new Error("capture_invalid_range");
     if (this.recorderTransition) await this.recorderTransition;
     const child = this.segment?.child;
-    const fence = child ? await this.checkpointRecorder(child) : { complete: false };
+    const fence = child ? await this.checkpointRecorder(child, range, through) : { complete: false, rangeEvaluated: false, through };
     const streams: CaptureCheckpoint["streams"] = [];
     if (fs.existsSync(this.segmentsDirectory)) for (const entry of fs.readdirSync(this.segmentsDirectory, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
@@ -470,6 +473,12 @@ export class ComputerHistoryDemoService {
       try { const stat = fs.lstatSync(file); if (stat.isFile() && !stat.isSymbolicLink()) streams.push({ id: entry.name, file, size: stat.size }); } catch { /* A rotated empty segment is not a stream. */ }
     }
     const health = this.captureHealth();
+    const rangeEvaluated = !!range && fence.rangeEvaluated;
+    const issues = rangeEvaluated
+      ? this.captureCoverageGaps.within(Date.parse(range!.from), Date.parse(fence.through))
+      : health.issues.map(issue => issue.code);
+    const heartbeat = this.captureLastHeartbeatAt && Date.parse(this.captureLastHeartbeatAt);
+    if (rangeEvaluated && heartbeat && heartbeat + CAPTURE_HEARTBEAT_TIMEOUT_MS < Date.parse(fence.through)) issues.push("heartbeat_missing");
     // Coverage errors describe an unreadable foreground window or a restarting
     // UIA provider, not the lifetime of the shared collector. Ending the lease
     // here would turn a recoverable snapshot error into a real recording stop.
@@ -477,20 +486,27 @@ export class ComputerHistoryDemoService {
     return { streams: streams.sort((a, b) => a.id.localeCompare(b.id)),
       running: !released() && this.observationState === "running" && !this.shuttingDown && !!current
         && current.exitCode === null && current.signalCode === null,
-      complete: fence.complete && this.captureObserverReadyAt > 0 && health.status === "healthy",
+      rangeEvaluated,
+      complete: fence.complete && (rangeEvaluated ? issues.length === 0 : this.captureObserverReadyAt > 0 && health.status === "healthy"),
       limitations: [...health.limitations,
-        ...health.issues.map(issue => `Capture coverage is incomplete (${issue.code}).`),
-        ...(this.captureObserverReadyAt === 0 ? ["The accessibility observer is still starting; no readable window has been confirmed yet."] : []),
+        ...issues.map(code => `Capture coverage is incomplete (${code}).`),
+        ...(!rangeEvaluated && this.captureObserverReadyAt === 0 ? ["The accessibility observer is still starting; no readable window has been confirmed yet."] : []),
         ...(!fence.complete ? ["The native-to-disk checkpoint could not be confirmed; the fragment may omit pending observations."] : [])] };
   }
-  private checkpointRecorder(child: ChildProcessWithoutNullStreams): Promise<{ complete: boolean }> {
+  private readonly captureCoverageGaps = new CaptureCoverageGaps();
+  private readonly captureCheckpoints = new WeakMap<ChildProcessWithoutNullStreams, Map<string, Promise<{ complete: boolean; rangeEvaluated: boolean; through: string }>>>();
+  private checkpointRecorder(child: ChildProcessWithoutNullStreams, range?: CaptureRange, through = new Date().toISOString()): Promise<{ complete: boolean; rangeEvaluated: boolean; through: string }> {
+    let requests = this.captureCheckpoints.get(child);
+    if (!requests) { requests = new Map(); this.captureCheckpoints.set(child, requests); }
+    const key = range ? `${range.from}/${range.through ?? "live"}` : "latest";
+    const existing = requests.get(key); if (existing) return existing;
     const id = crypto.randomUUID();
-    return new Promise(resolve => {
+    const request = new Promise<{ complete: boolean; rangeEvaluated: boolean; through: string }>(resolve => {
       let buffered = "", done = false;
-      const finish = (complete: boolean) => {
+      const finish = (complete: boolean, rangeEvaluated = false) => {
         if (done) return; done = true; clearTimeout(timer);
         child.stdout.off("data", onData); child.off("exit", failed); child.off("error", failed);
-        resolve({ complete });
+        resolve({ complete, rangeEvaluated, through });
       };
       const failed = () => finish(false);
       const onData = (chunk: Buffer) => {
@@ -500,14 +516,17 @@ export class ComputerHistoryDemoService {
         while ((end = buffered.indexOf("\n")) >= 0) {
           const line = buffered.slice(0, end); buffered = buffered.slice(end + 1);
           if (!line.startsWith("[recorder-checkpoint] ")) continue;
-          try { const result = JSON.parse(line.slice(22)); if (result.id === id) finish(result.complete === true); } catch { /* Only the requested checkpoint is accepted. */ }
+          try { const result = JSON.parse(line.slice(22)); if (result.id === id) finish(result.complete === true, result.rangeEvaluated === true); } catch { /* Only the requested checkpoint is accepted. */ }
         }
       };
       const timer = setTimeout(failed, 12_000); timer.unref();
       child.stdout.on("data", onData); child.once("exit", failed); child.once("error", failed);
       if (!child.stdin.writable || child.exitCode !== null || child.signalCode !== null) return failed();
-      child.stdin.write(`${JSON.stringify({ kind: "checkpoint", id })}\n`, error => { if (error) failed(); });
+      child.stdin.write(`${JSON.stringify({ kind: "checkpoint", id, ...(range ? { ...range, through } : {}) })}\n`, error => { if (error) failed(); });
     });
+    requests.set(key, request);
+    void request.finally(() => { if (requests!.get(key) === request) requests!.delete(key); });
+    return request;
   }
 
   private readonly recorderScript: string;
@@ -1741,6 +1760,7 @@ export class ComputerHistoryDemoService {
       }
     } else if (CAPTURE_ISSUE_CODES.has(code)) {
       if (count !== undefined && (!Number.isSafeInteger(count) || (count as number) < 1)) return;
+      this.captureCoverageGaps.add(code, at);
       const previous = this.captureIssues.get(code);
       const readyAt = code === "input_monitoring_unavailable" ? this.captureInputReadyAt
         : code === "observer_unavailable" || code === "observer_notifications_unavailable" ? this.captureObserverReadyAt : 0;

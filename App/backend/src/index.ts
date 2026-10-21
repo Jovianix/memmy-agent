@@ -75,6 +75,8 @@ export interface CreateLocalBackendOptions {
   memoryBaseUrl?: string;
   /** Resolves when the managed Memory service is ready for startup config reload. */
   memoryReady?: Promise<void>;
+  /** Optional deferred Agent readiness; never awaited before the first window. */
+  agentGatewayReady?: Promise<void>;
   /** Desktop install fingerprint. */
   desktopInstallFingerprint?: string;
   /** Login channel supported by the current desktop package. */
@@ -178,6 +180,7 @@ export async function createLocalBackend(options: CreateLocalBackendOptions): Pr
       scanPreferencesStore,
       accountChannel: options.accountChannel,
       memmyAgentAdminClient: options.memmyAgentAdminClient,
+      agentGatewayReady: options.agentGatewayReady,
       memmyAgentAdminBootstrapSecret: await readAgentGatewayBootstrapSecret(memmyConfigPath),
       pluginRegistry: configuredPluginRegistry(process.env, bundledCatalog?.registry, (): Record<string, string> => {
         const cloudUuid = appStateStore.repositories.accountSession.getCloudUuid();

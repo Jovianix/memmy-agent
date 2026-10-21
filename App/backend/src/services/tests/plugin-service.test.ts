@@ -10,6 +10,7 @@ import {
   type PluginArtifactManager,
   type PluginRuntimeHost
 } from "../plugin-service.js";
+import type { CreatePluginServiceOptions } from "../plugin-service.js";
 import type { PluginLocalArtifactService } from "../plugin-local-artifact-service.js";
 
 let root: string | undefined;
@@ -52,7 +53,8 @@ const release = {
 
 function createContext(
   releases: PluginRelease[] = [release],
-  localArtifactService?: PluginLocalArtifactService
+  localArtifactService?: PluginLocalArtifactService,
+  lifecycle: Partial<CreatePluginServiceOptions> = {}
 ) {
   root = mkdtempSync(join(tmpdir(), "memmy-plugin-service-"));
   store = createAppStateStore({ databasePath: join(root, "app.sqlite") });
@@ -89,12 +91,98 @@ function createContext(
       runtimeHost,
       artifactManager,
       skillManager,
-      localArtifactService
+      localArtifactService,
+      ...lifecycle
     })
   };
 }
 
 describe("PluginService", () => {
+  const gatewayRelease: PluginRelease = { manifest: { ...release.manifest,
+    permissions: [...release.manifest.permissions, { type: "host-service", services: ["event-sessions"] }] } };
+  async function persistedFailure(options: Partial<CreatePluginServiceOptions> = {}) {
+    const context = createContext([gatewayRelease], undefined, options);
+    const { service } = context;
+    await service.install(release.manifest.id);
+    service.configure(release.manifest.id, { config: { database: "crossref" }, secrets: { "api-key": "secret" } });
+    await service.approvePermissions(release.manifest.id, gatewayRelease.manifest.permissions);
+    store!.repositories.plugins.setDesiredEnabled(release.manifest.id, true);
+    store!.repositories.plugins.setState(release.manifest.id, "failed", "fetch failed");
+    return context;
+  }
+  it("keeps the first window unblocked and restores a desired failed worker after real Gateway readiness", async () => {
+    const gateway = Promise.withResolvers<void>(), onRestored = vi.fn(async () => undefined);
+    const { service, runtimeHost } = await persistedFailure({ gatewayReady: gateway.promise, onRestored });
+    try {
+      await service.restoreActive();
+      expect(runtimeHost.activate).not.toHaveBeenCalled();
+      expect(service.get(release.manifest.id)).toMatchObject({ desiredEnabled: true, state: "enabling" });
+      gateway.resolve();
+      await vi.waitFor(() => expect(service.get(release.manifest.id).state).toBe("active"));
+      expect(runtimeHost.activate).toHaveBeenCalledOnce(); expect(onRestored).toHaveBeenCalledOnce();
+    } finally { await service.shutdown(); }
+  });
+  it("retries only transient connection failures with a finite attempt count", async () => {
+    const { service, runtimeHost } = await persistedFailure({ gatewayReady: Promise.resolve(), restoreRetryDelaysMs: [1, 1] });
+    try {
+      vi.mocked(runtimeHost.activate).mockRejectedValueOnce(new Error("MCP initialize: fetch failed"));
+      await service.restoreActive();
+      await vi.waitFor(() => expect(service.get(release.manifest.id).state).toBe("active"));
+      expect(runtimeHost.activate).toHaveBeenCalledTimes(2);
+      vi.mocked(runtimeHost.activate).mockReset().mockRejectedValue(new Error("ECONNREFUSED"));
+      await service.restoreActive();
+      await vi.waitFor(() => expect(runtimeHost.activate).toHaveBeenCalledTimes(3));
+      expect(service.get(release.manifest.id)).toMatchObject({ state: "failed", desiredEnabled: true });
+    } finally { await service.shutdown(); }
+  });
+  it("replaces a cancelled deferred recovery when the user enables again before Gateway readiness", async () => {
+    const gateway = Promise.withResolvers<void>();
+    const { service, runtimeHost } = await persistedFailure({ gatewayReady: gateway.promise });
+    try {
+      await service.restoreActive();
+      expect((await service.enable(release.manifest.id)).state).toBe("enabling");
+      expect(runtimeHost.activate).not.toHaveBeenCalled();
+      gateway.resolve();
+      await vi.waitFor(() => expect(service.get(release.manifest.id).state).toBe("active"));
+      expect(runtimeHost.activate).toHaveBeenCalledOnce();
+    } finally { await service.shutdown(); }
+  });
+  it.each(["disable", "uninstall"] as const)("cancels a deferred recovery on %s and never resurrects it", async action => {
+    const gateway = Promise.withResolvers<void>();
+    const { service, runtimeHost } = await persistedFailure({ gatewayReady: gateway.promise });
+    try {
+      await service.restoreActive();
+      await service[action](release.manifest.id);
+      gateway.resolve(); await service.restoreActive();
+      expect(runtimeHost.activate).not.toHaveBeenCalled();
+      if (action === "disable") expect(service.get(release.manifest.id)).toMatchObject({ state: "disabled", desiredEnabled: false });
+      else expect(service.list()).toEqual([]);
+    } finally { await service.shutdown(); }
+  });
+  it("discards an in-flight activation when the user disables the recovering plugin", async () => {
+    const activation = Promise.withResolvers<void>();
+    const { service, runtimeHost } = await persistedFailure({ gatewayReady: Promise.resolve() });
+    try {
+      vi.mocked(runtimeHost.activate).mockImplementationOnce(() => activation.promise);
+      await service.restoreActive();
+      await vi.waitFor(() => expect(runtimeHost.activate).toHaveBeenCalledOnce());
+      const disabled = service.disable(release.manifest.id);
+      expect(service.get(release.manifest.id).desiredEnabled).toBe(false);
+      activation.resolve(); await disabled;
+      expect(service.get(release.manifest.id)).toMatchObject({ state: "disabled", desiredEnabled: false });
+      await service.restoreActive(); expect(runtimeHost.activate).toHaveBeenCalledOnce();
+    } finally { activation.resolve(); await service.shutdown(); }
+  });
+  it("does not retry permission failures or block shutdown on an unstarted Gateway", async () => {
+    const { service, runtimeHost } = await persistedFailure({ gatewayReady: Promise.resolve(), restoreRetryDelaysMs: [1, 1] });
+    vi.mocked(runtimeHost.activate).mockRejectedValue(Object.assign(new Error("permission denied"), { code: "plugin_permission_denied" }));
+    await service.restoreActive();
+    await vi.waitFor(() => expect(service.get(release.manifest.id).state).toBe("failed"));
+    await service.shutdown(); expect(runtimeHost.activate).toHaveBeenCalledOnce();
+    const deferred = await persistedFailure({ gatewayReady: new Promise<void>(() => undefined) });
+    await deferred.service.restoreActive(); await deferred.service.shutdown();
+    expect(deferred.runtimeHost.activate).not.toHaveBeenCalled();
+  });
   it("does not download or reinstall an unchanged installed release on account refresh", async () => {
     const { service, artifactManager } = createContext();
     await service.install(release.manifest.id);

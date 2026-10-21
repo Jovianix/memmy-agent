@@ -147,6 +147,7 @@ export interface CreateBackendServicesOptions {
   memmyConfigPath?: string;
   /** Memmy agent admin client. */
   memmyAgentAdminClient?: MemmyAgentAdminClient;
+  agentGatewayReady?: Promise<void>;
   /** Memmy agent admin bootstrap secret. */
   memmyAgentAdminBootstrapSecret?: string | null;
   /** Verification channel supported by the current desktop package. */
@@ -263,6 +264,8 @@ export function createBackendServices(options: CreateBackendServicesOptions): Ba
     skillManager: pluginSkills,
     hostVersion: MEMMY_VERSION, platform: options.pluginPlatform, hasResourceLease: native.isBusy,
     releaseResources: native.release, activateGeneratedSkills: id => generated.activate(id),
+    gatewayReady: options.agentGatewayReady,
+    onRestored: () => memmyAgentAdminClient.reloadMcpConfig(),
     localArtifactService: createPluginLocalArtifactService({
       pluginDataRoot: join(dirname(options.appStateStore.databasePath), "plugin-data"),
       resolveWorkspace: async (conversationId) => {

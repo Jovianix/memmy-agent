@@ -35,6 +35,7 @@ export interface PluginRuntimeContext {
   config: Readonly<Record<string, unknown>>;
   secrets: Readonly<Record<string, string>>;
   rootPath: string | null;
+  signal?: AbortSignal;
 }
 
 export interface PluginSession {

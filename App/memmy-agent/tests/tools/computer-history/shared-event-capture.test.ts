@@ -21,7 +21,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  setTimeout(() => {
   fs.appendFileSync(file, JSON.stringify({recordType:'human_event', eventType:'text_input', timestamp:new Date().toISOString(), details:{text:'controlled fixture'}})+'\\n');
   const fd=fs.openSync(file,'r+'); fs.fsyncSync(fd); fs.closeSync(fd);
-  console.log('[recorder-checkpoint] '+JSON.stringify({id:input.id,complete:true}));
+  console.log('[recorder-checkpoint] '+JSON.stringify({id:input.id,complete:true,rangeEvaluated:!!input.from}));
  },10);
 });
 process.on('SIGTERM',()=>process.exit(0));
@@ -36,6 +36,23 @@ process.on('SIGTERM',()=>process.exit(0));
   return { service, root, pid: () => child()?.pid };
 }
 describe("Computer History capture subscriptions", () => {
+  it("judges historical health gaps by the requested interval and merges identical native checkpoints", async () => {
+    const f = fixture(true, ["observer_ready", "heartbeat", "ax_snapshot_budget_exceeded"]);
+    const subscription = await f.service.acquireEventCapture();
+    await subscription.checkpoint(); // Wait for startup diagnostics to arrive.
+    const damaged = await subscription.checkpoint({ from: "2020-01-01T00:00:00.000Z" });
+    expect(damaged).toMatchObject({ complete: false, rangeEvaluated: true });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const range = { from: new Date().toISOString() };
+    const child = (f.service as any).segment.child;
+    const write = vi.spyOn(child.stdin, "write");
+    const [first, second] = await Promise.all([subscription.checkpoint(range), subscription.checkpoint(range)]);
+    expect(first).toMatchObject({ complete: true, rangeEvaluated: true, running: true });
+    expect(second.complete).toBe(true);
+    expect(write.mock.calls.filter((args: unknown[]) => String(args[0]).includes('"kind":"checkpoint"'))).toHaveLength(1);
+    expect((await subscription.checkpoint({ from: "2020-01-01T00:00:00.000Z" })).complete).toBe(false);
+    await subscription.release();
+  });
   it.each([{ health: ['heartbeat'] }, { health: ['heartbeat', 'observer_unavailable'] }])("keeps an alive collector with incomplete coverage running ($health)", async ({ health }) => {
     const f = fixture(true, health), subscription = await f.service.acquireEventCapture();
     const point = await subscription.checkpoint();

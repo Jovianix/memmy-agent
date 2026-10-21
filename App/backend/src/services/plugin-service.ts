@@ -64,6 +64,10 @@ export interface CreatePluginServiceOptions {
   hasResourceLease?: (id: string) => boolean;
   releaseResources?: (id: string) => Promise<void>;
   activateGeneratedSkills?: (id: string) => Promise<void>;
+  /** Resolves only after the real Gateway health/bootstrap check succeeds. */
+  gatewayReady?: Promise<void>;
+  restoreRetryDelaysMs?: readonly number[];
+  onRestored?: () => Promise<unknown>;
 }
 
 export function createPluginService(options: CreatePluginServiceOptions): PluginService {
@@ -115,6 +119,75 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     await options.releaseResources?.(pluginId);
     if (failure) throw failure.reason;
+  };
+  const queues = new Map<string, Promise<unknown>>();
+  const serial = <T>(id: string, operation: () => Promise<T>): Promise<T> => {
+    const next = (queues.get(id) ?? Promise.resolve()).catch(() => undefined).then(operation);
+    queues.set(id, next);
+    void next.finally(() => { if (queues.get(id) === next) queues.delete(id); }).catch(() => undefined);
+    return next;
+  };
+  let closing = false;
+  let gatewayAvailable = !options.gatewayReady;
+  void options.gatewayReady?.then(() => { gatewayAvailable = true; }).catch(() => undefined);
+  const recoveries = new Map<string, { controller: AbortController; promise: Promise<void> }>();
+  const wantsEnabled = (plugin: PluginRecord) => plugin.desiredEnabled ?? ["active", "enabling"].includes(plugin.state);
+  const needsGateway = (plugin: PluginRecord) => plugin.manifest.permissions.some(permission => permission.type === "host-service"
+    && permission.services.some(name => ["collector", "recording", "event-sessions", "window-focus"].includes(name)));
+  const cancelRecovery = (id: string) => {
+    const recovery = recoveries.get(id); if (!recovery) return;
+    recovery.controller.abort();
+    // Abort an in-flight MCP handshake as well as a pending retry timer.
+    void options.runtimeHost.deactivate(id).catch(() => undefined);
+  };
+  const restore = (id: string): Promise<void> => {
+    const existing = recoveries.get(id); if (existing) return existing.promise;
+    const controller = new AbortController(), signal = controller.signal;
+    const promise = Promise.resolve().then(async () => {
+      const initial = required(id);
+      if (needsGateway(initial) && options.gatewayReady) {
+        options.repository.setState(id, "enabling");
+        await waitForPluginPromise(options.gatewayReady, signal);
+      }
+      const delays = options.restoreRetryDelaysMs ?? [500, 1_500, 5_000];
+      for (let attempt = 0; !closing && !signal.aborted; attempt++) {
+        try {
+          const restored = await serial(id, async () => {
+            const plugin = options.repository.get(id);
+            if (!plugin || !wantsEnabled(plugin) || signal.aborted || closing) return false;
+            compatible(plugin.manifest);
+            if (missingFeatures(plugin.manifest).length) throw pluginError("plugin_incompatible", "Required Host capabilities are unavailable");
+            assertEntitled(plugin.manifest);
+            if (!hasAllPermissions(plugin)) throw pluginError("plugin_permission_denied", "Plugin permissions have changed");
+            validateConfig(plugin, plugin.config);
+            options.repository.setState(id, "enabling");
+            await activateContributions(plugin, readSecrets(plugin, options.secretStore));
+            const current = options.repository.get(id);
+            if (signal.aborted || closing || !current || !wantsEnabled(current)) {
+              await deactivateContributions(id).catch(() => undefined);
+              if (current && !wantsEnabled(current)) options.repository.setState(id, "disabled");
+              return false;
+            }
+            options.repository.setState(id, "active");
+            return true;
+          });
+          if (restored) await options.onRestored?.().catch(error => console.warn(`Restored plugin tool refresh failed: ${errorMessage(error)}`));
+          return;
+        } catch (error) {
+          if (signal.aborted || closing) return;
+          const current = options.repository.get(id);
+          if (!current || !wantsEnabled(current)) return;
+          options.repository.setState(id, "failed", errorMessage(error));
+          if (!transientPluginConnectionError(error) || attempt >= delays.length) return;
+          await waitForPluginRetry(delays[attempt]!, signal);
+        }
+      }
+    }).catch(error => {
+      if (!signal.aborted && !closing && options.repository.get(id)) options.repository.setState(id, "failed", errorMessage(error));
+    });
+    recoveries.set(id, { controller, promise });
+    void promise.finally(() => { if (recoveries.get(id)?.controller === controller) recoveries.delete(id); });
+    return promise;
   };
 
   const service: PluginService = {
@@ -313,13 +386,19 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
       const plugin = required(id);
       compatible(plugin.manifest);
       if (missingFeatures(plugin.manifest).length) throw pluginError("plugin_incompatible", "Required Host capabilities are unavailable");
-      if (plugin.state === "active") return publicPlugin(plugin);
+      if (plugin.state === "active") return publicPlugin(options.repository.setDesiredEnabled(id, true));
       assertEntitled(plugin.manifest);
       if (!hasAllPermissions(plugin)) {
         throw pluginError("plugin_permission_denied", "Plugin permissions have not been approved");
       }
       validateConfig(plugin, plugin.config);
       const secrets = readSecrets(plugin, options.secretStore);
+      options.repository.setDesiredEnabled(id, true);
+      if (needsGateway(plugin) && options.gatewayReady && !gatewayAvailable) {
+        const waiting = options.repository.setState(id, "enabling");
+        void restore(id);
+        return publicPlugin(waiting);
+      }
       options.repository.setState(id, "enabling");
       try {
         await activateContributions(plugin, secrets);
@@ -431,21 +510,20 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     },
 
     async restoreActive() {
-      for (const plugin of options.repository.list().filter((candidate) => candidate.state === "active")) {
-        try {
-          compatible(plugin.manifest);
-          if (missingFeatures(plugin.manifest).length) throw pluginError("plugin_incompatible", "Required Host capabilities are unavailable");
-          assertEntitled(plugin.manifest);
-          if (!hasAllPermissions(plugin)) throw new Error("Plugin permissions have changed");
-          validateConfig(plugin, plugin.config);
-          await activateContributions(plugin, readSecrets(plugin, options.secretStore));
-        } catch (error) {
-          options.repository.setState(plugin.id, "failed", errorMessage(error));
-        }
+      if (closing) return;
+      for (const plugin of options.repository.list().filter(wantsEnabled)) {
+        const recovery = restore(plugin.id);
+        // Preserve Windows' first-window optimization. Gateway-backed workers
+        // wait independently; local plugins retain the existing startup flow.
+        if (!(needsGateway(plugin) && options.gatewayReady)) await recovery;
       }
     },
 
     async shutdown() {
+      closing = true;
+      const restoring = [...recoveries.values()];
+      for (const id of recoveries.keys()) cancelRecovery(id);
+      await Promise.allSettled(restoring.map(job => job.promise));
       await Promise.allSettled(options.repository.list()
         .filter((plugin) => plugin.state === "active" || plugin.state === "enabling")
         .map((plugin) => deactivateContributions(plugin.id)));
@@ -453,21 +531,45 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
   };
   // Serialize lifecycle mutations per plugin. Internal calls use the unwrapped
   // service, so uninstall -> disable cannot deadlock against its own queue.
-  const queues = new Map<string, Promise<unknown>>();
-  const serial = <T>(id: string, operation: () => Promise<T>): Promise<T> => {
-    const next = (queues.get(id) ?? Promise.resolve()).catch(() => undefined).then(operation);
-    queues.set(id, next);
-    void next.finally(() => { if (queues.get(id) === next) queues.delete(id); }).catch(() => undefined);
-    return next;
-  };
   return { ...service,
     install: (id, version) => serial(id, () => service.install(id, version)),
     update: (id, version) => serial(id, () => service.update(id, version)),
-    enable: id => serial(id, () => service.enable(id)),
-    disable: id => serial(id, () => service.disable(id)),
-    uninstall: id => serial(id, () => service.uninstall(id)),
+    enable: async id => {
+      const previous = recoveries.get(id); cancelRecovery(id);
+      await previous?.promise;
+      return serial(id, () => service.enable(id));
+    },
+    disable: async id => {
+      options.repository.setDesiredEnabled(id, false); cancelRecovery(id);
+      return serial(id, () => service.disable(id));
+    },
+    uninstall: async id => {
+      options.repository.setDesiredEnabled(id, false); cancelRecovery(id);
+      return serial(id, () => service.uninstall(id));
+    },
     approvePermissions: (id, permissions) => serial(id, () => service.approvePermissions(id, permissions))
   };
+}
+
+function transientPluginConnectionError(error: unknown): boolean {
+  const code = (error as { code?: string })?.code;
+  if (code && ["plugin_permission_denied", "plugin_entitlement_required", "plugin_invalid", "plugin_incompatible"].includes(code)) return false;
+  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|fetch failed|socket hang up|connection (?:closed|reset)|\b(?:502|503|504)\b/i.test(errorMessage(error));
+}
+function waitForPluginPromise<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => { signal.removeEventListener("abort", abort); reject(signal.reason); };
+    if (signal.aborted) { abort(); return; }
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(value => { signal.removeEventListener("abort", abort); resolve(value); }, error => { signal.removeEventListener("abort", abort); reject(error); });
+  });
+}
+function waitForPluginRetry(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, ms); timer.unref();
+    if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function capabilityTaskId(input: unknown): string | undefined {
