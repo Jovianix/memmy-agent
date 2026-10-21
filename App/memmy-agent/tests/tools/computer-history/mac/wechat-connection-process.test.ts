@@ -112,7 +112,7 @@ describe("WeChat connection process diagnostics", () => {
     const file = path.join(root, "wechat", "last-connection-error.json");
     const saved = JSON.parse(fs.readFileSync(file, "utf8"));
     expect(saved).toEqual({ category, phase: "preparing_wechat_data", detail, failedAt: expect.any(String) });
-    expect(fs.statSync(file).mode & 0o077).toBe(0);
+    if (!windowsHost) expect(fs.statSync(file).mode & 0o077).toBe(0);
   });
 
   it.each([
