@@ -16,6 +16,10 @@ let canvasWidth = 1920
 let canvasHeight = 1080
 let nativeTimescale: Int32 = 1_000_000_000
 let nativeFrequency: UInt64 = 1_000_000_000
+// MP4 sample durations are 32-bit track ticks: nanoseconds overflow for a
+// held frame longer than ~4.29 s. Keep the evidence clock in nanoseconds and
+// rescale only the encoded/remuxed track (one tick is less than 17 microseconds).
+let videoTimescale: Int32 = 60_000
 let frameInterval: UInt64 = 66_666_667
 let maximumDuration: UInt64 = 1_200_000_000_000
 let jsonNull = NSNull()
@@ -229,7 +233,7 @@ final class PartEncoder {
       AVVideoWidthKey: canvasWidth, AVVideoHeightKey: canvasHeight, AVVideoCompressionPropertiesKey: [
         AVVideoAverageBitRateKey: 4_000_000, AVVideoExpectedSourceFrameRateKey: 15, AVVideoMaxKeyFrameIntervalKey: 15,
         AVVideoAllowFrameReorderingKey: false, AVVideoProfileLevelKey: AVVideoProfileLevelH264BaselineAutoLevel]])
-    input.expectsMediaDataInRealTime = true; input.mediaTimeScale = nativeTimescale
+    input.expectsMediaDataInRealTime = true; input.mediaTimeScale = videoTimescale
     try require(writer.canAdd(input), "encoder_input_failed"); writer.add(input)
     try require(writer.startWriting(), "encoder_start_failed"); writer.startSession(atSourceTime: .zero)
   }
@@ -253,7 +257,8 @@ final class PartEncoder {
     writer.endSession(atSourceTime: mediaTime(end - start)); input.markAsFinished()
     let completed = DispatchSemaphore(value: 0)
     writer.finishWriting { completed.signal() }
-    try require(completed.wait(timeout: .now() + 15) == .success && writer.status == .completed, "part_finalize_failed")
+    try require(completed.wait(timeout: .now() + 15) == .success, "part_finalize_timeout")
+    try require(writer.status == .completed, "part_finalize_failed")
     try syncFile(file)
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
   }
@@ -696,10 +701,18 @@ func readerFor(_ file: URL, decoded: Bool) throws -> (AVAssetReader, AVAssetRead
   try require(reader.startReading(), "reader_start_failed")
   return (reader, output, format)
 }
+func nextVideoSample(_ output: AVAssetReaderTrackOutput) -> CMSampleBuffer? {
+  // AVAssetReader can return marker-only buffers, especially for compressed
+  // output. They have no video samples and must not consume a frame index.
+  while let sample = output.copyNextSampleBuffer() {
+    if sample.numSamples > 0 { return sample }
+  }
+  return nil
+}
 func validatePart(_ part: SealedPart, frames: [[String: Any]], origin: UInt64) throws {
   let (reader, output, _) = try readerFor(part.file, decoded: false)
   var count = 0, last: UInt64?, endpoint: UInt64 = 0
-  while let sample = output.copyNextSampleBuffer() {
+  while let sample = nextVideoSample(output) {
     guard let pts = hostNanoseconds(sample.presentationTimeStamp), let duration = hostNanoseconds(sample.duration) else { throw TaskFailure("part_timing_invalid") }
     try require(duration > 0 && (last == nil || pts > last!) && pts < part.end - part.start && count < part.frameCount, "part_timing_invalid")
     let frame = frames[part.firstFrame + count]
@@ -724,14 +737,14 @@ func remux(_ directory: URL, _ parts: [SealedPart]) throws {
   let writer = try AVAssetWriter(outputURL: temporary, fileType: .mp4)
   writer.shouldOptimizeForNetworkUse = true
   let input = AVAssetWriterInput(mediaType: .video, outputSettings: nil, sourceFormatHint: format)
-  input.mediaTimeScale = nativeTimescale; input.expectsMediaDataInRealTime = false
+  input.mediaTimeScale = videoTimescale; input.expectsMediaDataInRealTime = false
   try require(writer.canAdd(input), "remux_input_failed"); writer.add(input)
   try require(writer.startWriting(), "remux_start_failed"); writer.startSession(atSourceTime: .zero)
   do {
     for part in parts {
       let (reader, output, partFormat) = try readerFor(part.file, decoded: false)
       try require(CMFormatDescriptionEqual(format, otherFormatDescription: partFormat), "part_codec_configuration_changed")
-      while let sample = output.copyNextSampleBuffer() {
+      while let sample = nextVideoSample(output) {
         var timing = CMSampleTimingInfo(duration: sample.duration, presentationTimeStamp: CMTimeAdd(sample.presentationTimeStamp, mediaTime(part.start)),
           decodeTimeStamp: sample.decodeTimeStamp.isValid ? CMTimeAdd(sample.decodeTimeStamp, mediaTime(part.start)) : .invalid)
         var shifted: CMSampleBuffer?
@@ -746,12 +759,13 @@ func remux(_ directory: URL, _ parts: [SealedPart]) throws {
     }
     writer.endSession(atSourceTime: mediaTime(parts.last!.end)); input.markAsFinished()
     let done = DispatchSemaphore(value: 0); writer.finishWriting { done.signal() }
-    try require(done.wait(timeout: .now() + 30) == .success && writer.status == .completed, "remux_finish_failed")
+    try require(done.wait(timeout: .now() + 30) == .success, "remux_finish_timeout")
+    try require(writer.status == .completed, "remux_finish_failed")
     try syncFile(temporary)
     // Verify final sample count and timestamps, not just a nonempty container.
     let (reader, output, _) = try readerFor(temporary, decoded: false)
     var count = 0, last: UInt64?, endpoint: UInt64 = 0
-    while let sample = output.copyNextSampleBuffer() {
+    while let sample = nextVideoSample(output) {
       guard let pts = hostNanoseconds(sample.presentationTimeStamp), let duration = hostNanoseconds(sample.duration) else { throw TaskFailure("remux_verification_failed") }
       try require(last == nil || pts > last!, "remux_order_invalid"); last = pts; endpoint = pts + duration; count += 1
     }
@@ -879,7 +893,7 @@ func exportFrames(_ directory: URL, destination: URL) throws {
     let actualHash = try fileHash(file); try require(actualHash == hash, "export_part_hash_invalid")
     let (reader, output, _) = try readerFor(file, decoded: true)
     var frameIndex = 0
-    while let sample = output.copyNextSampleBuffer() {
+    while let sample = nextVideoSample(output) {
       for request in selected where request["partFrame"] as? Int == frameIndex {
         guard let flowIndex = request["i"] as? Int, flowIndex >= 0, flowIndex < 1000, let phase = request["phase"] as? String,
               phase == "before" || phase == "after", let sourceIndex = request["frameId"] as? Int, sourceIndex >= 0, sourceIndex < frames.count,
@@ -913,6 +927,8 @@ func nativeMediaSelfTest(_ directory: URL) throws {
     rect: CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight), scale: 1)
   do {
     let package = try VideoPackage(directory, origin: origin)
+    // The 9.87 s held frame exceeds the MP4 sample-duration limit at a 1 GHz
+    // track timescale. Validate its timing through sealing, remux and recovery.
     for relative in [UInt64(0), 70_000_000, 140_000_000, 10_010_000_000, 10_080_000_000, 10_150_000_000] {
       let blank = relative == 10_080_000_000
       try package.append(PendingCanvas(buffer: blank ? newCanvas() : canvas, ticks: origin + relative, window: blank ? nil : window,
@@ -924,7 +940,7 @@ func nativeMediaSelfTest(_ directory: URL) throws {
   let media = try readJSON(directory.appendingPathComponent("native-media.json"))
   try require(media["complete"] as? Bool == true && (media["parts"] as? [Any])?.count == 2, "test_sealed_parts_failed")
   let (reader, output, _) = try readerFor(directory.appendingPathComponent("recording.mp4"), decoded: true)
-  guard let first = output.copyNextSampleBuffer(), let buffer = first.imageBuffer else { throw TaskFailure("test_decode_failed") }
+  guard let first = nextVideoSample(output), let buffer = first.imageBuffer else { throw TaskFailure("test_decode_failed") }
   CVPixelBufferLockBaseAddress(buffer, .readOnly)
   guard let pixels = CVPixelBufferGetBaseAddress(buffer)?.assumingMemoryBound(to: UInt8.self) else { throw TaskFailure("test_pixels_missing") }
   let bottom = (canvasHeight - 1) * CVPixelBufferGetBytesPerRow(buffer)
