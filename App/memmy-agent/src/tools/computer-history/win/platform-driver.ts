@@ -8,6 +8,7 @@ import { isSystemSurface, pathKey } from "./policy.js";
 import path from "node:path";
 import { collectorGate } from "../core/collector-gate.js";
 import { discoverApplicationCatalog, type CatalogApplication } from "./application-catalog.js";
+import { checkpointId, persistedCheckpoint } from "../core/recorder-checkpoint.js";
 
 interface ProcessSession { ready: Promise<void>; closed: Promise<void> }
 export class WindowsPlatformDriver implements HistoryPlatformDriver {
@@ -93,15 +94,15 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
     child.stdin.on("error", () => { if (!stopped) fail(); });
     child.stdout.on("data", (chunk: Buffer) => {
       buffer += chunk.toString("utf8");
-      if (buffer.length > 4096) { fail(); return; }
       let index: number;
       while ((index = buffer.indexOf("\n")) >= 0) {
+        if (index > 4096) { fail(); return; }
         const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
         try {
           if (line.startsWith("[recorder-checkpoint] ")) {
             const checkpoint = JSON.parse(line.slice("[recorder-checkpoint] ".length));
-            if (typeof checkpoint.id !== "string" || !/^[0-9a-f-]{36}$/u.test(checkpoint.id)
-                || checkpoint.complete !== false || Object.keys(checkpoint).some(key => key !== "id" && key !== "complete")) throw new Error();
+            if (!persistedCheckpoint.safeParse(checkpoint).success && !(checkpointId.safeParse(checkpoint.id).success
+                && checkpoint.complete === false && Object.keys(checkpoint).every(key => key === "id" || key === "complete"))) throw new Error();
             continue;
           }
           if (line.startsWith("[recorder-health] ")) {
@@ -120,6 +121,7 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
           if (state.state === "stopped") stopped = true;
         } catch { fail(); }
       }
+      if (buffer.length > 4096) fail();
     });
     child.once("close", (code) => {
       clearTimeout(timeout); if (killTimer) clearTimeout(killTimer);

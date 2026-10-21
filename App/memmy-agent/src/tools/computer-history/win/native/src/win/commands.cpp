@@ -522,10 +522,43 @@ class Observer {
     lastBlockedKey_.clear();
   }
 
+  void CaptureGap(const char* code, std::uint64_t fromTick, std::uint64_t throughTick = 0) {
+    if (video_) return;  // Task recording retains its existing action/coverage counters.
+    const auto now = TickMs();
+    const auto utc = NowFileTime();
+    const auto timestamp = [&](std::uint64_t tick) {
+      return protocol::FormatUtcTimestamp(utc - (now - std::min(now, tick)) * 10000);
+    };
+    Json event = session_.Envelope("capture.gap");
+    event["code"] = code;
+    event["from"] = timestamp(fromTick);
+    event["through"] = timestamp(throughTick ? throughTick : now);
+    Emit(std::move(event));
+  }
+
+  void Checkpoint(const std::string& id, std::uint64_t captureSequence, bool complete) {
+    std::string error;
+    if (!output_.FlushPending(error)) {
+      outputFailed_ = true;
+      failedChannel_ = "file";
+      failureCode_ = error;
+      return;  // Never publish a successful fence after a failed write/flush.
+    }
+    Json event = session_.Envelope("session.checkpoint");
+    event["id"] = id;
+    event["captureSequence"] = captureSequence;
+    event["complete"] = complete && !outputFailed_;
+    Emit(std::move(event));
+  }
+
   // Returns false when the session must stop.
   bool HandleControl() {
-    for (const ControlItem item : control_.Drain()) {
+    for (const auto& message : control_.Drain()) {
+      const auto item = message.kind;
       switch (item) {
+        case ControlItem::Checkpoint:
+          if (video_ || paused_ || !hooks_.RequestCheckpoint(message.id)) Checkpoint(message.id, 0, false);
+          break;
         case ControlItem::Pause: {
           const bool already = paused_;
           if (!paused_) {
@@ -595,13 +628,14 @@ class Observer {
   }
 
   void RunQuery() {
+    const auto captureFrom = pendingSince_;
     Json trigger = {{"kinds", Json(std::vector<std::string>(pendingKinds_.begin(), pendingKinds_.end()))},
                     {"count", pendingCount_}};
     const auto actions = std::move(pendingActions_);
     bool actionOverflow = pendingActionOverflow_;
     ClearPending();
     const std::uint64_t hwnd = ForegroundWindow();
-    std::vector<HANDLE> cancel = {stop_.get(), control_.Event()};
+    std::vector<HANDLE> cancel = {stop_.get(), control_.InterruptEvent()};
     if (parent_) cancel.push_back(parent_.get());
     ++counters_.started;
     QueryOutcome query = collector_->Query(hwnd, cancel.data(), static_cast<DWORD>(cancel.size()));
@@ -610,6 +644,7 @@ class Observer {
     if (outputFailed_) return;
 
     if (query.status == "cancelled") {
+      CaptureGap("query_cancelled", captureFrom);
       if (video_) unsupportedActions_ += actions.size();
       // A control command or stop arrived mid-query; its handler decides what happens next.
       ++counters_.cancelled;
@@ -618,6 +653,8 @@ class Observer {
       return;
     }
     if (query.status != "ok") {
+      if (query.status == "unavailable" || query.reason == "context_changed" || query.reason == "policy_changed")
+        CaptureGap("query_unavailable", captureFrom);
       if (video_) unsupportedActions_ += actions.size();
       // Any refusal or failure ends the delta chain; the next success is a full baseline.
       baseline_.Reset();
@@ -646,6 +683,8 @@ class Observer {
     }
 
     lastBlockedKey_.clear();
+    if (query.response.truncated) CaptureGap("snapshot_truncated", captureFrom);
+    if (actionOverflow) CaptureGap("action_overflow", captureFrom);
     std::vector<std::string> keys;
     KeyedNodes(query.response.nodes, keys, nullptr);
     const std::string identity = std::to_string(query.context->hwnd) + "|" + std::to_string(query.context->pid) + "|" +
@@ -666,6 +705,7 @@ class Observer {
       // generation so a later field cannot authorize earlier secret input.
       const bool pointer = action.kind == ActionKind::MouseClick || action.kind == ActionKind::Scroll;
       if (item.hwnd != query.context->hwnd || (!pointer && item.generation != query.generation)) {
+        if (ActionInScope(item.hwnd)) CaptureGap("action_context_changed", item.tickMs);
         if (video_) { ++unsupportedActions_; actionOverflow = true; }
         continue;
       }
@@ -714,6 +754,7 @@ class Observer {
     if (!collector_->Commit(query, cancel.data(), static_cast<DWORD>(cancel.size()))) {
       if (video_) unsupportedActions_ += approvedCount;
       session_.DiscardEnvelope();
+      CaptureGap("query_commit_rejected", captureFrom);
       ResetCaptureState();
       if (query.status == "cancelled") {
         ++counters_.cancelled;
@@ -803,6 +844,19 @@ class Observer {
       const auto triggers = hooks_.Queue().Drain(overflowed);
       if (!paused_) {
         for (const auto& trigger : triggers) {
+          if (trigger.lostFromTickMs) {
+            CaptureGap("queue_overflow", trigger.lostFromTickMs, trigger.lostThroughTickMs);
+            if (command_.inputHooks) pendingActionOverflow_ = true;
+            MarkPending("queue_overflow");
+          }
+          if (trigger.kind == TriggerKind::Gap) continue;
+          if (trigger.kind == TriggerKind::Checkpoint) {
+            // Complete everything before this marker, even when debounce has not elapsed.
+            // Later triggers in this drain cannot be folded into the preceding query.
+            if (pending_) RunQuery();
+            if (!outputFailed_) Checkpoint(trigger.checkpointId, trigger.captureSequence, !pending_);
+            continue;
+          }
           MarkPending(TriggerKindName(trigger.kind));
           if (trigger.action.kind != ActionKind::None) {
             // Returning to Memmy's stop/finish controls is outside the selected
@@ -813,8 +867,6 @@ class Observer {
             else pendingActionOverflow_ = true;
           }
         }
-        if (overflowed && command_.inputHooks) pendingActionOverflow_ = true;
-        if (overflowed) MarkPending("queue_overflow");
       }
       MaybeRotate();
       if (outputFailed_) continue;

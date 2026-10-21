@@ -432,7 +432,7 @@ describe("ComputerHistoryDemoService", () => {
     expect(service.snapshot().histories.map((entry) => entry.title)).toEqual(["First window"]);
   });
 
-  it("writes no summary for a window in which nothing was observed", async () => {
+  it.each([false, true])("writes no summary for a window with only lifecycle/checkpoint records (marker=%s)", async (marker) => {
     const { service, root } = createService();
     const segmentId = "2026-09-11T17-00-00Z";
     const directory = path.join(root, "recordings", "segments", segmentId);
@@ -446,6 +446,9 @@ describe("ComputerHistoryDemoService", () => {
         captureText: false, captureSearchText: true, allowedApplications: [], captureScopeApplications: [] }),
       JSON.stringify({ recordType: "human_event", sequence: 1, timestamp: "2026-09-11T17:00:01.000Z",
         eventType: "recording_started", application: {}, details: {} }),
+      ...(marker ? [JSON.stringify({ recordType: "human_event", sequence: 2, timestamp: "2026-09-11T17:00:02.000Z",
+        eventType: "recording_checkpoint", details: { checkpointId: "12345678-1234-1234-1234-123456789abc",
+          nativeSessionId: "a".repeat(32), nativeSequence: 2, captureSequence: 1 } })] : []),
       "",
     ].join("\n"), "utf8");
 

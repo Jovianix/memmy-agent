@@ -1115,6 +1115,45 @@ fs::path ObservePolicy(Fixture& fixture, const std::string& name, Json extra = J
   return WritePolicy(name, Json::array({FullRule(fixture)}), std::move(extra));
 }
 
+void CaseObserveCheckpoint() {
+  Fixture fixture;
+  fixture.Start();
+  fixture.RequireForeground('a');
+  const fs::path policy = ObservePolicy(fixture, "checkpoint-policy",
+    {{"limits", {{"queryBudgetMs", 2000}, {"workerTimeoutMs", 4000}}}});
+  Gate gate(Nonce() + "-checkpoint");
+  Observe observe;
+  observe.Start(g_paths.TestHooks(), {L"observe", L"--policy", policy.wstring(), L"--seconds", L"60",
+    L"--sample-ms", L"300", L"--test-commit-gate", gate.name});
+  gate.AwaitReady();
+  const std::string id = "12345678-1234-1234-1234-123456789abc";
+  observe.Send("checkpoint " + id);
+  Sleep(200);
+  for (const auto& line : observe.Proc().Lines()) {
+    const auto event = ParseLine(line);
+    Expect(event["kind"] != "session.checkpoint", "marker overtook the in-flight commit");
+    Expect(event["kind"] != "capture.gap", "checkpoint cancelled the in-flight commit");
+  }
+  gate.Release();
+  const auto before = observe.Wait("snapshot", 8000, [](const Json& e) { return IsSnapshot(e, "ok"); });
+  const auto marker = observe.Wait("session.checkpoint", 8000);
+  Expect(marker["id"] == id && marker["complete"] == true && marker["captureSequence"] > 0,
+    "ordered checkpoint carries its identity and capture ordinal");
+  Expect(marker["sequence"] > before["sequence"], "snapshot must precede its marker");
+  const std::string nextId = "12345678-1234-1234-1234-123456789abd";
+  fixture.Command("set-message " + fixture.S("AFTER-CHECKPOINT"));
+  observe.Send("checkpoint " + nextId);
+  const auto next = observe.Wait("session.checkpoint", 8000);
+  Expect(next["id"] == nextId && next["captureSequence"] > marker["captureSequence"], "monotonic capture markers");
+  observe.Send("pause"); observe.Wait("session.paused", 5000);
+  observe.Send("checkpoint " + id);
+  const auto paused = observe.Wait("session.checkpoint", 5000);
+  Expect(paused["complete"] == false && paused["captureSequence"] == 0, "paused collector cannot confirm coverage");
+  observe.Send("stop"); observe.Wait("session.stopped", 5000);
+  Expect(observe.Finish(5000, "observe-checkpoint") == 0, "checkpoint collector exit");
+  ValidateStream(observe.Proc().Lines(), "observe checkpoint");
+}
+
 void CaseObserveLifecycle() {
   Fixture fixture;
   fixture.Start();
@@ -1747,6 +1786,7 @@ const std::map<std::string, std::function<void()>>& Cases() {
       {"partial_baseline", CasePartialBaseline},
       {"timeout_reap", CaseTimeoutReap},
       {"observe_lifecycle", CaseObserveLifecycle},
+      {"observe_checkpoint", CaseObserveCheckpoint},
       {"observe_unauthorized_foreground", CaseObserveUnauthorizedForeground},
       {"observe_policy_corrupt", CaseObservePolicyCorrupt},
       {"observe_policy_race", CaseObservePolicyRace},

@@ -1,5 +1,6 @@
 import type { EventCaptureSubscription, CaptureCheckpoint, CaptureRange } from "./event-capture-source.js";
 import { CaptureCoverageGaps } from "./coverage-gaps.js";
+import { persistedCheckpoint, type PersistedCheckpoint } from "./recorder-checkpoint.js";
 import type { HistoryPlatformDriver, HistoryPermissions, HistoryPermission } from "./platform-driver.js";
 import { collectorGate, CollectorBusyError } from "./collector-gate.js";
 import { historyPermissionsReady } from "./platform-driver.js";
@@ -189,6 +190,14 @@ interface SegmentState {
   stoppedByUser: boolean;
 }
 
+interface RecorderFence {
+  complete: boolean;
+  rangeEvaluated: boolean;
+  through: string;
+  watermark?: PersistedCheckpoint["watermark"];
+  issues?: string[];
+}
+
 /**
  * `paused` keeps the current segment open but stops writing to it, so the user
  * can step away from recording without losing the arc they were in the middle
@@ -367,7 +376,7 @@ function segmentHasActivity(eventsFile: string): boolean {
   } catch {
     return false;
   }
-  return /"eventType"\s*:\s*"(?!recording_started"|recording_stopped")/u.test(text);
+  return /"eventType"\s*:\s*"(?!recording_started"|recording_stopped"|recording_checkpoint"|recording_gap")/u.test(text);
 }
 
 function lastRecordedEvent(raw: string): Record<string, unknown> | null {
@@ -463,49 +472,71 @@ export class ComputerHistoryDemoService {
     const through = range?.through ?? new Date().toISOString();
     if (range && (!Number.isFinite(Date.parse(range.from)) || !Number.isFinite(Date.parse(through)) || Date.parse(through) < Date.parse(range.from))) throw new Error("capture_invalid_range");
     if (this.recorderTransition) await this.recorderTransition;
-    const child = this.segment?.child;
-    const fence = child ? await this.checkpointRecorder(child, range, through) : { complete: false, rangeEvaluated: false, through };
+    const segment = this.segment;
+    const child = segment?.child;
     const streams: CaptureCheckpoint["streams"] = [];
     if (fs.existsSync(this.segmentsDirectory)) for (const entry of fs.readdirSync(this.segmentsDirectory, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
       const file = path.join(this.segmentsDirectory, entry.name, "events.jsonl");
       try { const stat = fs.lstatSync(file); if (stat.isFile() && !stat.isSymbolicLink()) streams.push({ id: entry.name, file, size: stat.size }); } catch { /* A rotated empty segment is not a stream. */ }
     }
+    const fence: RecorderFence = child ? await this.checkpointRecorder(child, range, through) : { complete: false, rangeEvaluated: false, through };
+    if (fence.watermark && segment) {
+      // Use the position captured by the writer at the native marker, not a later stat.
+      // A post-marker observation may be written before stdout delivers the acknowledgement.
+      const stream = streams.find(value => value.file === segment.eventsFile);
+      try {
+        const stat = fs.lstatSync(segment.eventsFile);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size < fence.watermark.bytes) throw new Error();
+        if (stream) stream.size = fence.watermark.bytes;
+        else streams.push({ id: segment.id, file: segment.eventsFile, size: fence.watermark.bytes });
+      } catch { fence.complete = false; fence.watermark = undefined; }
+    } else {
+      // Legacy recorders have no byte watermark; retain their existing snapshot behavior.
+      streams.length = 0;
+      if (fs.existsSync(this.segmentsDirectory)) for (const entry of fs.readdirSync(this.segmentsDirectory, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        const file = path.join(this.segmentsDirectory, entry.name, "events.jsonl");
+        try { const stat = fs.lstatSync(file); if (stat.isFile() && !stat.isSymbolicLink()) streams.push({ id: entry.name, file, size: stat.size }); } catch { /* A rotated empty segment is not a stream. */ }
+      }
+    }
     const health = this.captureHealth();
-    const rangeEvaluated = !!range && fence.rangeEvaluated;
+    const rangeEvaluated = fence.rangeEvaluated;
     const issues = rangeEvaluated
-      ? this.captureCoverageGaps.within(Date.parse(range!.from), Date.parse(fence.through))
+      ? (range ? this.captureCoverageGaps.within(Date.parse(range.from), Date.parse(fence.through)) : [])
       : health.issues.map(issue => issue.code);
     const heartbeat = this.captureLastHeartbeatAt && Date.parse(this.captureLastHeartbeatAt);
-    if (rangeEvaluated && heartbeat && heartbeat + CAPTURE_HEARTBEAT_TIMEOUT_MS < Date.parse(fence.through)) issues.push("heartbeat_missing");
+    if (range && rangeEvaluated && heartbeat && heartbeat + CAPTURE_HEARTBEAT_TIMEOUT_MS < Date.parse(fence.through)) issues.push("heartbeat_missing");
     // Coverage errors describe an unreadable foreground window or a restarting
     // UIA provider, not the lifetime of the shared collector. Ending the lease
     // here would turn a recoverable snapshot error into a real recording stop.
     const current = this.segment?.child;
+    const boundaryConfirmed = current === child && (fence.complete || (!!fence.watermark && !fence.issues?.includes("native_checkpoint_incomplete")));
     return { streams: streams.sort((a, b) => a.id.localeCompare(b.id)),
       running: !released() && this.observationState === "running" && !this.shuttingDown && !!current
         && current.exitCode === null && current.signalCode === null,
       rangeEvaluated,
-      complete: fence.complete && (rangeEvaluated ? issues.length === 0 : this.captureObserverReadyAt > 0 && health.status === "healthy"),
+      boundaryConfirmed,
+      complete: fence.complete && current === child && (rangeEvaluated ? issues.length === 0 : this.captureObserverReadyAt > 0 && health.status === "healthy"),
       limitations: [...health.limitations,
-        ...issues.map(code => `Capture coverage is incomplete (${code}).`),
+        ...[...new Set([...issues, ...(fence.issues ?? [])])].map(code => `Capture coverage is incomplete (${code}).`),
         ...(!rangeEvaluated && this.captureObserverReadyAt === 0 ? ["The accessibility observer is still starting; no readable window has been confirmed yet."] : []),
-        ...(!fence.complete ? ["The native-to-disk checkpoint could not be confirmed; the fragment may omit pending observations."] : [])] };
+        ...(!boundaryConfirmed ? ["The native-to-disk checkpoint could not be confirmed; the fragment may omit pending observations."] : [])] };
   }
   private readonly captureCoverageGaps = new CaptureCoverageGaps();
-  private readonly captureCheckpoints = new WeakMap<ChildProcessWithoutNullStreams, Map<string, Promise<{ complete: boolean; rangeEvaluated: boolean; through: string }>>>();
-  private checkpointRecorder(child: ChildProcessWithoutNullStreams, range?: CaptureRange, through = new Date().toISOString()): Promise<{ complete: boolean; rangeEvaluated: boolean; through: string }> {
+  private readonly captureCheckpoints = new WeakMap<ChildProcessWithoutNullStreams, Map<string, Promise<RecorderFence>>>();
+  private checkpointRecorder(child: ChildProcessWithoutNullStreams, range?: CaptureRange, through = new Date().toISOString()): Promise<RecorderFence> {
     let requests = this.captureCheckpoints.get(child);
     if (!requests) { requests = new Map(); this.captureCheckpoints.set(child, requests); }
     const key = range ? `${range.from}/${range.through ?? "live"}` : "latest";
     const existing = requests.get(key); if (existing) return existing;
     const id = crypto.randomUUID();
-    const request = new Promise<{ complete: boolean; rangeEvaluated: boolean; through: string }>(resolve => {
+    const request = new Promise<RecorderFence>(resolve => {
       let buffered = "", done = false;
-      const finish = (complete: boolean, rangeEvaluated = false) => {
+      const finish = (complete: boolean, rangeEvaluated = false, durable?: PersistedCheckpoint) => {
         if (done) return; done = true; clearTimeout(timer);
         child.stdout.off("data", onData); child.off("exit", failed); child.off("error", failed);
-        resolve({ complete, rangeEvaluated, through });
+        resolve({ complete, rangeEvaluated, through, ...(durable ? { watermark: durable.watermark, issues: durable.issues } : {}) });
       };
       const failed = () => finish(false);
       const onData = (chunk: Buffer) => {
@@ -515,7 +546,15 @@ export class ComputerHistoryDemoService {
         while ((end = buffered.indexOf("\n")) >= 0) {
           const line = buffered.slice(0, end); buffered = buffered.slice(end + 1);
           if (!line.startsWith("[recorder-checkpoint] ")) continue;
-          try { const result = JSON.parse(line.slice(22)); if (result.id === id) finish(result.complete === true, result.rangeEvaluated === true); } catch { /* Only the requested checkpoint is accepted. */ }
+          try {
+            const result = JSON.parse(line.slice(22));
+            if (result.id !== id) continue;
+            if (result.watermark !== undefined) {
+              const durable = persistedCheckpoint.parse(result);
+              if (range && durable.through !== through) return failed();
+              finish(durable.complete, durable.rangeEvaluated, durable);
+            } else finish(result.complete === true, result.rangeEvaluated === true);
+          } catch { /* Only the requested checkpoint is accepted. */ }
         }
       };
       const timer = setTimeout(failed, 12_000); timer.unref();
@@ -2626,7 +2665,7 @@ export class ComputerHistoryDemoService {
     try {
       stat = fs.statSync(segment.eventsFile);
       const raw = fs.readFileSync(segment.eventsFile, "utf8");
-      if (!/"eventType"\s*:\s*"(?!recording_started"|recording_stopped")/u.test(raw)) return;
+      if (!/"eventType"\s*:\s*"(?!recording_started"|recording_stopped"|recording_checkpoint"|recording_gap")/u.test(raw)) return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.setNarrationError("Computer History could not read the active event stream");
       return;
@@ -2830,7 +2869,7 @@ export class ComputerHistoryDemoService {
         return { history: { ...this.currentRawCache.history, filePath }, raw: this.currentRawCache.raw };
       }
       const raw = fs.readFileSync(segment.eventsFile, "utf8");
-      if (!/"eventType"\s*:\s*"(?!recording_started"|recording_stopped")/u.test(raw)) return null;
+      if (!/"eventType"\s*:\s*"(?!recording_started"|recording_stopped"|recording_checkpoint"|recording_gap")/u.test(raw)) return null;
       const pending = renderSummary({ file: segment.eventsFile, ...parsedRawRecords(raw), title: `Computer History ${segment.id}` })
         .replace(/^source_type:\s*human_computer_history\s*$/mu, "source_type: captured")
         .replace(/^status:.*$/mu, "status: incomplete")

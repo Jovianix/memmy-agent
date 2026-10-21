@@ -1,10 +1,10 @@
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WindowsHistoryRecorder, type WindowsRecorderOptions } from "./recorder.js";
 import { WindowsPolicySession } from "./session-policy.js";
 import { resolveWindowsCollector } from "./settings.js";
 import { recorderHealthReporter } from "../mac/recorder-health.js";
+import { checkpointRequest } from "../core/recorder-checkpoint.js";
 
 export function parseRecorderArgs(argv: string[]): (WindowsRecorderOptions & { settingsFile?: string }) | null {
   if (argv.length === 1 && argv[0] === "--help") return null;
@@ -63,11 +63,12 @@ export async function runWindowsRecorder(argv = process.argv.slice(2)): Promise<
   const execute = (command: string) => {
     if (command.startsWith("{")) {
       try {
-        const input = JSON.parse(command);
-        if (input.kind !== "checkpoint" || typeof input.id !== "string" || !/^[0-9a-f-]{36}$/u.test(input.id)) throw new Error();
-        const fd = fs.openSync(options.eventsFile, "r+");
-        try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-        console.log("[recorder-checkpoint] " + JSON.stringify({ id: input.id, complete: false }));
+        const input = checkpointRequest.parse(JSON.parse(command));
+        void recorder.checkpoint(input).then(result => {
+          console.log("[recorder-checkpoint] " + JSON.stringify(result));
+        }, () => {
+          if (recorder.state === "running") console.log("[recorder-checkpoint] " + JSON.stringify({ id: input.id, complete: false }));
+        });
       } catch { diagnostic(new Error("windows_checkpoint_invalid")); }
       return;
     }

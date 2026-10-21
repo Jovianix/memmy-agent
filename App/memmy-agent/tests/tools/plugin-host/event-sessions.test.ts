@@ -22,6 +22,43 @@ function fixture() {
     advance: (amount: number) => { time += amount; }, stopped: () => { running = false; } };
 }
 describe("conversation event fragments", () => {
+  it("defers events slightly ahead of the Host clock without advancing past them", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    try {
+      const session = await f.service.start("test.capture", "chat-a", "Native clock leads Host", true);
+      f.event("中文事件稍后读取", Date.parse(session.startedAt) + 5);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(f.service.list("test.capture", "chat-a")[0]!.eventCount).toBe(0);
+      expect(f.service.list("test.capture", "chat-a")[0]!.ranges[0]!.endByte).toBe(0);
+      f.advance(10);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const ended = await f.service.stop("test.capture", "chat-a", session.id);
+      expect(ended).toMatchObject({ eventCount: 1, availability: "available" });
+      expect(f.service.readEvents("test.capture", "chat-a", session.id).events).toMatchObject([{ event: { details: { value: "中文事件稍后读取" } } }]);
+      expect(ended.ranges[0]!.endByte).toBe(fs.statSync(f.stream).size);
+    } finally { vi.useRealTimers(); }
+  });
+  it("excludes checkpoint controls and later same-tick events beyond the acknowledged byte position", async () => {
+    const f = fixture(), session = await f.service.start("test.capture", "chat-a", "Sequenced fence", true);
+    f.advance(10); f.event("before marker");
+    fs.appendFileSync(f.stream, JSON.stringify({ recordType: "human_event", sequence: 2, eventType: "recording_checkpoint",
+      timestamp: session.startedAt, details: { nativeSequence: 20, captureSequence: 10 } }) + "\n");
+    fs.appendFileSync(f.stream, JSON.stringify({ recordType: "human_event", sequence: 3, eventType: "recording_gap",
+      timestamp: session.startedAt, details: { code: "queue_overflow" } }) + "\n");
+    const original = f.checkpoint.getMockImplementation()!;
+    f.checkpoint.mockImplementationOnce(async () => {
+      const point = await original();
+      f.event("after marker, same timestamp");
+      return point;
+    });
+    const ended = await f.service.stop("test.capture", "chat-a", session.id);
+    expect(ended).toMatchObject({ state: "ready", availability: "available", eventCount: 1 });
+    expect(f.service.readEvents("test.capture", "chat-a", session.id).events).toMatchObject([
+      { event: { eventType: "text_changed", details: { value: "before marker" } } },
+    ]);
+    expect(ended.ranges[0]!.endByte).toBeLessThan(fs.statSync(f.stream).size);
+  });
   it("does not inherit a range-aware baseline gap before the fragment began", async () => {
     const f = fixture(), original = f.checkpoint.getMockImplementation()!;
     f.checkpoint.mockImplementationOnce(async () => ({ ...await original(), complete: false, rangeEvaluated: true,
@@ -63,6 +100,17 @@ describe("conversation event fragments", () => {
     f.advance(10); f.event("after recovery"); f.advance(10);
     expect(await f.service.stop("test.capture", "chat-a", session.id)).toMatchObject({ state: "ready", eventCount: 1, availability: "partial" });
     expect(f.release).toHaveBeenCalledOnce();
+  });
+  it("distinguishes a confirmed boundary with coverage gaps from a missing native acknowledgement", async () => {
+    const f = fixture(), session = await f.service.start("test.capture", "chat-a", "Known gap", true);
+    f.advance(10); f.event("readable partial evidence");
+    const original = f.checkpoint.getMockImplementation()!;
+    f.checkpoint.mockImplementationOnce(async () => ({ ...await original(), complete: false, rangeEvaluated: true,
+      boundaryConfirmed: true, limitations: ["Capture coverage is incomplete (query_unavailable)."] }));
+    const ended = await f.service.stop("test.capture", "chat-a", session.id);
+    expect(ended.availability).toBe("partial");
+    expect(ended.limitations).toContain("Capture coverage is incomplete for this fragment.");
+    expect(ended.limitations.join(" ")).not.toContain("completion was not confirmed");
   });
   it("marks an unconfirmed native boundary partial and keeps post-stop observations outside the fragment", async () => {
     const f = fixture(), session = await f.service.start("test.capture", "chat-a", "Goal", true);

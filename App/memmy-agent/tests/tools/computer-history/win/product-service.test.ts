@@ -39,6 +39,31 @@ afterEach(async () => {
 });
 
 describe("Windows managed service", () => {
+  it("uses the durable marker offset even when later events reach disk before the acknowledgement", async () => {
+    const { service, store } = setup([
+      'import fs from "node:fs"; import readline from "node:readline";',
+      'const file=process.argv[process.argv.indexOf("--out")+1];let sequence=0;',
+      'const append=(eventType,text)=>fs.appendFileSync(file,JSON.stringify({recordType:"human_event",eventType,sequence:++sequence,timestamp:new Date().toISOString(),details:{text}})+"\\n");',
+      'append("recording_started");console.log(JSON.stringify({kind:"recorder.state",state:"running"}));',
+      'readline.createInterface({input:process.stdin}).on("line",line=>{',
+      'if(line==="stop"){console.log(JSON.stringify({kind:"recorder.state",state:"stopped"}));process.exit(0);}',
+      'const input=JSON.parse(line);append("accessibility_snapshot","BEFORE_MARKER");append("recording_checkpoint");',
+      'const fd=fs.openSync(file,"r+");fs.fsyncSync(fd);fs.closeSync(fd);const bytes=fs.statSync(file).size;',
+      'const result={id:input.id,complete:true,rangeEvaluated:true,through:input.through??new Date().toISOString(),issues:[],',
+      'watermark:{nativeSessionId:"a".repeat(32),nativeSequence:sequence,captureSequence:sequence,recordingSequence:sequence,bytes}};',
+      'append("accessibility_snapshot","AFTER_MARKER");console.log("[recorder-checkpoint] "+JSON.stringify(result));});',
+    ].join("\n"));
+    store.write({ version: 1, applications: [{ executable }] });
+    const capture = await service.acquireEventCapture();
+    const point = await capture.checkpoint({ from: new Date().toISOString() });
+    expect(point).toMatchObject({ running: true, complete: true, rangeEvaluated: true, boundaryConfirmed: true });
+    const stream = point.streams.at(-1)!, bytes = fs.readFileSync(stream.file);
+    expect(bytes.length).toBeGreaterThan(stream.size);
+    expect(bytes.subarray(0, stream.size).toString()).toContain("BEFORE_MARKER");
+    expect(bytes.subarray(0, stream.size).toString()).not.toContain("AFTER_MARKER");
+    expect(point.limitations.join(" ")).not.toContain("observer is still starting");
+    await capture.release();
+  });
   it("shares the Windows driver with plugin subscribers and accepts conservative persisted checkpoints", async () => {
     const { service, store } = setup([
       'import fs from "node:fs"; import readline from "node:readline";',
@@ -73,6 +98,15 @@ describe("Windows managed service", () => {
     expect(service.snapshot().observation.state).toBe("running");
     await service.stopObservation();
     expect(service.snapshot().observation.state).toBe("stopped");
+  });
+  it("applies the content-free message limit per line when checkpoint/health responses arrive in a batch", async () => {
+    const { root, service, store } = setup();
+    fs.appendFileSync(path.join(root, "recorder.mjs"), '\nprocess.stdout.write(Array(100).fill("[recorder-health] "+JSON.stringify({code:"event_recorded",timestamp:new Date().toISOString()})+"\\n").join(""));');
+    store.write({ version: 1, applications: [{ executable }] });
+    await service.startObservationWithPermissions();
+    await vi.waitFor(() => expect(service.snapshot().observation.captureHealth?.lastEventAt).toEqual(expect.any(String)));
+    expect(service.snapshot().observation.state).toBe("running");
+    await service.stopObservation();
   });
   it("rejects content-bearing payloads on the content-free health channel", async () => {
     const { root, service, store } = setup();

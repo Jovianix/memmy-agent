@@ -95,6 +95,20 @@ export class RecordingWriter {
     this.write({ recordType: "human_event", sequence: this.sequence + 1, ...event });
     ++this.sequence;
   }
+  checkpoint(event: HistoryEvent): { bytes: number; recordingSequence: number } {
+    // append and fsync run in the same synchronous writer as normal observations.
+    // Capture the exact position here: subsequent events may already exist by the
+    // time a consumer receives its acknowledgement.
+    const previousSize = fs.fstatSync(this.fd).size;
+    try {
+      this.append(event);
+      fs.fsyncSync(this.fd);
+      return { bytes: fs.fstatSync(this.fd).size, recordingSequence: this.sequence };
+    } catch {
+      fs.ftruncateSync(this.fd, previousSize);
+      throw new Error("recording_checkpoint_failed");
+    }
+  }
   complete(event: HistoryEvent): void {
     if (this.closed) throw new Error("recording_closed");
     const previousSize = fs.fstatSync(this.fd).size;

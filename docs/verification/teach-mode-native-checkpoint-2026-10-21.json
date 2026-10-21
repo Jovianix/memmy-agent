@@ -1,0 +1,235 @@
+{
+  "date": "2026-10-21",
+  "baseCommit": "be206e34201e0616f72b9cab5e2a54b3d11c765c",
+  "target": "Jovianix/memmy-agent:pxlin/dev",
+  "cloudRegistry": null,
+  "productionBuild": "passed",
+  "changedFilesLint": "passed",
+  "relatedRegression": {
+    "passed": 762,
+    "failed": 0,
+    "skipped": 21,
+    "scope": [
+      "computer-history",
+      "plugin-host"
+    ]
+  },
+  "native": {
+    "toolchain": "MSVC 2022 x64 Release",
+    "binarySha256": "7be6e754876e0cb5e24fe1a6122b02353d23884ff911d112b710f0eefc514489",
+    "unitSuitesPassed": [
+      "unit",
+      "win.boundaries",
+      "win.metadata",
+      "task_video.media_integrity"
+    ],
+    "interactiveTests": [
+      {
+        "name": "integration.commit_pause",
+        "seconds": "1.42663"
+      },
+      {
+        "name": "integration.commit_control_flood",
+        "seconds": "0.560348"
+      },
+      {
+        "name": "integration.partial_baseline",
+        "seconds": "1.28064"
+      },
+      {
+        "name": "integration.observe_lifecycle",
+        "seconds": "5.2394"
+      },
+      {
+        "name": "integration.observe_checkpoint",
+        "seconds": "0.587199"
+      },
+      {
+        "name": "integration.observe_ui_hang_recovery",
+        "seconds": "3.86595"
+      },
+      {
+        "name": "integration.observe_eof",
+        "seconds": "0.0451852"
+      },
+      {
+        "name": "integration.output_flush_failure",
+        "seconds": "0.0450321"
+      },
+      {
+        "name": "integration.input_hooks_lifecycle",
+        "seconds": "2.05459"
+      },
+      {
+        "name": "integration.stop_hotkey",
+        "seconds": "0.159736"
+      }
+    ]
+  },
+  "windowsHost": {
+    "startedAt": "2026-10-21T08:00:39.205Z",
+    "finishedAt": "2026-10-21T08:00:52.319Z",
+    "runtime": "Memmy.exe Node v22.20.0",
+    "syntheticRecordingEventsInjected": false,
+    "fixtures": "Controlled Win32 UIA provider; actual production collector",
+    "sessions": [
+      {
+        "scenario": "healthy",
+        "id": "496d10af-45a8-45ac-9322-c688cb4219d3",
+        "state": "ready",
+        "availability": "available",
+        "eventCount": 1,
+        "eventsSha256": "ab8152b1c50722de255e1e228d2de840b6e829142be803bc85927a7d42f3bb8c",
+        "limitations": [
+          "foreground_events_and_accessibility_only",
+          "private_and_unverifiable_browsers_excluded",
+          "screenshots_and_audio_not_recorded"
+        ]
+      },
+      {
+        "scenario": "damaged",
+        "id": "54f117e8-ee7a-4808-8904-295cbb0f8a0a",
+        "state": "ready",
+        "availability": "partial",
+        "eventCount": 2,
+        "eventsSha256": "523449addafa39e5e4664d63f95494fed9e63222d56e630060b7fd51722d3301",
+        "limitations": [
+          "foreground_events_and_accessibility_only",
+          "private_and_unverifiable_browsers_excluded",
+          "screenshots_and_audio_not_recorded",
+          "Capture coverage is incomplete (query_unavailable).",
+          "Capture coverage is incomplete for this fragment."
+        ]
+      },
+      {
+        "scenario": "recovered",
+        "id": "44bac361-a34a-4670-8f38-97be00a3c8c1",
+        "state": "ready",
+        "availability": "available",
+        "eventCount": 1,
+        "eventsSha256": "c6579f0e27fbc001f04f533057d66ed18ef019bc993bac9a2143721f179e335c",
+        "limitations": [
+          "foreground_events_and_accessibility_only",
+          "private_and_unverifiable_browsers_excluded",
+          "screenshots_and_audio_not_recorded"
+        ]
+      }
+    ],
+    "durableMarkerCount": 11,
+    "durableGapCount": 2,
+    "markers": [
+      {
+        "recordingSequence": 3,
+        "checkpointId": "1a883842-bc76-4a01-b6d9-c37901586fa7",
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 3,
+        "captureSequence": 1
+      },
+      {
+        "recordingSequence": 5,
+        "checkpointId": "824b541a-eb3e-4f13-8c41-bd114fce924d",
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 5,
+        "captureSequence": 2
+      },
+      {
+        "recordingSequence": 6,
+        "checkpointId": "e003cd4e-cef1-4818-ae16-60cf2291da1d",
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 6,
+        "captureSequence": 3
+      },
+      {
+        "recordingSequence": 7,
+        "checkpointId": "c246b88e-5098-4629-b438-8dc28e2ecfce",
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 7,
+        "captureSequence": 4
+      },
+      {
+        "recordingSequence": 9,
+        "checkpointId": "647426ab-a79b-4485-a335-43b5dee30d7b",
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 10,
+        "captureSequence": 5
+      },
+      {
+        "recordingSequence": 12,
+        "checkpointId": "fcc79900-ce8c-479b-a81d-6b6e63446823",
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 14,
+        "captureSequence": 6
+      },
+      {
+        "recordingSequence": 13,
+        "checkpointId": "d7aa0c32-97f6-4872-8a21-fb0aed66ce93",
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 15,
+        "captureSequence": 7
+      },
+      {
+        "recordingSequence": 15,
+        "checkpointId": "3b2f56cd-284d-4b6f-9749-eb79b731a206",
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 17,
+        "captureSequence": 8
+      },
+      {
+        "recordingSequence": 16,
+        "checkpointId": "171c58c2-2934-49f2-bd96-70185e7f4776",
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 18,
+        "captureSequence": 9
+      },
+      {
+        "recordingSequence": 17,
+        "checkpointId": "a40a1da3-1be7-471c-979d-0c559b9f91d8",
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 19,
+        "captureSequence": 10
+      },
+      {
+        "recordingSequence": 19,
+        "checkpointId": "6ce79781-9535-4f9b-8f60-e42c366e7716",
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 21,
+        "captureSequence": 11
+      }
+    ],
+    "gaps": [
+      {
+        "recordingSequence": 8,
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 8,
+        "code": "query_unavailable",
+        "from": "2026-10-21T08:00:43.942Z",
+        "through": "2026-10-21T08:00:44.973Z"
+      },
+      {
+        "recordingSequence": 10,
+        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSequence": 11,
+        "code": "query_unavailable",
+        "from": "2026-10-21T08:00:44.969Z",
+        "through": "2026-10-21T08:00:46.219Z"
+      }
+    ],
+    "sealedSnapshotUnchanged": true,
+    "backgroundIntentAfterTeach": "running",
+    "originalHistoryBefore": "running",
+    "originalHistoryAfter": "running"
+  },
+  "preExistingChecks": {
+    "baseline": "be206e34",
+    "openadaptExportFailedCases": [
+      "text",
+      "overflow",
+      "unsupported"
+    ],
+    "fullTestTypecheckErrors": [
+      "runner-image-text-fallback.test.ts:117 TS2416",
+      "websocket-http-routes.test.ts:1283 TS18046"
+    ],
+    "baselineReproduced": true
+  }
+}

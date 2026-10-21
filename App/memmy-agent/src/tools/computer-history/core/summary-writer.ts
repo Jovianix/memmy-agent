@@ -3,8 +3,8 @@ import type { MemmyOutputLanguage } from "../../../memmy-memory/discovery.js";
 import { normalizeOutputLanguage } from "@memmy/local-api-contracts";
 import { redactSensitive } from "./summarize-history.js";
 import { applicationId, type HistoryApplication, type CaptureNode } from "./recording.js";
-import { SENSITIVE_MESSAGE_APP_BUNDLE_IDS } from "./observation-settings.js";
 import { estimatePromptTokens } from "../../../utils/helpers.js";
+import { recordingCheckpointRecord, recordingGapRecord } from "./recorder-checkpoint.js";
 
 // Codex writes each history entry as a short title plus two or three sentences
 // addressed to the user. Memmy's mechanical summarizer produces the same
@@ -545,6 +545,14 @@ export function compactEventEvidence(
     try {
       const event = JSON.parse(line);
       if (!event || typeof event !== "object" || Array.isArray(event)) throw new Error("invalid event");
+      if (event.recordType === "human_event" && event.eventType === "recording_checkpoint") {
+        if (retain) recordingCheckpointRecord.parse(event);
+        continue; // Durable transport evidence, not a user action or semantic memory.
+      }
+      if (event.recordType === "human_event" && event.eventType === "recording_gap") {
+        if (retain) recordingGapRecord.parse(event);
+        continue;
+      }
       if (retain && event.recordType !== "human_history_metadata") {
         if (event.recordType !== "human_event" || !retainedTypes.has(event.eventType)) throw new Error("unsupported record");
         if (event.eventType !== "recording_started" && event.eventType !== "recording_stopped"

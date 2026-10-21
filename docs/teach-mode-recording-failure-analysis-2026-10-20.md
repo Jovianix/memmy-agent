@@ -120,3 +120,12 @@ Windows 诊断时间线（UTC）说明了实际先后关系：
 扩展检查没有全部通过，以下失败涉及的断言、代码位置或配置均未在本轮修改：Agent 全量测试类型检查的 `runner-image-text-fallback.test.ts:117` 与 `websocket-http-routes.test.ts:1283`；Desktop 打包边界测试要求 `bundled-plugins` 的 `filter: ["**/*"]`，而现有 YAML 未写该字段；额外的 MCP HTTP probe 测试假定 `unreachable-host.test:80` 不可连接，本环境实际返回可连接。没有放宽这些测试来计入通过数。
 
 本轮未重做论文示范、生成技能和第 2–5 条内容复用，原完整链路报告继续保留。桌面操作由交互 Session 1 完成，控制脚本使用已安装的系统 Node；因此不将本次 UI 验证称为“整台机器未安装系统 Node”的验收。正式云端接入按用户要求继续留空。
+
+
+## 2026-10-21：C++ 原生确认链路补齐
+
+后续已实现带序号的原生 FIFO 标记、顺序处理、脱敏文件写入与 fsync 确认，Host 使用精确字节水位读取；缺口诊断一并落盘并按片段区间判定。新增标记不计为教学操作或活动摘要。还修复了周期读取在原生时间略领先时跳过事件并推进游标的竞态，最终停止继续遵循固定截止时间。
+
+真实 Windows Host 复验得到 `available → partial → available`，保留旧片段缺口，恢复片段独立完整；11 个标记和 2 条缺口记录已保存，停止后的快照哈希不变。相关回归 762 项通过、21 项受平台限制跳过；原生 CTest 四项和交互桌面集成十项通过。历史完整对话中的 partial 记录不自动改写；浏览器采集范围及云端接入边界保持此前记录。
+
+实现、实机证据及基线已有检查问题见 [原生 checkpoint 专项报告](teach-mode-native-checkpoint-2026-10-21.md) 和 [验证摘要](verification/teach-mode-native-checkpoint-2026-10-21.json)。

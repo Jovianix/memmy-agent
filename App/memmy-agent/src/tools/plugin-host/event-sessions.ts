@@ -6,7 +6,7 @@ import type { EventCaptureSource, EventCaptureSubscription, CaptureCheckpoint } 
 import { writeJsonAtomic } from "../computer-recordings/session-service.js";
 
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const controls = /^recording_(?:started|stopped|paused|resumed)$/;
+const controls = /^recording_(?:started|stopped|paused|resumed|checkpoint|gap)$/;
 const maxBytes = 64 * 1024 * 1024;
 type Active = { session: EventCaptureSession; subscription: EventCaptureSubscription;
   positions: Map<string, number>; skipLeading: Set<string>; fd: number; bytes: number;
@@ -154,11 +154,19 @@ export class PluginEventSessions {
         position += newline + 1; input = input.subarray(newline + 1); active.skipLeading.delete(stream.id);
       }
       const complete = input.lastIndexOf(10) + 1;
-      for (const line of input.subarray(0, complete).toString("utf8").split("\n").filter(Boolean)) {
+      let consumed = 0;
+      for (const line of input.subarray(0, complete).toString("utf8").split("\n").slice(0, -1)) {
+        const lineBytes = Buffer.byteLength(line, "utf8") + 1;
+        if (!line) { consumed += lineBytes; continue; }
         const event = JSON.parse(line);
-        if (event.recordType !== "human_event" || typeof event.eventType !== "string" || controls.test(event.eventType)) continue;
+        if (event.recordType !== "human_event" || typeof event.eventType !== "string" || controls.test(event.eventType)) { consumed += lineBytes; continue; }
         const at = Date.parse(event.timestamp);
         if (!Number.isFinite(at)) throw new Error("capture_event_timestamp_invalid");
+        // A native timestamp can lead the Host clock by a few milliseconds.
+        // Keep its byte position for the next poll instead of silently losing it.
+        // A final stop has a fixed cutoff and may discard post-cutoff records.
+        if (at > end && !active.session.endedAt) break;
+        consumed += lineBytes;
         if (at < start || at > end) continue;
         const envelope = { index: active.session.eventCount, source: { stream: stream.id, sequence: event.sequence }, event };
         const output = Buffer.from(JSON.stringify(envelope) + "\n");
@@ -174,9 +182,9 @@ export class PluginEventSessions {
         if (typeof app === "string" && !active.session.applications.includes(app)) active.session.applications.push(app);
       }
       const range = active.session.ranges.find(r => r.stream === stream.id);
-      if (range) range.endByte = position + complete;
-      else active.session.ranges.push({ stream: stream.id, startByte: position, endByte: position + complete });
-      position += complete; active.positions.set(stream.id, position);
+      if (range) range.endByte = position + consumed;
+      else active.session.ranges.push({ stream: stream.id, startByte: position, endByte: position + consumed });
+      position += consumed; active.positions.set(stream.id, position);
       if (active.session.endedAt && complete !== input.length) {
         active.session.availability = "partial"; active.session.limitations.push("An incomplete trailing source record was excluded.");
       }
@@ -200,7 +208,8 @@ export class PluginEventSessions {
         const point = await active.subscription.checkpoint({ from: active.session.startedAt, through: active.session.endedAt! });
         if (point.complete !== true) {
           active.session.availability = "partial";
-          if (!active.session.limitations.includes("Native-to-disk completion was not confirmed.")) active.session.limitations.push("Native-to-disk completion was not confirmed.");
+          const limitation = point.boundaryConfirmed ? "Capture coverage is incomplete for this fragment." : "Native-to-disk completion was not confirmed.";
+          if (!active.session.limitations.includes(limitation)) active.session.limitations.push(limitation);
         }
         if (!point.running) throw new Error("capture_source_stopped");
         await this.collect(active, point);
