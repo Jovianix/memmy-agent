@@ -46,6 +46,7 @@ struct Trigger {
   std::string checkpointId;
   std::uint64_t captureSequence = 0;
   std::uint64_t lostFromTickMs = 0, lostThroughTickMs = 0;
+  std::uint64_t firstTickMs = 0;  // preserve the oldest notification when coalescing
 };
 
 struct TriggerCounters {

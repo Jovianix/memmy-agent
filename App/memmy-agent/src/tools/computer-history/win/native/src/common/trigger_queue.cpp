@@ -75,8 +75,10 @@ bool TriggerQueue::Push(const Trigger& trigger) {
   std::lock_guard lock(mutex_);
   Trigger item = trigger;
   item.captureSequence = ++sequence_;
+  item.firstTickMs = trigger.firstTickMs ? trigger.firstTickMs : trigger.tickMs;
   if (!items_.empty() && trigger.action.kind == ActionKind::None && items_.back().action.kind == ActionKind::None &&
       items_.back().kind == trigger.kind && items_.back().hwnd == trigger.hwnd && items_.back().generation == trigger.generation) {
+    item.firstTickMs = items_.back().firstTickMs;
     items_.back() = std::move(item);
     ++counters_.coalesced;
     return true;

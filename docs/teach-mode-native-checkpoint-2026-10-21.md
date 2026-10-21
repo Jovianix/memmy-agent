@@ -22,8 +22,8 @@
 - 生产 TypeScript 构建通过；变更文件 ESLint 通过。
 - Computer History 与插件 Host 的相关回归通过，具体数量及跳过项见同目录验证 JSON。Linux 环境跳过的原生用例没有计为通过。
 - MSVC 2022 x64 Release 构建通过。CTest 的 `unit`、`win.boundaries`、`win.metadata`、`task_video.media_integrity` 四项通过。
-- 在真实交互桌面通过十项原生集成测试，包括新增 `observe_checkpoint`、暂停和控制洪泛竞态、截断基线、观察生命周期、UIA 挂起恢复、EOF、刷新失败、输入钩子及停止快捷键。新增测试在提交写入被阻塞时请求标记，确认释放之前没有提前确认，释放后快照序号先于标记。
-- 原生生产 EXE SHA-256：`7be6e754876e0cb5e24fe1a6122b02353d23884ff911d112b710f0eefc514489`。
+- 在真实交互桌面通过十一项原生集成测试，包括新增 `observe_checkpoint`、`observe_checkpoint_origin`、暂停和控制洪泛竞态、截断基线、观察生命周期、UIA 挂起恢复、EOF、刷新失败、输入钩子及停止快捷键。新增测试在提交写入被阻塞时请求标记，确认释放之前没有提前确认，释放后快照序号先于标记。
+- 原生生产 EXE SHA-256：`5d15301ff2bbb4e21fc551434d3dece9887d41fe103935dc3995af7b8878f6da`。
 
 Windows Host 验证使用真实生产采集器和受控 Win32 窗口，经过 `WindowsComputerHistoryService → PluginEventSessions`，实际运行在 Memmy 自带的 Node 22.20.0 中。依次记录健康、故意冻结 UIA 提供者、恢复三个片段，要求结果分别为 `available → partial → available`；同时验证原生序号递增、缺口证据已保存、控制标记不计为教学操作、停止后的片段哈希不变，以及后台采集意图保留。最终会话 ID、事件数量、哈希和状态见[验证摘要](verification/teach-mode-native-checkpoint-2026-10-21.json)。
 
@@ -40,3 +40,7 @@ Windows Host 验证使用真实生产采集器和受控 Win32 窗口，经过 `W
 ## 远端 CI 发现的取消管道竞态
 
 首次 [Host 兼容 CI](https://github.com/Jovianix/memmy-agent/actions/runs/39566360339) 的 182 项后端断言通过，但命令插件取消后仍回写 Host-service 响应，触发未监听的 stdin `EPIPE`，使任务失败并取消另一平台。补充监听 stdin 错误并作为调用失败返回，同时跳过向已终止子进程的响应；新增确定性管道错误回归，保留取消、超时和权限行为。后端完整兼容组 183 项通过、1 项平台测试跳过，后端类型检查通过。
+
+排队或合并通知保留最早的原始采集时间，缺口不使用延后的出队时间。新增原生阻塞用例通过真实 F6 输入验证：停止前的输入在停止后处理失败，仍落在原片段的缺口范围。相关 C++ 单元测试同时检查合并通知的最早时间没有被后续通知覆盖。
+
+取消管道修复后的 [Linux / Windows Host CI](https://github.com/Jovianix/memmy-agent/actions/runs/39567516921) 均通过。独立 Windows History 流水线的原生构建和 CTest 阶段通过，综合验证仍被上述两处已有测试类型错误阻塞。

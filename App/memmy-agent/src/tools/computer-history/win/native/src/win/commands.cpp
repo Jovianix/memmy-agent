@@ -499,9 +499,11 @@ class Observer {
     return std::max(settled, lastQueryEnd_ + kMinIntervalMs);
   }
 
-  void MarkPending(const char* kind) {
+  void MarkPending(const char* kind, std::uint64_t capturedTick = 0) {
     const std::uint64_t now = TickMs();
-    if (!pending_) pendingSince_ = now;
+    const auto from = capturedTick ? std::min(now, capturedTick) : now;
+    if (!pending_) pendingSince_ = from;
+    else pendingSince_ = std::min(pendingSince_, from);
     pending_ = true;
     lastTriggerTick_ = now;
     pendingKinds_.insert(kind);
@@ -847,7 +849,7 @@ class Observer {
           if (trigger.lostFromTickMs) {
             CaptureGap("queue_overflow", trigger.lostFromTickMs, trigger.lostThroughTickMs);
             if (command_.inputHooks) pendingActionOverflow_ = true;
-            MarkPending("queue_overflow");
+            MarkPending("queue_overflow", trigger.lostFromTickMs);
           }
           if (trigger.kind == TriggerKind::Gap) continue;
           if (trigger.kind == TriggerKind::Checkpoint) {
@@ -857,7 +859,7 @@ class Observer {
             if (!outputFailed_) Checkpoint(trigger.checkpointId, trigger.captureSequence, !pending_);
             continue;
           }
-          MarkPending(TriggerKindName(trigger.kind));
+          MarkPending(TriggerKindName(trigger.kind), trigger.firstTickMs ? trigger.firstTickMs : trigger.tickMs);
           if (trigger.action.kind != ActionKind::None) {
             // Returning to Memmy's stop/finish controls is outside the selected
             // applications. It must not make their recording look incomplete.

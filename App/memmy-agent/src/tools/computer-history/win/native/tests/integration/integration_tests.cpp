@@ -9,6 +9,7 @@
 
 #include "common/cli.h"
 #include "common/json.h"
+#include "common/protocol.h"
 #include "common/text.h"
 
 #include <windows.h>
@@ -1154,6 +1155,39 @@ void CaseObserveCheckpoint() {
   ValidateStream(observe.Proc().Lines(), "observe checkpoint");
 }
 
+void CaseObserveCheckpointOrigin() {
+  Fixture fixture;
+  fixture.Start();
+  fixture.RequireForeground('a');
+  const fs::path policy = ObservePolicy(fixture, "checkpoint-origin-policy",
+    {{"limits", {{"queryBudgetMs", 500}, {"workerTimeoutMs", 1500}}}});
+  Gate gate(Nonce() + "-checkpoint-origin");
+  Observe observe;
+  observe.Start(g_paths.TestHooks(), {L"observe", L"--policy", policy.wstring(), L"--seconds", L"60",
+    L"--sample-ms", L"300", L"--input-hooks", L"--test-commit-gate", gate.name});
+  gate.AwaitReady();
+  fixture.Command("input navigation");
+  Sleep(200);  // Hook dispatch continues while the collector commit is blocked.
+  FILETIME cutoffTime{}; GetSystemTimeAsFileTime(&cutoffTime);
+  const auto cutoff = memmy::protocol::FormatUtcTimestamp(
+    (static_cast<std::uint64_t>(cutoffTime.dwHighDateTime) << 32) | cutoffTime.dwLowDateTime);
+  Sleep(200);
+  fixture.Command("input navigation");
+  fixture.Command("freeze 5000");
+  Sleep(200);
+  gate.Release();
+  observe.Send("checkpoint 12345678-1234-1234-1234-123456789abc");
+  const auto gap = observe.Wait("capture.gap", 8000, [](const Json& e) { return e["code"] == "query_unavailable"; });
+  Expect(gap["from"].get<std::string>() <= cutoff,
+    "queued observation loss must retain capture time before the cutoff, not dequeue time after it");
+  const auto failed = observe.Wait("snapshot", 5000, [](const Json& e) { return IsSnapshot(e, "unavailable"); });
+  const auto kinds = failed["trigger"]["kinds"].get<std::vector<std::string>>();
+  Expect(std::find(kinds.begin(), kinds.end(), "input") != kinds.end(), "failure must cover queued real input");
+  observe.Send("stop"); observe.Wait("session.stopped", 5000);
+  Expect(observe.Finish(5000, "observe-checkpoint-origin") == 0, "checkpoint origin exit");
+  ValidateStream(observe.Proc().Lines(), "observe checkpoint origin");
+}
+
 void CaseObserveLifecycle() {
   Fixture fixture;
   fixture.Start();
@@ -1787,6 +1821,7 @@ const std::map<std::string, std::function<void()>>& Cases() {
       {"timeout_reap", CaseTimeoutReap},
       {"observe_lifecycle", CaseObserveLifecycle},
       {"observe_checkpoint", CaseObserveCheckpoint},
+      {"observe_checkpoint_origin", CaseObserveCheckpointOrigin},
       {"observe_unauthorized_foreground", CaseObserveUnauthorizedForeground},
       {"observe_policy_corrupt", CaseObservePolicyCorrupt},
       {"observe_policy_race", CaseObservePolicyRace},

@@ -760,6 +760,7 @@ TEST(trigger_queue_is_bounded_and_coalesces) {
   auto items = queue.Drain(overflowed);
   CHECK(items.size() == 4 && overflowed);
   CHECK(items[2].tickMs == 15);
+  CHECK(items[0].firstTickMs == 10 && items[2].firstTickMs == 13);
   CHECK(items[3].kind == TriggerKind::Gap && items[3].lostFromTickMs == 14 && items[3].lostThroughTickMs == 14);
   items = queue.Drain(overflowed);
   CHECK(items.empty() && !overflowed);

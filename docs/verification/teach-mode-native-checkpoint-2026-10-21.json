@@ -16,7 +16,7 @@
   },
   "native": {
     "toolchain": "MSVC 2022 x64 Release",
-    "binarySha256": "7be6e754876e0cb5e24fe1a6122b02353d23884ff911d112b710f0eefc514489",
+    "binarySha256": "5d15301ff2bbb4e21fc551434d3dece9887d41fe103935dc3995af7b8878f6da",
     "unitSuitesPassed": [
       "unit",
       "win.boundaries",
@@ -26,60 +26,65 @@
     "interactiveTests": [
       {
         "name": "integration.commit_pause",
-        "seconds": "1.42663"
+        "seconds": "1.26689"
       },
       {
         "name": "integration.commit_control_flood",
-        "seconds": "0.560348"
+        "seconds": "0.530266"
       },
       {
         "name": "integration.partial_baseline",
-        "seconds": "1.28064"
+        "seconds": "1.24326"
       },
       {
         "name": "integration.observe_lifecycle",
-        "seconds": "5.2394"
+        "seconds": "5.2487"
       },
       {
         "name": "integration.observe_checkpoint",
-        "seconds": "0.587199"
+        "seconds": "0.578967"
+      },
+      {
+        "name": "integration.observe_checkpoint_origin",
+        "seconds": "1.47872"
       },
       {
         "name": "integration.observe_ui_hang_recovery",
-        "seconds": "3.86595"
+        "seconds": "3.88246"
       },
       {
         "name": "integration.observe_eof",
-        "seconds": "0.0451852"
+        "seconds": "0.0485452"
       },
       {
         "name": "integration.output_flush_failure",
-        "seconds": "0.0450321"
+        "seconds": "0.0464949"
       },
       {
         "name": "integration.input_hooks_lifecycle",
-        "seconds": "2.05459"
+        "seconds": "2.05519"
       },
       {
         "name": "integration.stop_hotkey",
-        "seconds": "0.159736"
+        "seconds": "0.163801"
       }
-    ]
+    ],
+    "captureOriginRegression": "Queued input predating a cutoff retains its original capture time when dequeued and lost after the cutoff; coalesced notifications preserve firstTickMs"
   },
   "windowsHost": {
-    "startedAt": "2026-10-21T08:00:39.205Z",
-    "finishedAt": "2026-10-21T08:00:52.319Z",
+    "startedAt": "2026-10-21T08:27:28.536Z",
+    "finishedAt": "2026-10-21T08:27:41.186Z",
     "runtime": "Memmy.exe Node v22.20.0",
     "syntheticRecordingEventsInjected": false,
     "fixtures": "Controlled Win32 UIA provider; actual production collector",
     "sessions": [
       {
         "scenario": "healthy",
-        "id": "496d10af-45a8-45ac-9322-c688cb4219d3",
+        "id": "8d41ebd3-58d5-4c04-9706-8f29b86fd66c",
         "state": "ready",
         "availability": "available",
         "eventCount": 1,
-        "eventsSha256": "ab8152b1c50722de255e1e228d2de840b6e829142be803bc85927a7d42f3bb8c",
+        "eventsSha256": "e4047b7f3730bf7de8f2366ab31bd7677df841c35e81159873e8e96697bb3200",
         "limitations": [
           "foreground_events_and_accessibility_only",
           "private_and_unverifiable_browsers_excluded",
@@ -88,11 +93,11 @@
       },
       {
         "scenario": "damaged",
-        "id": "54f117e8-ee7a-4808-8904-295cbb0f8a0a",
+        "id": "8d52af94-492e-46ba-a5b2-0b4165308895",
         "state": "ready",
         "availability": "partial",
         "eventCount": 2,
-        "eventsSha256": "523449addafa39e5e4664d63f95494fed9e63222d56e630060b7fd51722d3301",
+        "eventsSha256": "1043b5d53f7051e190f4a5b070d073b9bc93926ddb74db0938bffbdd630def67",
         "limitations": [
           "foreground_events_and_accessibility_only",
           "private_and_unverifiable_browsers_excluded",
@@ -103,11 +108,11 @@
       },
       {
         "scenario": "recovered",
-        "id": "44bac361-a34a-4670-8f38-97be00a3c8c1",
+        "id": "e82e193d-7a67-46fb-aa49-bcf29934ff39",
         "state": "ready",
         "availability": "available",
         "eventCount": 1,
-        "eventsSha256": "c6579f0e27fbc001f04f533057d66ed18ef019bc993bac9a2143721f179e335c",
+        "eventsSha256": "59e2435ada028bb707dc6f2ab964dccd1596362053fd1f04c922765a2b9bcea2",
         "limitations": [
           "foreground_events_and_accessibility_only",
           "private_and_unverifiable_browsers_excluded",
@@ -120,78 +125,78 @@
     "markers": [
       {
         "recordingSequence": 3,
-        "checkpointId": "1a883842-bc76-4a01-b6d9-c37901586fa7",
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "checkpointId": "f5489be4-8317-4b04-8c46-f0fcc0c8a6c1",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 3,
         "captureSequence": 1
       },
       {
         "recordingSequence": 5,
-        "checkpointId": "824b541a-eb3e-4f13-8c41-bd114fce924d",
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "checkpointId": "606cb616-84ff-4766-82b2-c4ccfec7f605",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 5,
         "captureSequence": 2
       },
       {
         "recordingSequence": 6,
-        "checkpointId": "e003cd4e-cef1-4818-ae16-60cf2291da1d",
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "checkpointId": "2029da37-6c26-4bb8-abe3-3305bfa94bb0",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 6,
         "captureSequence": 3
       },
       {
         "recordingSequence": 7,
-        "checkpointId": "c246b88e-5098-4629-b438-8dc28e2ecfce",
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "checkpointId": "db092310-0966-4b6b-a579-619bbdc2d872",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 7,
         "captureSequence": 4
       },
       {
         "recordingSequence": 9,
-        "checkpointId": "647426ab-a79b-4485-a335-43b5dee30d7b",
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "checkpointId": "5855e03b-62ff-4c1a-8b2c-d8598668a229",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 10,
         "captureSequence": 5
       },
       {
         "recordingSequence": 12,
-        "checkpointId": "fcc79900-ce8c-479b-a81d-6b6e63446823",
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "checkpointId": "4e2c704a-85fe-42ea-ac18-c190465424a9",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 14,
         "captureSequence": 6
       },
       {
         "recordingSequence": 13,
-        "checkpointId": "d7aa0c32-97f6-4872-8a21-fb0aed66ce93",
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "checkpointId": "ef22757c-b483-4703-81b4-656e4cc1ccf6",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 15,
         "captureSequence": 7
       },
       {
         "recordingSequence": 15,
-        "checkpointId": "3b2f56cd-284d-4b6f-9749-eb79b731a206",
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "checkpointId": "19f235e9-6ea3-4c0a-8996-45894ae28405",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 17,
         "captureSequence": 8
       },
       {
         "recordingSequence": 16,
-        "checkpointId": "171c58c2-2934-49f2-bd96-70185e7f4776",
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "checkpointId": "890f29d2-beef-4543-a329-f79fa43f923f",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 18,
         "captureSequence": 9
       },
       {
         "recordingSequence": 17,
-        "checkpointId": "a40a1da3-1be7-471c-979d-0c559b9f91d8",
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "checkpointId": "b6c403e6-8dae-4a6b-a9f5-904090c0a517",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 19,
         "captureSequence": 10
       },
       {
         "recordingSequence": 19,
-        "checkpointId": "6ce79781-9535-4f9b-8f60-e42c366e7716",
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "checkpointId": "3a0d41e3-69b7-4b5b-b662-65b2827a5be7",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 21,
         "captureSequence": 11
       }
@@ -199,19 +204,19 @@
     "gaps": [
       {
         "recordingSequence": 8,
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 8,
         "code": "query_unavailable",
-        "from": "2026-10-21T08:00:43.942Z",
-        "through": "2026-10-21T08:00:44.973Z"
+        "from": "2026-10-21T08:27:32.684Z",
+        "through": "2026-10-21T08:27:33.731Z"
       },
       {
         "recordingSequence": 10,
-        "nativeSessionId": "01eb37b5a1e7a54bfe327cde4ceb59eb",
+        "nativeSessionId": "8d60ab8677d18467c5eea4ee6e87a375",
         "nativeSequence": 11,
         "code": "query_unavailable",
-        "from": "2026-10-21T08:00:44.969Z",
-        "through": "2026-10-21T08:00:46.219Z"
+        "from": "2026-10-21T08:27:33.735Z",
+        "through": "2026-10-21T08:27:34.985Z"
       }
     ],
     "sealedSnapshotUnchanged": true,
@@ -241,5 +246,11 @@
       "skipped": 1
     },
     "backendTypecheck": "passed"
+  },
+  "hostCompatibilityCI": {
+    "commit": "c1de6c8af320c841d76cc6f39a6405b72abc0110",
+    "url": "https://github.com/Jovianix/memmy-agent/actions/runs/39567516921",
+    "linux": "success",
+    "windows": "success"
   }
 }
