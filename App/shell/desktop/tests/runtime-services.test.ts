@@ -1607,7 +1607,10 @@ describe("spawnNodeService 落盘与 env 注入", () => {
 
     await stopManagedChild(managed);
 
-    expect(managed.exitDescription).toBe("signal SIGKILL");
+    expect(managed.process.exitCode !== null || managed.process.signalCode !== null).toBe(true);
+    // Windows reports forced termination as exit code 1, while Unix can
+    // report the SIGKILL used after this child's SIGTERM handler refuses exit.
+    expect(managed.exitDescription).toBe(process.platform === "win32" ? "code 1" : "signal SIGKILL");
   });
 });
 

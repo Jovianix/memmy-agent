@@ -115,6 +115,8 @@ Windows 诊断时间线（UTC）说明了实际先后关系：
 
 本轮相关专项共 **366 通过、13 跳过**：Backend 插件、账号与升级兼容 149 通过 / 1 跳过；事件采集与落盘 57 通过；MCP 连接、调用与注册表刷新 73 通过 / 2 跳过；Desktop 服务启动和 Windows 运行时归属 87 通过 / 10 跳过。覆盖恢复等待期间再次启用，以及恢复成功、工具仍在刷新时重复启用；后者不应拆掉已正常运行的 worker。等待新增权限批准的插件保持 `pending_approval`，启用意图不能跳过授权或改成无恢复入口的失败状态。Contracts、Backend、Agent 生产代码及 Desktop 编译、Go 原生测试和 Windows 交叉编译通过。
 
+工具目录刷新和 Gateway 就绪回归已加入两平台 CI。新增步骤暴露了既有 Memory 强杀测试的 Unix 假设：Windows 实际以退出码 `1` 报告被终止的子进程。该断言改为平台对应的精确退出描述，并同时确认子进程已退出，没有跳过该测试或修改运行时终止逻辑。
+
 扩展检查没有全部通过，以下失败涉及的断言、代码位置或配置均未在本轮修改：Agent 全量测试类型检查的 `runner-image-text-fallback.test.ts:117` 与 `websocket-http-routes.test.ts:1283`；Desktop 打包边界测试要求 `bundled-plugins` 的 `filter: ["**/*"]`，而现有 YAML 未写该字段；额外的 MCP HTTP probe 测试假定 `unreachable-host.test:80` 不可连接，本环境实际返回可连接。没有放宽这些测试来计入通过数。
 
 本轮未重做论文示范、生成技能和第 2–5 条内容复用，原完整链路报告继续保留。桌面操作由交互 Session 1 完成，控制脚本使用已安装的系统 Node；因此不将本次 UI 验证称为“整台机器未安装系统 Node”的验收。正式云端接入按用户要求继续留空。
