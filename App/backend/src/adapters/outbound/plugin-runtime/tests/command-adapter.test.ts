@@ -1,5 +1,5 @@
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CapabilityEvent } from "@memmy/local-api-contracts";
@@ -264,6 +264,30 @@ describe("CommandPluginAdapter", () => {
     }))).toEqual([{ type: "result", output: { answered: 4 } }]);
     // Serial dispatch would peak at one.
     expect(peak).toBeGreaterThan(1);
+  });
+
+  it("returns a broken stdin as a call error without an uncaught stream error", async () => {
+    let child: ChildProcessWithoutNullStreams | undefined;
+    const adapter = createCommandPluginAdapter({
+      platform: "linux",
+      spawnFn: ((command, args, options) => {
+        child = spawn(command, args, options) as ChildProcessWithoutNullStreams;
+        return child;
+      }) as typeof spawn,
+      buildLaunch: async () => ({ command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], cwd: root! })
+    });
+    const pluginContext = context("ndjson");
+    pluginContext.plugin.manifest.runtime.config = { ...pluginContext.plugin.manifest.runtime.config, interactive: true };
+    const session = await adapter.activate(pluginContext);
+    const pending = collect(adapter.invoke(session, { callId: "pipe-error", pluginId: pluginContext.plugin.id,
+      capabilityId: "run", conversationId: "conversation-1", input: {} }));
+    void pending.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(child).toBeDefined());
+      const error = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+      expect(() => child!.stdin.emit("error", error)).not.toThrow();
+      await expect(pending).rejects.toBe(error);
+    } finally { await adapter.deactivate(session); }
   });
 
   it("aborts in-flight Host services when a command-plugin run is cancelled", async () => {

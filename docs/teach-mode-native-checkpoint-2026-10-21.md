@@ -36,3 +36,7 @@ Windows Host 验证使用真实生产采集器和受控 Win32 窗口，经过 `W
 全量测试 TypeScript 检查仍有两处既有错误：`runner-image-text-fallback.test.ts:117` 的重写签名，以及 `websocket-http-routes.test.ts:1283` 的 `unknown` 类型。在同一基线 worktree 上重跑，错误文本与修改后的检查完全一致。生产构建不受影响。
 
 原始证据与脚本保存在本机 `/home/zephyr/work/teach-mode-checkpoint-20261021/`：`final-tests.json`、`native-interactive.xml`、`host-probe.json`、基线对照结果及构建日志。早期探针的目录配置错误、实机发现游标竞态的失败尝试也保留，未覆盖成成功记录。
+
+## 远端 CI 发现的取消管道竞态
+
+首次 [Host 兼容 CI](https://github.com/Jovianix/memmy-agent/actions/runs/39566360339) 的 182 项后端断言通过，但命令插件取消后仍回写 Host-service 响应，触发未监听的 stdin `EPIPE`，使任务失败并取消另一平台。补充监听 stdin 错误并作为调用失败返回，同时跳过向已终止子进程的响应；新增确定性管道错误回归，保留取消、超时和权限行为。后端完整兼容组 183 项通过、1 项平台测试跳过，后端类型检查通过。

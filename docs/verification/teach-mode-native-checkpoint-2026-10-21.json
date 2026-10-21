@@ -231,5 +231,15 @@
       "websocket-http-routes.test.ts:1283 TS18046"
     ],
     "baselineReproduced": true
+  },
+  "commandPipeCleanup": {
+    "reason": "Initial remote Host CI exposed an unhandled EPIPE while a cancelled command was receiving a Host-service response",
+    "initialRun": "https://github.com/Jovianix/memmy-agent/actions/runs/39566360339",
+    "fix": "Handle stdin stream errors as call failures; skip replies to terminated children",
+    "backendCompatibility": {
+      "passed": 183,
+      "skipped": 1
+    },
+    "backendTypecheck": "passed"
   }
 }

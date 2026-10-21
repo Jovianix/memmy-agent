@@ -188,6 +188,10 @@ export function createCommandPluginAdapter(options: CreateCommandPluginAdapterOp
       });
       session.children.set(call.callId, child);
       child.once("close", () => abortHostServices(session, call.callId));
+      let inputError: Error | undefined;
+      // Writable emits an error as well as invoking the write callback. A
+      // cancelled command can close its pipe while a Host response is in flight.
+      child.stdin.on("error", (error: Error) => { inputError ??= error; terminate(child); });
       if (session.config.inputMode === "stdin-json") child.stdin.write(`${request}\n`);
       if (!session.config.interactive) child.stdin.end();
 
@@ -270,6 +274,7 @@ export function createCommandPluginAdapter(options: CreateCommandPluginAdapterOp
         }
         const { code, signal } = await exit;
         if (timedOut) throw Object.assign(new Error("Plugin command timed out"), { code: "plugin_timeout" });
+        if (inputError) throw inputError;
         if (code !== 0) throw new Error(`Plugin command exited with ${code ?? signal}: ${stderr.trim() || "no stderr"}`);
         if (jsonOutput) {
           const output = JSON.parse(jsonOutput.toString("utf8"));
@@ -392,6 +397,7 @@ function hostServiceError(callId: string, requestId: string, code: string, messa
 }
 
 async function writeChildMessage(child: ChildProcessWithoutNullStreams, message: PluginHostServiceResponse): Promise<void> {
+  if (child.killed || child.exitCode !== null || child.signalCode !== null) return;
   await new Promise<void>((resolve, reject) => {
     child.stdin.write(`${JSON.stringify(message)}\n`, (error) => error ? reject(error) : resolve());
   });
