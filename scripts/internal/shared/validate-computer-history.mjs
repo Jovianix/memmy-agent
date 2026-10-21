@@ -127,7 +127,8 @@ try {
     "tests/core/agent-runtime/skills-loader.test.ts", "tests/integrations/channels/websocket-computer-history-routes.test.ts",
     `--exclude=${nativeTest}`]);
   tests("frontend-tests", frontend, frontendTests);
-  tests("recording-media-proxy-tests", root, ["App/shell/desktop/tests/recording-media-proxy.test.ts", "App/shell/desktop/tests/task-recording-exit.test.ts"]);
+  tests("recording-media-proxy-tests", root, ["App/shell/desktop/tests/recording-media-proxy.test.ts", "App/shell/desktop/tests/task-recording-exit.test.ts",
+    "App/shell/desktop/tests/computer-history-exit.test.ts"]);
   tests("contract-tests", root, ["tests/computer-history-contract.test.ts", "tests/windows-history-workflow.test.ts"]);
   // The Windows Vite module runner cannot load electron-builder's ESM graph.
   // Keep the Node runner limited to MJS packaging tests: TS source imports need Vite resolution.

@@ -130,6 +130,7 @@ function setupCleanup(platform: string, drain: () => Promise<void>) {
     stopTaskRecordingBeforeExit: async () => {},
     stopComputerUseAgentForPermissionRestart: async () => {},
     browserSidebarBridge: null, embeddedBrowserDriver: { dispose: vi.fn() }, computerUseSurfaceWindows: null,
+    pipScreenPermissionGuide: null,
     stopComputerHistoryBeforeExit: stop,
     stopPackagedRendererServer: async () => { calls.push("renderer"); },
     sendAppExitEventBeforeQuit: async () => { calls.push("analytics"); },
