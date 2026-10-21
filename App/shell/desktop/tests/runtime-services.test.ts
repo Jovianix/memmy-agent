@@ -553,7 +553,9 @@ describe("packaged desktop runtime config", () => {
     );
 
     expect(children).toHaveLength(0);
-  });
+    // Windows CPU inspection can consume its 10s OS-query budget before the
+    // delayed health server runs; keep the reuse assertion beyond that budget.
+  }, process.platform === "win32" ? 20_000 : 5_000);
 
   it("rereads the migrated workspace instead of pinning the pre-migration legacy value", async () => {
     const memmyHome = await makeTempRoot();
