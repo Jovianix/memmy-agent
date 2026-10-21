@@ -522,13 +522,16 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
       </header>
       <TaskRecordingsPanel client={props.client} human />
 
-      {error || refreshError || recordingError || (narrationError && !narrationQuotaExhausted) ? (
+      {error || refreshError || recordingError || snapshot?.observation.retentionDeferred || (narrationError && !narrationQuotaExhausted) ? (
         <div className="ch__notices">
           {error ? <div className="ch__error" role="alert">{error}</div> : null}
           {refreshError ? <div className="ch__error" role="alert">{refreshError}</div> : null}
           {recordingError ? <div className="ch__error" role="alert">{recordingError}</div> : null}
           {narrationError && !narrationQuotaExhausted ? (
             <div className="ch__error" role="alert">{narrationErrorMessage}</div>
+          ) : null}
+          {snapshot?.observation.retentionDeferred ? (
+            <div className="ch__setting-description" role="status">{t("computerHistory.retentionDeferred")}</div>
           ) : null}
         </div>
       ) : null}

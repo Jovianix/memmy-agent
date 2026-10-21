@@ -884,6 +884,24 @@ describe("ComputerHistorySubPage", () => {
     expect(client.clearComputerHistories).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["zh-CN", "部分原始记录尚未完成安全归档，已暂缓清理。记录仍保留。"],
+    ["en-US", "Cleanup is deferred until some original records are safely archived. Those records are still retained."],
+  ] as const)("shows deferred retention as a recoverable %s status, separate from summary errors", async (language, message) => {
+    vi.useFakeTimers();
+    const initial = snapshot({ observation: { ...snapshot().observation, retentionDeferred: true } });
+    const getComputerHistory = vi.fn().mockResolvedValue(initial);
+    const client = await renderWith(initial, { getComputerHistory });
+    await act(async () => root.render(page(client, false, {}, language)));
+    expect(container.querySelector(".ch__notices [role=status]")?.textContent).toBe(message);
+    expect(container.querySelector(".ch__notices [role=alert]")).toBeNull();
+    expect(client.stopComputerHistoryObservation).not.toHaveBeenCalled();
+    expect(client.clearComputerHistories).not.toHaveBeenCalled();
+    getComputerHistory.mockResolvedValue(snapshot());
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(container.querySelector(".ch__notices [role=status]")).toBeNull();
+  });
+
   it.each(["429 Too many requests", "Network unavailable", "Invalid API key"])("does not show quota exhaustion for %s", async (narrationError) => {
     await renderWith(snapshot({ observation: { ...snapshot().observation, state: "running", narrationError } }));
     expect(container.querySelector(".ch__recording-status")?.textContent).toBe("采集中");

@@ -27,6 +27,9 @@ const NARRATION_REASONING_EFFORT = "none";
 // Room for what was on screen, not only what was clicked: the window's text is
 // where the substance of a window is, and the click trail alone cannot say it.
 export const MAX_EVIDENCE_CHARS = 12_000;
+// Bump when the durable projection changes so raw-backed archives can be
+// refreshed before retention, without rewriting the user's narrated summary.
+export const RETENTION_EVIDENCE_VERSION = 2;
 const MAX_PRIOR_SUMMARY_CHARS = 2_000;
 const MAX_PRIOR_CONTEXT_TOKENS = 800;
 
