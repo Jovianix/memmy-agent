@@ -158,6 +158,15 @@ describe("PluginService", () => {
       expect(runtimeHost.deactivate).not.toHaveBeenCalled();
     } finally { refresh.resolve(); await service.shutdown(); }
   });
+  it("retains pending approval across restart even when the user still wants the plugin enabled", async () => {
+    const { service, runtimeHost } = await persistedFailure({ gatewayReady: Promise.resolve() });
+    try {
+      store!.repositories.plugins.setState(release.manifest.id, "pending_approval");
+      await service.restoreActive();
+      expect(service.get(release.manifest.id)).toMatchObject({ state: "pending_approval", desiredEnabled: true });
+      expect(runtimeHost.activate).not.toHaveBeenCalled();
+    } finally { await service.shutdown(); }
+  });
   it.each(["disable", "uninstall"] as const)("cancels a deferred recovery on %s and never resurrects it", async action => {
     const gateway = Promise.withResolvers<void>();
     const { service, runtimeHost } = await persistedFailure({ gatewayReady: gateway.promise });

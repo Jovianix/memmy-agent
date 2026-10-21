@@ -511,7 +511,7 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
 
     async restoreActive() {
       if (closing) return;
-      for (const plugin of options.repository.list().filter(wantsEnabled)) {
+      for (const plugin of options.repository.list().filter(plugin => wantsEnabled(plugin) && plugin.state !== "pending_approval")) {
         const recovery = restore(plugin.id);
         // Preserve Windows' first-window optimization. Gateway-backed workers
         // wait independently; local plugins retain the existing startup flow.
