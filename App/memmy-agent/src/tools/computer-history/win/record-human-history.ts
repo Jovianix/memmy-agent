@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WindowsHistoryRecorder, type WindowsRecorderOptions } from "./recorder.js";
@@ -60,6 +61,16 @@ export async function runWindowsRecorder(argv = process.argv.slice(2)): Promise<
   let line = "";
   let overflow = false;
   const execute = (command: string) => {
+    if (command.startsWith("{")) {
+      try {
+        const input = JSON.parse(command);
+        if (input.kind !== "checkpoint" || typeof input.id !== "string" || !/^[0-9a-f-]{36}$/u.test(input.id)) throw new Error();
+        const fd = fs.openSync(options.eventsFile, "r+");
+        try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+        console.log("[recorder-checkpoint] " + JSON.stringify({ id: input.id, complete: false }));
+      } catch { diagnostic(new Error("windows_checkpoint_invalid")); }
+      return;
+    }
     if (command === "stop") { void recorder.stop().catch(diagnostic); return; }
     if (command !== "pause" && command !== "resume") { diagnostic(new Error("windows_control_unknown")); return; }
     pending = pending.then(async () => {
@@ -73,7 +84,7 @@ export async function runWindowsRecorder(argv = process.argv.slice(2)): Promise<
       if (byte === 10) {
         if (overflow) diagnostic(new Error("windows_control_too_long")); else execute(line.trim());
         line = ""; overflow = false;
-      } else if (line.length >= 128 || byte > 127) { overflow = true; }
+      } else if (line.length >= 512 || byte > 127) { overflow = true; }
       else if (!overflow) line += String.fromCharCode(byte);
     }
   };

@@ -5,10 +5,10 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import { RecordingFrameSchema, RecordingGapSchema, RecordingIdleSpansSchema, recordingVideoTime, WindowsRecordingWindowSchema, type RecordingEvent, type RecordingSession } from "@memmy/local-api-contracts";
 import { WindowsSettingsStore, discoverApplications, resolveWindowsCollector } from "../computer-history/win/settings.js";
-import { authorizedRule, compileWindowsPolicy, pathKey, readNativePolicy } from "../computer-history/win/policy.js";
+import { authorizedRule, compileWindowsPolicy, pathKey, readNativePolicy, type ApplicationBinding } from "../computer-history/win/policy.js";
 import { parseNativeEvent } from "../computer-history/win/protocol.js";
 import { SnapshotNormalizer } from "../computer-history/win/normalize.js";
-import { RecordingError, readLines, type RecordingResult, type TaskRecordingDriver, type TaskRecordingHandle } from "./session-service.js";
+import { RecordingError, readLines, type RecordingResult, type TaskRecordingDriver, type TaskRecordingHandle, type NativeTaskTarget } from "./session-service.js";
 import { exportOpenAdaptFlow } from "./openadapt-export.js";
 
 const decimal = z.string().regex(/^[0-9]+$/u).max(20);
@@ -38,6 +38,14 @@ export function nativeTaskEvent(value: unknown) {
   if (clock.actionQpc.length !== count || clock.actionQpc.some((qpc) => BigInt(qpc) < BigInt(clock.qpcOrigin) || BigInt(qpc) > BigInt(clock.qpc))) throw new Error("task_action_clock_invalid");
   return { event, clock };
 }
+export function scopeTaskBindings(bindings: ApplicationBinding[], target?: NativeTaskTarget): ApplicationBinding[] {
+  if (!target) return bindings;
+  if (!Number.isInteger(target.pid) || target.pid < 1 || target.pid > 0xffffffff || !/^[1-9][0-9]{0,19}$/u.test(target.hwnd)
+    || BigInt(target.hwnd) > 0xffffffffffffffffn) throw new RecordingError(422, "recording_target_invalid");
+  const binding = bindings.find(item => item.pid === target.pid && item.processStart === target.processStart);
+  if (!binding) throw new RecordingError(422, "recording_target_changed");
+  return [{ ...binding, hwnd: target.hwnd }];
+}
 export class WindowsTaskRecordingDriver implements TaskRecordingDriver {
   constructor(private readonly binary?: string, private readonly store = new WindowsSettingsStore()) {}
   private run(args: string[], timeout = 120_000): Promise<void> {
@@ -52,7 +60,7 @@ export class WindowsTaskRecordingDriver implements TaskRecordingDriver {
     if (new Set(choices).size !== choices.length || choices.some((choice) => settings.deny?.executables?.some((exe) => pathKey(exe) === choice)
       || (settings.defaultApplicationBehavior !== "observe" && !settings.applications.some((rule) => pathKey(rule.executable) === choice)))) throw new RecordingError(422, "recording_application_not_authorized");
     const policy = compileWindowsPolicy(input.applications.map((executable) => settings.applications.find((r) => pathKey(r.executable) === pathKey(executable)) ?? { executable }),
-      await discoverApplications(binary), { sensitiveAutomationIds: settings.sensitiveAutomationIds, deny: settings.deny, limits: settings.limits });
+      scopeTaskBindings(await discoverApplications(binary), input.target), { sensitiveAutomationIds: settings.sensitiveAutomationIds, deny: settings.deny, limits: settings.limits });
     if (!policy.applications.length || choices.some((choice) => !policy.applications.some((app) => pathKey(app.executable) === choice))) throw new RecordingError(422, "recording_application_unavailable");
     const policyFile = path.join(input.directory, "policy.json");
     fs.writeFileSync(policyFile, JSON.stringify(policy), { flag: "wx", mode: 0o600 });
@@ -205,6 +213,8 @@ class NativeTaskHandle implements TaskRecordingHandle {
       const { title: _title, generation: _generation, minimized: _minimized, ...context } = event.context;
       void _title; void _generation; void _minimized;
       const window = WindowsRecordingWindowSchema.parse(context);
+      this.onEvent({ timeMs: event.monotonicMs, qpc: clock.qpc, timestamp: event.timestamp,
+        origin: "native", type: "accessibility_snapshot", window, observation: this.normalizer.operationObservation() });
       if (event.snapshot.actionOverflow) {
         this.overflow = true;
         this.onEvent({ timeMs: event.monotonicMs, timestamp: event.timestamp, origin: "control", type: "input_overflow", window: null });

@@ -86,16 +86,15 @@ export type AgentThreadPanelController = ReturnType<typeof useAgentThreadPanel>;
 type PanelSession = {
   phase: ThreadPanelPhase; fullscreen: boolean; view: ThreadPanelView; tabState: ThreadTabState;
   pinned: boolean; artifactsCollapsed: boolean; listWidth: number; resizing: boolean;
-  closingWidth: number | null; clearTabsOnClose: boolean;
+  closingWidth: number | null;
 };
 const EMPTY_PANEL_SESSION: PanelSession = {
   phase: 'closed', fullscreen: false, view: 'overview', tabState: EMPTY_TABS, pinned: false,
   artifactsCollapsed: false, listWidth: THREAD_LIST_DEFAULT_WIDTH, resizing: false,
-  closingWidth: null, clearTabsOnClose: false,
+  closingWidth: null,
 };
 function finishPanelClose(state: PanelSession): PanelSession {
-  return { ...state, phase: 'closed', closingWidth: null, resizing: false,
-    ...(state.clearTabsOnClose ? { tabState: EMPTY_TABS, pinned: false } : {}), clearTabsOnClose: false };
+  return { ...state, phase: 'closed', closingWidth: null, resizing: false };
 }
 
 export function useAgentThreadPanel(options: { scopeKey: string; containerRef: RefObject<HTMLElement | null>; enabled: boolean }) {
@@ -186,8 +185,7 @@ export function useAgentThreadPanel(options: { scopeKey: string; containerRef: R
   }, [ownerKey]);
   const open = useCallback(() => {
     cancelCloseTimer();
-    updateSession(ownerKey, state => ({ ...state, phase: 'open', closingWidth: null, clearTabsOnClose: false,
-      ...(state.clearTabsOnClose ? { tabState: EMPTY_TABS, pinned: false } : {}) }));
+    updateSession(ownerKey, state => ({ ...state, phase: 'open', closingWidth: null }));
   }, [ownerKey, updateSession, cancelCloseTimer]);
 
   const close = useCallback(() => {
@@ -211,8 +209,8 @@ export function useAgentThreadPanel(options: { scopeKey: string; containerRef: R
 
   const openTab = useCallback((tab: ThreadPanelTab) => {
     cancelCloseTimer();
-    updateSession(ownerKey, state => ({ ...state, phase: 'open', closingWidth: null, clearTabsOnClose: false,
-      tabState: openThreadTab(state.clearTabsOnClose ? EMPTY_TABS : state.tabState, tab),
+    updateSession(ownerKey, state => ({ ...state, phase: 'open', closingWidth: null,
+      tabState: openThreadTab(state.tabState, tab),
       pinned: liveWidthRef.current < THREAD_PANEL_NARROW_WIDTH ? false : state.pinned }));
     ensureContentWidth();
   }, [ownerKey, updateSession, cancelCloseTimer, ensureContentWidth]);
@@ -223,14 +221,13 @@ export function useAgentThreadPanel(options: { scopeKey: string; containerRef: R
   }, [ownerKey, updateSession]);
 
   const closeTab = useCallback((id: string) => {
-    const next = closeThreadTab((sessionsRef.current.get(ownerKey) ?? EMPTY_PANEL_SESSION).tabState, id);
-    if (next.tabs.length) {
-      updateSession(ownerKey, state => ({ ...state, tabState: next }));
-      return;
-    }
-    updateSession(ownerKey, state => ({ ...state, clearTabsOnClose: true }));
-    close();
-  }, [ownerKey, updateSession, close]);
+    updateSession(ownerKey, state => {
+      const tabState = closeThreadTab(state.tabState, id);
+      if (tabState === state.tabState) return state;
+      // With no previews left, keep the panel open on its file list.
+      return { ...state, tabState, pinned: tabState.tabs.length > 0 && state.pinned };
+    });
+  }, [ownerKey, updateSession]);
 
   const resize = useCallback((nextWidth: number) => {
     const clamped = clampThreadPanelWidth(nextWidth, containerWidthRef.current);
@@ -314,7 +311,6 @@ export function AgentThreadPanel(props: {
   const activeFileKey = activeTab?.type === "file" ? normalizeThreadPath(activeTab.path ?? activeTab.url ?? "") : null;
   const activeChangeKey = activeTab?.type === "change" ? activeTab.id.slice("change:".length) : null;
   const listVisible = !panel.hasContent || panel.pinned;
-  const popoverAllowed = panel.visible && panel.phase === 'open' && panel.hasContent && !panel.pinned;
   const triggerRef = useRef<HTMLDivElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const popoverTimerRef = useRef<number | null>(null);
@@ -331,6 +327,11 @@ export function AgentThreadPanel(props: {
   const browserSession = browserSessions.get(ownerKey) ?? EMPTY_BROWSER_SESSION;
   const { open: browserOpen, mounted: browserMounted, tabs: browserTabs,
     activeId: activeBrowserTabId, copiedId: copiedBrowserTabId } = browserSession;
+  // The overview list is hidden behind either a file preview or a browser tab.
+  // A pinned list is also hidden while the browser surface is selected.
+  const pinnedListVisible = panel.pinned && panel.hasContent && !browserOpen;
+  const popoverAllowed = panel.visible && panel.phase === 'open'
+    && (panel.hasContent || browserOpen) && !pinnedListVisible;
   const anyBrowserMounted = [...browserSessions.values()].some(session => session.mounted);
   const nextBrowserTabId = useRef(2);
   const backgroundBrowserOwners = useRef(new Set<string>());
@@ -343,6 +344,11 @@ export function AgentThreadPanel(props: {
   }, []);
   const setBrowserOpen = (open: boolean) => updateBrowser(ownerKey, state => ({ ...state, open }));
   const setActiveBrowserTabId = (activeId: number) => updateBrowser(ownerKey, state => ({ ...state, activeId }));
+  const closeFileTab = (id: string) => {
+    const closingLastFile = panel.tabState.tabs.length === 1 && panel.tabState.tabs[0]?.id === id;
+    panel.closeTab(id);
+    if (closingLastFile && browserMounted && browserTabs.length > 0) setBrowserOpen(true);
+  };
   const addBrowserTab = useCallback((url?: string, owner = ownerKey, fromPagePopup = false) => {
     const id = nextBrowserTabId.current++;
     updateBrowser(owner, state => {
@@ -619,15 +625,17 @@ export function AgentThreadPanel(props: {
           >
             <button
               type="button"
-              className={`thread-panel__icon-button thread-panel__overview-button${panel.pinned && panel.hasContent ? " thread-panel__overview-button--inactive" : ""}${popoverOpen ? " thread-panel__icon-button--active" : ""}`}
-              aria-label={t(panel.pinned && panel.hasContent ? "home.threadPanel.alreadyPinned" : "home.threadPanel.overview")}
-              title={t(panel.pinned && panel.hasContent ? "home.threadPanel.alreadyPinned" : "home.threadPanel.overview")}
+              className={`thread-panel__icon-button thread-panel__overview-button${pinnedListVisible ? " thread-panel__overview-button--inactive" : ""}${popoverOpen ? " thread-panel__icon-button--active" : ""}`}
+              aria-label={t(pinnedListVisible ? "home.threadPanel.alreadyPinned" : "home.threadPanel.overview")}
+              title={t(pinnedListVisible ? "home.threadPanel.alreadyPinned" : "home.threadPanel.overview")}
               aria-haspopup={popoverAllowed ? "dialog" : undefined}
               aria-expanded={popoverAllowed ? popoverOpen : undefined}
               onClick={() => {
                 if (!popoverAllowed) return;
                 cancelPopoverClose();
-                setPopoverOpen((current) => !current);
+                // Pointer-enter may already have opened the hover list before
+                // this click arrives; clicking must not immediately close it.
+                setPopoverOpen(true);
               }}
             >
               <ThreadListIcon />
@@ -642,7 +650,7 @@ export function AgentThreadPanel(props: {
                 setBrowserOpen(false);
                 panel.activateTab(id);
               }}
-              onClose={panel.closeTab}
+              onClose={closeFileTab}
               browserTabs={browserMounted ? browserTabs : []}
               activeBrowserTabId={activeBrowserTabId}
               onActivateBrowser={(id) => {
@@ -799,7 +807,7 @@ function ThreadOverviewPopover(props: {
   onPointerLeave: () => void;
 }) {
   const { t } = useTranslation();
-  const [position, setPosition] = useState<{ top: number; left: number; height: number } | null>(null);
+  const [position, setPosition] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
   const { anchor } = props;
 
   useLayoutEffect(() => {
@@ -807,8 +815,8 @@ function ThreadOverviewPopover(props: {
     const update = () => {
       const rect = anchor.getBoundingClientRect();
       const left = Math.max(POPOVER_VIEWPORT_PADDING, Math.min(rect.left, window.innerWidth - POPOVER_WIDTH - POPOVER_VIEWPORT_PADDING));
-      const height = Math.max(160, Math.min(POPOVER_HEIGHT, window.innerHeight - rect.bottom - POPOVER_VIEWPORT_PADDING));
-      setPosition({ top: rect.bottom, left, height });
+      const maxHeight = Math.max(0, Math.min(POPOVER_HEIGHT, window.innerHeight - rect.bottom - POPOVER_VIEWPORT_PADDING));
+      setPosition({ top: rect.bottom, left, maxHeight });
     };
     update();
     window.addEventListener("resize", update);
@@ -822,7 +830,7 @@ function ThreadOverviewPopover(props: {
       className="thread-popover"
       role="dialog"
       aria-label={t("home.threadPanel.overview")}
-      style={position ? { top: position.top, left: position.left, height: position.height } : { visibility: "hidden" }}
+      style={position ? { top: position.top, left: position.left, maxHeight: position.maxHeight } : { visibility: "hidden" }}
       onPointerEnter={props.onPointerEnter}
       onPointerLeave={props.onPointerLeave}
     >

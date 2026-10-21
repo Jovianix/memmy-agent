@@ -132,3 +132,15 @@ node scripts/internal/shared/validate-computer-history.mjs
 Windows 原生构建与测试沿用 `scripts/internal/win/history-recorder-native.ps1` 及 CTest。Flow 兼容性工作流为 `.github/workflows/openadapt-recording-compat.yml`；Windows 工作流为 `.github/workflows/windows-computer-history-validation.yml`。
 
 macOS 打包沿用 `scripts/internal/mac/build-dmg.sh`，构建及安装后验证会检查 `human-recorder`、`app-icon` 和 `task-recorder` 三个原生可执行文件；缺少 helper 时报告安装错误，禁止在客户机器上临时编译 Swift。
+
+## Plugin access
+
+These Host-owned drivers provide owner-scoped task recordings, media, evidence and
+resource cleanup to approved native plugins. They share the collector gate with
+Computer History. Conversation event capture uses the existing History stream and
+its own durable snapshots; it does not start a second video recorder.
+
+The Windows task recorder is built from `computer-history/win/native` by
+`scripts/internal/win/build-plugin-native-recorder.mjs` during Windows packaging.
+Its runtime requires no system Node or compiler. Teaching orchestration, prompts,
+application adapters and dedicated acceptance tools belong to the plugin repository.

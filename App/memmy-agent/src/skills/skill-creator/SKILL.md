@@ -55,9 +55,13 @@ metadata:
     requires:
       bins: ["gh"]
       env: ["GITHUB_TOKEN"]
+      tools: ["read_file"]
 ```
 
 Set `metadata.memmy.manualOnly: true` for a Skill that must stay out of the normal Skill index and load only when the current task explicitly references `$skill-name`. Do not combine it with startup initialization.
+`metadata.memmy.requires.tools` names actual Agent tools; a missing tool makes the
+skill unavailable. Plugin ownership and recording provenance belong in the Host
+contribution registry and `references/`, rather than extra frontmatter namespaces.
 
 ## Creation Workflow
 
@@ -69,6 +73,13 @@ Set `metadata.memmy.manualOnly: true` for a Skill that must stay out of the norm
 6. Test any scripts by executing them on realistic inputs.
 
 Create files directly. There is no required init scaffold command for memmy-agent skills.
+
+For a plugin-owned skill, use that plugin's validated save capability when one is
+provided. It must validate the same frontmatter and directory conventions,
+resource references and available tools, then register ownership with the Host.
+Keep provenance in `references/` and distinguish generation from execution.
+Do not write a duplicate workspace skill or require a Python installation when
+the plugin's save capability already performs these checks in the Host runtime.
 
 ## Writing SKILL.md
 
@@ -97,7 +108,8 @@ Use `assets/` for templates, images, fonts, sample documents, or other files tha
 
 ## Validation
 
-Run the bundled quick validator before considering a skill ready:
+For skills authored directly on the filesystem, run the bundled quick validator
+before considering a skill ready:
 
 ```bash
 python3 {baseDir}/scripts/quick-validate.py <skill-dir>

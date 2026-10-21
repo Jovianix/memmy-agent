@@ -58,6 +58,8 @@ export interface ManagedRuntimeServices {
   };
   /** Starts the Agent gateway once. An initial failure starts background recovery. */
   startAgentGateway(): Promise<AgentGatewayStartupIssue | null>;
+  /** Health-checked readiness, including recovery after a failed first start. */
+  agentGatewayReady?: Promise<void>;
   /** Starts browser preparation once, independently of the first window. */
   startBrowserPreparation(): PackagedBrowserPreparation | null;
   restartMemory(): Promise<void>;
@@ -338,6 +340,7 @@ export async function startManagedRuntimeServices(
         ready: memoryReady
       },
       agentGateway,
+      agentGatewayReady: gatewaySupervisor.ready,
       startAgentGateway,
       startBrowserPreparation,
       async restartMemory() {
@@ -1601,6 +1604,8 @@ function classifyAgentGatewayStartupIssue(error: unknown): AgentGatewayStartupIs
 }
 
 export class AgentGatewaySupervisor {
+  readonly ready: Promise<void>;
+  private reportReady!: () => void;
   ownership: "external" | "owned" | null = null;
   ownedChild: ManagedChild | null = null;
   childGeneration = 0;
@@ -1626,6 +1631,7 @@ export class AgentGatewaySupervisor {
     private readonly browserPreparationAttemptId: string =
       process.env[BROWSER_PREPARATION_ATTEMPT_ID_ENV]?.trim() || ""
   ) {
+    this.ready = new Promise(resolve => { this.reportReady = resolve; });
     this.bootstrapUrl = `${runtimeConfig.agentGatewayBaseUrl}/webui/bootstrap`;
     this.bootstrapHeaders = runtimeConfig.agentGatewayBootstrapSecret
       ? { "x-memmy-agent-auth": runtimeConfig.agentGatewayBootstrapSecret }
@@ -1730,6 +1736,8 @@ export class AgentGatewaySupervisor {
     const probe = await this.dependencies.probeHttpService(this.bootstrapUrl, this.bootstrapHeaders);
     if (probe === "ready") {
       this.ownership = "external";
+      this.hasReachedReady = true;
+      this.reportReady();
       return;
     }
     if (probe === "unexpected") {
@@ -1795,6 +1803,7 @@ export class AgentGatewaySupervisor {
       await this.dependencies.waitForHttpService("agent-gateway", this.bootstrapUrl, child, this.bootstrapHeaders);
       if (this.stopping || this.ownedChild !== child || this.childGeneration !== generation) return;
       this.hasReachedReady = true;
+      this.reportReady();
       this.replacementNotice = null;
       this.startStableTimer(child, generation);
     } catch (error) {

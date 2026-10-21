@@ -39,6 +39,30 @@ afterEach(async () => {
 });
 
 describe("Windows managed service", () => {
+  it("shares the Windows driver with plugin subscribers and accepts conservative persisted checkpoints", async () => {
+    const { service, store } = setup([
+      'import fs from "node:fs"; import readline from "node:readline";',
+      'const file=process.argv[process.argv.indexOf("--out")+1];',
+      'fs.appendFileSync(file,JSON.stringify({recordType:"human_event",eventType:"recording_started",timestamp:new Date().toISOString()})+"\\n");',
+      'console.log(JSON.stringify({kind:"recorder.state",state:"running"}));',
+      'readline.createInterface({input:process.stdin}).on("line",line=>{',
+      'if(line==="stop"){console.log(JSON.stringify({kind:"recorder.state",state:"stopped"}));process.exit(0);}',
+      'const input=JSON.parse(line);fs.appendFileSync(file,JSON.stringify({recordType:"human_event",eventType:"accessibility_snapshot",timestamp:new Date().toISOString()})+"\\n");',
+      'const fd=fs.openSync(file,"r+");fs.fsyncSync(fd);fs.closeSync(fd);',
+      'console.log("[recorder-checkpoint] "+JSON.stringify({id:input.id,complete:false}));});',
+    ].join("\n"));
+    store.write({ version: 1, applications: [{ executable }] });
+    const first = await service.acquireEventCapture();
+    const second = await service.acquireEventCapture();
+    const point = await first.checkpoint({ from: new Date().toISOString() });
+    expect(point).toMatchObject({ running: true, complete: false, rangeEvaluated: false });
+    expect(fs.readFileSync(point.streams.at(-1)!.file, "utf8")).toContain("accessibility_snapshot");
+    expect(service.snapshot().observation.state).toBe("stopped");
+    await first.release();
+    expect((await second.checkpoint()).running).toBe(true);
+    await second.release();
+    expect(service.recorderBusy).toBe(false);
+  });
   it("accepts persisted-event health alongside lifecycle status and updates capture coverage", async () => {
     const { root, service, store } = setup();
     const script = path.join(root, "recorder.mjs");

@@ -68,7 +68,7 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
       "--settings", this.store.filePath, "--out", input.eventsFile, "--title", input.title, "--seconds", "86400", "--append", "--input-hooks",
       "--observation-settings", input.observationSettingsFile,
       ...(input.weChatConsentFile ? ["--wechat-consent", input.weChatConsentFile] : [])],
-    { windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"], env: process.env }); }
+    { windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } }); }
     catch (error) { release(); throw error; }
     child.once("close", release);
     let readyResolve!: () => void;
@@ -98,6 +98,12 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
       while ((index = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
         try {
+          if (line.startsWith("[recorder-checkpoint] ")) {
+            const checkpoint = JSON.parse(line.slice("[recorder-checkpoint] ".length));
+            if (typeof checkpoint.id !== "string" || !/^[0-9a-f-]{36}$/u.test(checkpoint.id)
+                || checkpoint.complete !== false || Object.keys(checkpoint).some(key => key !== "id" && key !== "complete")) throw new Error();
+            continue;
+          }
           if (line.startsWith("[recorder-health] ")) {
             const health = JSON.parse(line.slice("[recorder-health] ".length));
             if (!health || typeof health !== "object" || Array.isArray(health)

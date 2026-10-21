@@ -54,7 +54,7 @@ describe("AgentRuntimeBridge", () => {
 
   it("does not acknowledge transcript replay or history identities", () => {
     const acknowledgeCronDelivery = vi.fn();
-    let state = agentReducer(initialAgentState, { type: "agent/wsEvent", event: { event: "message", chat_id: "chat-old",
+    const state = agentReducer(initialAgentState, { type: "agent/wsEvent", event: { event: "message", chat_id: "chat-old",
       text: "旧消息", metadata: { proactiveDelivery: "cron", deliveryId: "history-1", replayed: true } } });
     expect(state.proactiveDeliveryIdsByChatId["chat-old"]).toEqual(["history-1"]);
     acknowledgeProcessedCronDeliveries({ getReadyGeneration: () => 1, acknowledgeCronDelivery }, 1,
@@ -99,6 +99,7 @@ describe("AgentRuntimeBridge", () => {
     expect(isAgentRuntimeBridgeRoute("/settings")).toBe(true);
     expect(isAgentRuntimeBridgeRoute("/memory")).toBe(true);
     expect(isAgentRuntimeBridgeRoute("/memory-sources")).toBe(true);
+    expect(isAgentRuntimeBridgeRoute("/plugin")).toBe(true);
 
     expect(isAgentRuntimeBridgeRoute("/pet")).toBe(true);
     expect(isAgentRuntimeBridgeRoute("/welcome")).toBe(false);

@@ -8,6 +8,8 @@ import type {
 export interface MemmyAgentAdminClient {
   getChannelDefinitions(): Promise<ChannelDefinitionsResponse>;
   getChannelConnections(): Promise<ChannelConnectionsResponse>;
+  /** Returns the canonical workspace currently bound to a WebUI conversation. */
+  getSessionWorkspace?(sessionKey: string): Promise<string | null>;
   configureChannel(runtimeChannel: string): Promise<{ status: ChannelStatus; running: boolean }>;
   stopChannel(runtimeChannel: string): Promise<{ status: ChannelStatus; running: boolean }>;
   startWeixinLogin(): Promise<{ status: ChannelStatus; qrCodeDataUrl?: string; pollToken?: string }>;
@@ -21,5 +23,6 @@ export interface MemmyAgentAdminClient {
     appSecret?: string;
     domain?: "feishu" | "lark";
   }>;
+  invokePluginHostService?(pluginId: string, service: string, input: unknown, context?: { dataRoot: string }): Promise<unknown>;
   reloadMcpConfig(): Promise<{ ok: boolean; message: string; requires_restart: boolean }>;
 }

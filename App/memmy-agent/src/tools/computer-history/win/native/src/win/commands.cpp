@@ -660,8 +660,15 @@ class Observer {
     const bool keyboardAllowed = focus != query.response.nodes.end() && focus->password == std::optional<bool>(false) &&
                                  (focus->redaction.empty() || focus->redaction == "edit_control");
     for (const auto& item : actions) {
-      if (item.hwnd != query.context->hwnd || item.generation != query.generation) continue;
       const auto& action = item.action;
+      // A click can itself move focus inside this HWND. Its pointer evidence
+      // remains valid, but keyboard evidence must still match the exact focus
+      // generation so a later field cannot authorize earlier secret input.
+      const bool pointer = action.kind == ActionKind::MouseClick || action.kind == ActionKind::Scroll;
+      if (item.hwnd != query.context->hwnd || (!pointer && item.generation != query.generation)) {
+        if (video_) { ++unsupportedActions_; actionOverflow = true; }
+        continue;
+      }
       Json detail = {{"timestamp", protocol::FormatUtcTimestamp(action.timestamp)}, {"injected", action.injected}};
       if (action.kind == ActionKind::MouseClick) {
         detail["type"] = "mouse_click";
@@ -689,6 +696,7 @@ class Observer {
       ++counters_.unchanged;
       return;
     }
+    const auto approvedCount = approvedActions.size();
     Json body = OkBody(query, diff.full ? "full" : "delta", focusKey);
     if (command_.inputHooks) { body["actions"] = std::move(approvedActions); body["actionOverflow"] = actionOverflow; }
     if (diff.full) {
@@ -704,6 +712,7 @@ class Observer {
     event["snapshot"] = std::move(body);
     const std::string line = DumpJson(event) + "\n";
     if (!collector_->Commit(query, cancel.data(), static_cast<DWORD>(cancel.size()))) {
+      if (video_) unsupportedActions_ += approvedCount;
       session_.DiscardEnvelope();
       ResetCaptureState();
       if (query.status == "cancelled") {
@@ -729,6 +738,16 @@ class Observer {
       baseline_ = std::move(candidate);
       lastFocusKey_ = focusKey;
     }
+  }
+
+  bool ActionInScope(std::uint64_t hwnd) {
+    const auto file = ReadPolicyFile(policyPath_);
+    const auto parsed = file.ok ? policy::Parse(file.bytes) : policy::Parse("");
+    if (!parsed.policy) return true;  // Failed policy reads must still report lost task input.
+    std::string reason;
+    const auto context = ReadWindowContext(hwnd, reason);
+    if (!context) return true;
+    return policy::Evaluate(*parsed.policy, ToTarget(*context), CanonicalizePath).rule != nullptr;
   }
 
   void Loop() {
@@ -786,6 +805,9 @@ class Observer {
         for (const auto& trigger : triggers) {
           MarkPending(TriggerKindName(trigger.kind));
           if (trigger.action.kind != ActionKind::None) {
+            // Returning to Memmy's stop/finish controls is outside the selected
+            // applications. It must not make their recording look incomplete.
+            if (video_ && !ActionInScope(trigger.hwnd)) continue;
             if (video_ && trigger.action.kind == ActionKind::Unsupported) { ++unsupportedActions_; pendingActionOverflow_ = true; }
             if (pendingActions_.size() < 64) pendingActions_.push_back(trigger);
             else pendingActionOverflow_ = true;

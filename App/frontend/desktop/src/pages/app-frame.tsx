@@ -171,7 +171,7 @@ interface SidebarContextMenuPlacement {
 }
 
 type AgentTaskSort = AppState["agent"]["sidebarState"]["view"]["sort"];
-type NewAgentDraftState = Pick<AppState["agent"], "blankDraftActive" | "newChatRequestId" | "composerDraftsByScope" | "composerPendingAttachmentsByScope">;
+type NewAgentDraftState = Pick<AppState["agent"], "blankDraftActive" | "newChatRequestId" | "composerDraftsByScope" | "composerPendingAttachmentsByScope" | "composerContextReferencesByScope">;
 
 export interface SidebarAccountLabels {
   brandName: string;
@@ -206,6 +206,7 @@ interface SidebarUpdateActionView {
 const navItems: NavItem[] = [
   { path: "/main", icon: <MessageSquarePlus size={16} /> },
   { action: "search", icon: <Search size={16} />, labelKey: "appFrame.search" },
+  { path: "/plugins", icon: <Link2 size={16} /> },
   { path: "/tools", icon: <Link2 size={16} /> },
   { path: "/memory", icon: <BrainCircuit size={16} /> },
   { path: "/knowledge", icon: <BookOpen size={16} /> }
@@ -266,7 +267,8 @@ export function shouldCreateNewAgentDraft(agent: NewAgentDraftState): boolean {
   }
   const draftScopeKey = agentChatScopeKey(null, agent.newChatRequestId);
   return !agent.composerDraftsByScope[draftScopeKey]
-    && !(agent.composerPendingAttachmentsByScope[draftScopeKey]?.length);
+    && !(agent.composerPendingAttachmentsByScope[draftScopeKey]?.length)
+    && !(agent.composerContextReferencesByScope[draftScopeKey]?.length);
 }
 
 /** Sidebar workspace highlight: only when a blank new-task draft targets a project. */

@@ -1129,6 +1129,8 @@ export class AgentRunner {
         abortSignal: spec.abortSignal ?? null,
         toolName: call.name,
         callId: call.id ?? null,
+        sessionKey: spec.sessionKey ?? null,
+        modelPreset: spec.actualModelContext?.presetId ?? null,
         stopTurn: (message) => { stopTurn ??= message; },
         reportFileMutation: (outcome) => {
           fileMutationOutcomes.set(path.resolve(outcome.path), {
@@ -1497,8 +1499,16 @@ export class AgentRunner {
     ];
     // Preserve the current request, final exchange and newest screenshot even if
     // they cannot fit. The final request guard then returns a local error.
+    const ensureLegalStart = (candidate: Record<string, any>[]): Record<string, any>[] => {
+      const firstNonSystem = candidate.findIndex((message) => message.role !== "system");
+      const firstUser = candidate.findIndex((message) => message.role === "user");
+      if (firstNonSystem >= 0 && firstUser > firstNonSystem) {
+        return [...candidate.slice(0, firstNonSystem), ...candidate.slice(firstUser)];
+      }
+      return candidate;
+    };
     const mandatory = build();
-    if (!fits(mandatory)) return mandatory.map((message) => ({ ...message }));
+    if (!fits(mandatory)) return ensureLegalStart(mandatory).map((message) => ({ ...message }));
     for (let index = exchanges.length - 1; index >= 0; index -= 1) {
       if (retained.has(index)) continue;
       retained.add(index);
@@ -1522,7 +1532,7 @@ export class AgentRunner {
         end = start;
       }
     }
-    return build().map((message) => ({ ...message }));
+    return ensureLegalStart(build()).map((message) => ({ ...message }));
   }
 
   private prepareMessagesForModel(

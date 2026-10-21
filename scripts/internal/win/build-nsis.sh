@@ -580,6 +580,7 @@ verify_windows_agent_native_artifacts() {
   require_packaged_runtime_file "$RUNTIME_DIR/memmy-agent/dist/core/agent-runtime/tools/browser-site-permissions.js"
   require_packaged_runtime_file "$RUNTIME_DIR/memmy-agent/dist/core/agent-runtime/tools/browser-access-approval.js"
   require_packaged_runtime_file "$RUNTIME_DIR/memmy-agent/dist/core/agent-runtime/tools/browser-window-visibility.js"
+  require_packaged_runtime_file "$RUNTIME_DIR/memmy-agent/dist/tools/computer-history/win/memmy-history-recorder.exe"
   require_packaged_runtime_file "$RUNTIME_DIR/memmy-agent/dist/native-computer-history/windows/amd64/memmy-computer-history.exe"
   node "$ROOT_DIR/scripts/internal/win/verify-computer-history-runtime.mjs" \
     "$(to_node_readable_path "$RUNTIME_DIR/memmy-agent/dist/native-computer-history/windows/amd64/memmy-computer-history.exe")" x64 \
@@ -707,6 +708,8 @@ verify_packaged_windows_unpacked_artifacts() {
       "$unpacked_runtime/memmy-agent/dist/native-computer-use/windows/amd64/memmy-computer-use.exe" \
       "Windows Computer Use executable"
   fi
+  require_packaged_runtime_file "$unpacked_runtime/memmy-agent/dist/tools/computer-history/win/memmy-history-recorder.exe"
+  cmp "$RUNTIME_DIR/memmy-agent/dist/tools/computer-history/win/memmy-history-recorder.exe" "$unpacked_runtime/memmy-agent/dist/tools/computer-history/win/memmy-history-recorder.exe"
   require_packaged_runtime_file "$unpacked_runtime/memmy-agent/dist/native-computer-history/windows/amd64/memmy-computer-history.exe"
   node "$ROOT_DIR/scripts/internal/win/verify-computer-history-runtime.mjs" \
     "$(to_node_readable_path "$unpacked_runtime/memmy-agent/dist/native-computer-history/windows/amd64/memmy-computer-history.exe")" x64 \
@@ -897,6 +900,9 @@ bash "$ROOT_DIR/scripts/internal/win/build-memmy-computer-use.sh" \
 package_step_start "Build native Windows History recorder from source"
 bash "$ROOT_DIR/scripts/internal/win/build-memmy-computer-history.sh" \
   "$RUNTIME_DIR/memmy-agent/dist/native-computer-history/windows/amd64/memmy-computer-history.exe" amd64
+package_step_start "Build shared native task recorder from source"
+node "$ROOT_DIR/scripts/internal/win/build-plugin-native-recorder.mjs" \
+  "$(to_node_readable_path "$RUNTIME_DIR/memmy-agent/dist/tools/computer-history/win/memmy-history-recorder.exe")"
 package_step_start "Stage Windows memmy-agent workspace runtime packages"
 RUNTIME_LOCAL_API_CONTRACTS_DIR="$RUNTIME_DIR/memmy-agent/node_modules/@memmy/local-api-contracts"
 rm -rf "$RUNTIME_LOCAL_API_CONTRACTS_DIR"
@@ -995,6 +1001,10 @@ RUNTIME_NODE_DIR="$(to_node_readable_path "$RUNTIME_DIR")"
 node "$ROOT_DIR/scripts/internal/shared/verify-package-version.mjs" \
   --expected "$DESKTOP_VERSION" \
   --runtime-root "$RUNTIME_NODE_DIR"
+
+package_step_start "Prepare bundled first-party plugins"
+node "$ROOT_DIR/scripts/internal/shared/prepare-bundled-plugins.mjs" \
+  "$DESKTOP_DIR/dist/bundled-plugins" --optional
 
 package_step_start "Create Windows CLI launchers and embedding model"
 create_windows_cli_launcher "$CLI_BIN_DIR/memmy-memory.cmd" "memory-runtime\\dist\\src\\cli\\index.js"

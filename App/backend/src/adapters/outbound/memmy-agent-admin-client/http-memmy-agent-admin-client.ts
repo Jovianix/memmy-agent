@@ -36,6 +36,12 @@ const McpReloadResponseSchema = z.object({
   requires_restart: z.boolean()
 });
 
+const WorkspaceEnvironmentResponseSchema = z.object({
+  snapshot: z.object({
+    cwd: z.string()
+  })
+});
+
 export interface CreateHttpMemmyAgentAdminClientOptions {
   /** Memmy-agent WebUI HTTP base URL. */
   baseUrl?: string;
@@ -71,6 +77,15 @@ class HttpMemmyAgentAdminClient implements MemmyAgentAdminClient {
     return this.request("/api/channels/status", ChannelConnectionsResponseSchema);
   }
 
+  async getSessionWorkspace(sessionKey: string): Promise<string | null> {
+    const normalizedSessionKey = normalizeGuiSessionKey(sessionKey);
+    const environment = await this.request(
+      `/api/sessions/${encodeURIComponent(normalizedSessionKey)}/environment`,
+      WorkspaceEnvironmentResponseSchema
+    );
+    return environment.snapshot.cwd.trim() || null;
+  }
+
   async configureChannel(runtimeChannel: string) {
     return this.request(`/api/channels/${encodeURIComponent(runtimeChannel)}/configure`, ChannelRuntimeActionResponseSchema, { method: "POST" });
   }
@@ -93,6 +108,10 @@ class HttpMemmyAgentAdminClient implements MemmyAgentAdminClient {
 
   async pollFeishuLogin(pollToken: string) {
     return this.request(`/api/channels/feishu/login/${encodeURIComponent(pollToken)}`, FeishuLoginResponseSchema);
+  }
+
+  async invokePluginHostService(pluginId: string, service: string, input: unknown, context?: { dataRoot: string }): Promise<unknown> {
+    return this.request("/api/plugin-host/services", z.unknown(), { method: "POST", body: JSON.stringify({ pluginId, service, input, ...context }) });
   }
 
   async reloadMcpConfig() {
@@ -138,6 +157,13 @@ class HttpMemmyAgentAdminClient implements MemmyAgentAdminClient {
     this.token = parsed.token;
     return parsed.token;
   }
+}
+
+function normalizeGuiSessionKey(value: string): string {
+  const sessionKey = value.trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(sessionKey)
+    ? `websocket:${sessionKey}`
+    : sessionKey;
 }
 
 function normalizeBaseUrl(value: string): string {

@@ -64,6 +64,7 @@ import { LoginPage } from "../pages/login-page.js";
 import { writeMemorySubPage } from "../pages/memory-sub-page-storage.js";
 import { OnboardingPage } from "../pages/onboarding-page.js";
 import { PetPage } from "../pages/pet-page.js";
+import { PluginSurfacePage } from "../pages/plugin-surface-page.js";
 import { PetStartupScreen } from "../pages/pet-startup-screen.js";
 import { StartupScreen } from "../pages/startup-screen.js";
 import { TokenDetailPage } from "../pages/token-detail-page.js";
@@ -73,6 +74,7 @@ import { WelcomePage } from "../pages/welcome-page.js";
 const MemoryPage = lazy(() => import("../pages/memory-page.js").then(({ MemoryPage }) => ({ default: MemoryPage })));
 const KnowledgePage = lazy(() => import("../pages/knowledge-page.js").then(({ KnowledgePage }) => ({ default: KnowledgePage })));
 const SettingsPage = lazy(() => import("../pages/settings-page.js").then(({ SettingsPage }) => ({ default: SettingsPage })));
+const PluginsPage = lazy(() => import("../pages/plugins-page.js").then(({ PluginsPage }) => ({ default: PluginsPage })));
 const ToolsPage = lazy(() => import("../pages/tools-page.js").then(({ ToolsPage }) => ({ default: ToolsPage })));
 
 function readWorkspaceGuidanceOverlay(step: DeferredGuidanceStep | null): Extract<DeferredGuidanceStep, "product_tour" | "nickname"> | null {
@@ -384,6 +386,8 @@ function renderRoute(path: AppRoutePath) {
       return <ApiKeyOptionalPage />;
     case "/onboarding":
       return <OnboardingPage />;
+    case "/plugins":
+      return <PluginsPage />;
     case "/tools":
       return <ToolsPage />;
     case "/memory":
@@ -392,6 +396,8 @@ function renderRoute(path: AppRoutePath) {
       return <KnowledgePage />;
     case "/memory-sources":
       return <MemoryPage initialSubPage="sources" />;
+    case "/plugin":
+      return <PluginSurfacePage />;
     case "/settings":
       return <SettingsPage />;
     case "/pet":

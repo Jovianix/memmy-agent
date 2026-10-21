@@ -1,5 +1,5 @@
 /** Global.d module. */
-import type { DesktopAppInfo, DesktopImageActionRequest, DesktopImageSaveResult, DesktopMemoryServiceRestartResult, DesktopProjectDirectorySelection, DesktopUpdateCheckResult, DesktopUpdateDownloadProgress, DesktopUpdateInstallResult } from "@memmy/desktop-interface";
+import type { DesktopAppInfo, DesktopImageActionRequest, DesktopImageSaveResult, DesktopMemoryServiceRestartResult, DesktopProjectDirectorySelection, DesktopSystemFileIconResult, DesktopSystemFolderIconKind, DesktopUpdateCheckResult, DesktopUpdateDownloadProgress, DesktopUpdateInstallResult } from "@memmy/desktop-interface";
 import type { AgentGatewayStartupIssue, ComputerUseSurfaceAction, ComputerUseSurfaceMessage } from "@memmy/local-api-contracts";
 
 declare global {
@@ -95,6 +95,10 @@ declare global {
       openMailto(mailtoUrl: string): Promise<void>;
       copyImageToClipboard(request: DesktopImageActionRequest): Promise<void>;
       saveImage(request: DesktopImageActionRequest): Promise<DesktopImageSaveResult>;
+      getPathForFile(file: File): string;
+      getSystemFileIcon(filePath: string): Promise<DesktopSystemFileIconResult>;
+      getSystemFolderIcon(kind: DesktopSystemFolderIconKind): Promise<DesktopSystemFileIconResult>;
+      showItemInFolder(filePath: string): Promise<void>;
       saveFile(request: DesktopImageActionRequest): Promise<DesktopImageSaveResult>;
       exportMemoryDatabase(): Promise<{ canceled: true } | { canceled: false; exportPath: string; bytes: number }>;
       installCliTools(): Promise<MemmyCliInstallResult>;

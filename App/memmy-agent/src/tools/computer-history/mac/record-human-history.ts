@@ -1,3 +1,4 @@
+import { recorderCheckpoints } from "./recorder-checkpoints.js";
 // Record authorized foreground activity as a local JSONL event stream.
 
 import crypto from "node:crypto";
@@ -911,6 +912,19 @@ export async function run(
   if (!helper.stdout || !helper.stderr) throw new Error("history observer pipes are unavailable");
   let helperClosed = false;
   helper.once("close", () => { helperClosed = true; childClosedResolve(); });
+  const checkpoints = !process.stdin.isTTY ? recorderCheckpoints({
+    input: process.stdin,
+    ...(windows ? { requestNative: (id: string, range?: import("../core/event-capture-source.js").CaptureRange) => {
+      if (!helper.stdin?.writable) throw new Error("native checkpoint unavailable");
+      helper.stdin.write(JSON.stringify({ kind: "checkpoint", id, ...range }) + "\n");
+    } } : {}),
+    persist: async () => {
+      await processing; await flushKeys();
+      const fd = fs.openSync(output, "r+");
+      try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    },
+    write: line => console.log(line),
+  }) : null;
   const lines = readline.createInterface({ input: helper.stdout });
   let queuedWindowsEvents = 0;
   lines.on("line", (line: string) => {
@@ -921,6 +935,7 @@ export async function run(
         health.report("helper_parse_error");
         return;
       }
+      if (checkpoints?.acknowledge(event)) return;
       if (event.type === "recorder.diagnostic") {
         const signal = nativeRecorderDiagnostic(event);
         if (signal) health.report(signal.code, signal);
@@ -974,6 +989,7 @@ export async function run(
     return { output, recordingId, events: sequence };
   } finally {
     // A short session or Stop must still publish the last successful write.
+    checkpoints?.close();
     health.close();
   }
 }
