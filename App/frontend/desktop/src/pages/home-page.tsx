@@ -1,7 +1,9 @@
 import { PluginConversationRecording } from "./plugin-conversation-recording.js";
 /** Home page module. */
+import { buildLegalDiagnosisContinuationPrompt } from "../lib/legal-diagnosis-continuation.js";
+import { messageCatalogs, resolveLanguage } from "../i18n/messages.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction, type UIEvent } from "react";
-import type { AgentGatewayStartupIssue, InstalledPlugin, PluginArtifactRef, PluginCommandContribution, PluginScenarioContribution } from "@memmy/local-api-contracts";
+import { resolveThinkingEnabled, resolveThinkingLevel, type AgentGatewayStartupIssue, type InstalledPlugin, type PluginArtifactRef, type PluginCommandContribution, type PluginScenarioContribution } from "@memmy/local-api-contracts";
 import type { RecordingStart } from "@memmy/local-api-contracts";
 import { AgentTaskRecordingOption, TaskRecordingsPanel } from "./memory/task-recordings.js";
 import { getRuntimeConfig } from "../api/runtime-config.js";
@@ -54,7 +56,7 @@ import {
 import { useTaskBus, type TaskBusAgentMessage } from "../lib/task-bus.js";
 import type { AppAction } from "../state/app-actions.js";
 import { agentActions, appActions, createAgentOperationError } from "../state/app-actions.js";
-import { type AgentChatMessage, type AgentState } from "../state/agent-chat-slice.js";
+import { NEW_TASK_MODEL_SCOPE_KEY, type AgentChatMessage, type AgentState, type AgentThinkingState } from "../state/agent-chat-slice.js";
 import { useAppState } from "../state/app-state.js";
 import { isComposingKeyboardEvent } from "../utils/keyboard.js";
 import {
@@ -65,10 +67,11 @@ import {
   type PendingFileAttachment,
   type PendingImage
 } from "../state/agent-composer-state.js";
-import { createModelWorkspace, defaultModelSelectionInput, resolveModelSelection } from "../state/model-workspace.js";
+import { createModelWorkspace, defaultModelSelectionInput, resolveModelSelection, resolveThinkingConfigForModel, type ModelCandidate, type ModelWorkspace } from "../state/model-workspace.js";
 import {
   AgentCommandPalette,
   buildVisibleSlashCommands,
+  defaultSlashCommandIndex,
   filterSlashCommands,
   localizeSlashCommands,
   readRecentSlashCommands,
@@ -86,6 +89,7 @@ import { AgentTaskPlanBar } from "./agent-task-plan-bar.js";
 import { agentOutputSignature, useStalledOutputShimmer } from "./agent-stall-shimmer.js";
 import { AgentThreadMessages, ChatImageLightbox } from "./agent-thread-messages.js";
 import {
+  pendingAgentQuestion, composerQuestionAnswer,
   type AgentQuestionCardPayload,
   type AgentQuestionResponse,
 } from "./agent-question-card.js";
@@ -95,7 +99,7 @@ import { RecordingEntryCard, RecordingEntryPage, useRecordingEntry, type Recordi
 import { PluginArtifactPreviewPanel } from "./plugin-artifact-preview-panel.js";
 import { AgentThreadPanel, useAgentThreadPanel } from "./agent-thread-panel.js";
 import { hasPendingBrowserOpen, MEMMY_BROWSER_OPEN_EVENT } from "./browser-panel.js";
-import { threadTabForInAppPreview, threadTabForPath } from "./agent-thread-panel-model.js";
+import { normalizeThreadPath, threadTabForInAppPreview, threadTabForPath, type ThreadArtifact } from "./agent-thread-panel-model.js";
 import { THREAD_SEARCH_SCROLL_OFFSET } from "./agent-thread-search.js";
 import { AgentThreadToolbar } from "./agent-thread-toolbar.js";
 import { AgentWorkspaceContext } from "./agent-workspace-context.js";
@@ -136,8 +140,6 @@ export { agentChatScopeKey, updateComposerDraftForScope };
 export { hydrateAgentThreadInBackground };
 export { isComposingKeyboardEvent } from "../utils/keyboard.js";
 export type { PendingAttachment, PendingAttachmentBase, PendingFileAttachment, PendingImage };
-
-const NEW_TASK_MODEL_SCOPE_KEY = "draft-new-task";
 
 const AGENT_WS_SAFE_FRAME_BYTES = 1024 * 1024;
 const COMPOSER_HEIGHT_EPSILON = 2;
@@ -224,12 +226,14 @@ const TRANSLATABLE_AGENT_ERROR_KEYS = new Set<MessageKey>([
   "home.media.error.sendReadFailed",
   "home.media.error.sendFailed",
   "home.media.error.messageTooBig",
+  "home.asrNotConfigured",
   "home.agent.messageNotRecorded",
   "home.agent.executionInterrupted",
   "home.agent.recoveryTimeout",
   "home.composer.emptyMessage",
   "home.goal.controlUnknown",
   "home.modelSelector.unavailable",
+  "home.modelSelector.pluginRequiresLogin",
   "home.project.desktopRequired",
   "home.queue.removeFailed",
   "home.queue.editBlocked",
@@ -351,6 +355,8 @@ export interface SubmitAgentComposerMessageInput {
   getChatSelectionEpoch?: () => number;
   scopeKey?: string;
   modelPreset?: string | null;
+  thinkingEnabled?: boolean;
+  thinkingLevel?: string | null;
 }
 
 export interface RequestAgentStopInput {
@@ -443,10 +449,12 @@ export function replaceSlashQueryAtSelection(
   const end = Math.max(start, Math.min(selectionEnd, input.length));
   const beforeCaret = input.slice(0, start);
   const match = /(^|\s)\/[^\s/]*$/.exec(beforeCaret);
-  if (!match) {
+  const queryStart = slashQueryFromInput(beforeCaret) !== null
+    ? 0
+    : match ? (match.index ?? 0) + (match[1]?.length ?? 0) : null;
+  if (queryStart === null) {
     return insertCapabilityAtSelection(input, command, start, end);
   }
-  const queryStart = (match.index ?? 0) + (match[1]?.length ?? 0);
   const before = input.slice(0, queryStart);
   const after = input.slice(end);
   const suffix = appendSpace ? (/^\s/.test(after) ? " " : "  ") : "";
@@ -664,16 +672,14 @@ export function reconcileHiddenPluginCalls(hidden: Set<string>, hiddenSteps: Rea
   return next.size === hidden.size ? hidden : next;
 }
 
-export function buildLegalDiagnosisContinuation(call: PluginUiCall): string {
+export function buildLegalDiagnosisContinuation(call: PluginUiCall, language = "zh-CN"): string {
   const result = call.events.find((event) => event.type === "result");
   const output = result?.type === "result" && result.output && typeof result.output === "object"
     ? result.output as Record<string, unknown> : {};
   if (typeof output.sessionId !== "string" || !output.sessionId.trim()) {
-    throw new Error("诊断材料已上传，但未取得诊断会话 ID，请重新打开诊断指引后重试。");
+    throw new Error(messageCatalogs[resolveLanguage(language)]["home.legalDiagnosis.sessionMissing"]);
   }
-  return `/legal-diagnosis 已完成调研，继续已有法律诊断会话，sessionId=${JSON.stringify(output.sessionId)}。`
-    + "请使用这个 sessionId 调用 session-status 核对已上传材料与进度，再继续后续诊断并生成报告。"
-    + "本次是已有会话的继续操作，请跳过 skill 中新建会话的 session-start 步骤，不要再次弹出诊断指引或重复收集材料。";
+  return buildLegalDiagnosisContinuationPrompt(output.sessionId);
 }
 
 export function parsePluginCommandInvocation(input: string, targets: PluginCommandTarget[]): {
@@ -729,6 +735,31 @@ export function selectRecordingDeliveryFiles(recordings: readonly RecordingArchi
     .flatMap((entry) => (entry.files ?? []).map((file) => ({
       id: `recording:${file.path}`, name: file.name, mediaType: file.mime, uri: file.url, path: file.path
     })));
+}
+
+/** Files produced by plugins live outside Agent messages but still belong in the task overview. */
+export function selectPluginThreadArtifacts(
+  calls: readonly PluginUiCall[],
+  recordingFiles: readonly PluginArtifactRef[] = []
+): ThreadArtifact[] {
+  const artifacts = new Map<string, ThreadArtifact>();
+  const names = new Set<string>();
+  const add = (artifact: PluginArtifactRef) => {
+    if (artifact.role === "setup") return;
+    const path = artifact.path?.trim() || undefined;
+    const url = artifact.uri?.trim() || undefined;
+    const key = normalizeThreadPath(path ?? url ?? "");
+    if (!key || artifacts.has(key)) return;
+    artifacts.set(key, { key, name: artifact.name, ...(path ? { path } : {}), ...(url ? { url } : {}) });
+    names.add(artifact.name);
+  };
+  for (const call of calls) {
+    for (const event of call.events) if (event.type === "artifact") add(event.artifact);
+  }
+  // The recording UI is also an artifact producer. Once the plugin publishes
+  // the task-owned copy, its same-name artifact takes precedence here.
+  for (const artifact of recordingFiles) if (!names.has(artifact.name)) add(artifact);
+  return [...artifacts.values()];
 }
 
 /** Keeps the global plugin event stream scoped to the conversation on screen. */
@@ -1043,6 +1074,20 @@ export function requestNewSessionReset(input: RequestNewSessionResetInput): bool
   return true;
 }
 
+export function thinkingPayloadForSend(
+  workspace: ModelWorkspace,
+  candidate: ModelCandidate | null | undefined,
+  sessionThinking: AgentThinkingState | undefined
+): { thinkingEnabled?: boolean; thinkingLevel?: string | null } {
+  const config = resolveThinkingConfigForModel(workspace, candidate);
+  if (!config) return {};
+  const thinkingEnabled = resolveThinkingEnabled(config, sessionThinking?.enabled);
+  const thinkingLevel = thinkingEnabled
+    ? resolveThinkingLevel(config, sessionThinking?.level)
+    : null;
+  return { thinkingEnabled, thinkingLevel };
+}
+
 export async function submitAgentComposerMessage(input: SubmitAgentComposerMessageInput): Promise<boolean> {
   const text = input.content.trim();
   const trimmedDisplayContent = input.displayContent?.trim();
@@ -1138,6 +1183,8 @@ export async function submitAgentComposerMessage(input: SubmitAgentComposerMessa
     ...(capturedTarget ? { target: capturedTarget } : {}),
     ...(input.language ? { language: input.language } : {}),
     ...(confirmedModelPreset !== undefined ? { model_preset: confirmedModelPreset } : {}),
+    ...(input.thinkingEnabled !== undefined ? { thinking_enabled: input.thinkingEnabled } : {}),
+    ...(input.thinkingLevel ? { thinking_level: input.thinkingLevel } : {}),
     ...(uploadedAttachments.length ? { media_paths: uploadedAttachments.map((item) => item.path) } : {})
   };
   if (encodedPayloadBytes(payload) > AGENT_WS_SAFE_FRAME_BYTES) {
@@ -1162,6 +1209,8 @@ export async function submitAgentComposerMessage(input: SubmitAgentComposerMessa
       ...(capturedTarget ? { target: capturedTarget } : {}),
       ...(input.language ? { language: input.language } : {}),
       ...(confirmedModelPreset !== undefined ? { modelPreset: confirmedModelPreset } : {}),
+      ...(input.thinkingEnabled !== undefined ? { thinkingEnabled: input.thinkingEnabled } : {}),
+      ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
       media: uploadedAttachments
     }, expectedGeneration);
   } catch (error) {
@@ -1411,10 +1460,17 @@ export function HomePage() {
   const [workspaceLayoutRef, workspaceLayoutWidth] = useSharedRowWidth<HTMLDivElement>();
   const pendingStatusChatRef = useRef<string | null>(null);
 
+  const dismissComposerAttachMenu = useCallback((restoreFocus = false) => {
+    const menu = composerAttachMenuRef.current;
+    if (!menu?.open) return;
+    menu.removeAttribute("open");
+    if (restoreFocus) menu.querySelector<HTMLElement>("summary")?.focus();
+  }, []);
+
   useEffect(() => {
     const closeAttachMenu = (event: PointerEvent) => {
       const menu = composerAttachMenuRef.current;
-      if (menu?.open && !menu.contains(event.target as Node)) menu.removeAttribute("open");
+      if (menu?.open && !menu.contains(event.target as Node)) dismissComposerAttachMenu();
       if (slashPickerOpen && !composerCapabilityMenuRef.current?.contains(event.target as Node)) {
         setSlashPickerOpen(false);
         setSlashMenuDismissed(true);
@@ -1422,7 +1478,8 @@ export function HomePage() {
     };
     const closeAttachMenuOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        composerAttachMenuRef.current?.removeAttribute("open");
+        dismissComposerAttachMenu(true);
+        if (slashPickerOpen) composerCapabilityMenuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
         setSlashPickerOpen(false);
         setSlashMenuDismissed(true);
       }
@@ -1433,7 +1490,7 @@ export function HomePage() {
       document.removeEventListener("pointerdown", closeAttachMenu);
       document.removeEventListener("keydown", closeAttachMenuOnEscape);
     };
-  }, [slashPickerOpen]);
+  }, [dismissComposerAttachMenu, slashPickerOpen]);
   const pendingLastCompactionChatRef = useRef<string | null>(null);
   const pendingHistoryDagChatRef = useRef<string | null>(null);
   const lastCompactionRequestIdRef = useRef(0);
@@ -1500,6 +1557,17 @@ export function HomePage() {
   const visiblePluginCalls = useMemo(
     () => selectPluginCallsForConversation(pluginUiCalls, state.agent.currentChatId, state.agent.currentSessionKey, chatScopeKey),
     [chatScopeKey, pluginUiCalls, state.agent.currentChatId, state.agent.currentSessionKey]
+  );
+  const legalRecordingDeliveryFiles = useMemo(
+    () => selectRecordingDeliveryFiles(
+      recordingEntry.session.recordings,
+      state.agent.currentChatId ?? state.agent.currentSessionKey
+    ),
+    [recordingEntry.session.recordings, state.agent.currentChatId, state.agent.currentSessionKey]
+  );
+  const pluginThreadArtifacts = useMemo(
+    () => selectPluginThreadArtifacts(visiblePluginCalls, legalRecordingDeliveryFiles),
+    [legalRecordingDeliveryFiles, visiblePluginCalls]
   );
   const pinnedPluginCapabilities = useMemo(
     () => new Set(installedPlugins.flatMap((plugin) => (plugin.manifest.commands ?? [])
@@ -1792,6 +1860,7 @@ export function HomePage() {
   );
   // The same condition the sidebar spinner uses, so the thread and the
   // spinner never disagree about whether Memmy is working.
+  const pendingQuestion = isCurrentAgentRunning ? pendingAgentQuestion(state.agent.messages, currentActiveTurnId) : null;
   const isAgentWorking = isCurrentAgentRunning || isCurrentGoalActive;
   useStalledOutputShimmer(
     conversationContentRef,
@@ -2467,7 +2536,7 @@ export function HomePage() {
       if (preparedPluginCalls.some((pending) => pending.pluginId === call.pluginId && pending.origin === "agent"
         && pending.events.some((event) => event.type === "interaction")
         && !pending.events.some((event) => event.type === "result" || event.type === "error"))) {
-        throw new Error("材料已保存，当前 Agent 仍在等待另一张诊断卡片。请先完成该卡片，或停止当前任务后继续已有诊断会话。");
+        throw new Error(t("home.legalDiagnosis.cardPending"));
       }
       if (resolvedConversationModel.unavailable) throw new Error(t("home.modelSelector.unavailable"));
       if (resolvedConversationModel.candidate?.source === "platform" && isAccountTokenQuotaExhausted(state.bootstrap)) {
@@ -2478,8 +2547,8 @@ export function HomePage() {
         target: state.agent.currentChatId ? null : draftTarget,
         connection,
         ensureChatSubscription,
-        content: buildAgentRoutedPluginPrompt(buildLegalDiagnosisContinuation(call), pluginCommandTargets)
-          ?? buildLegalDiagnosisContinuation(call).replace("/legal-diagnosis", "$labor-risk-diagnosis"),
+        content: buildAgentRoutedPluginPrompt(buildLegalDiagnosisContinuation(call, language), pluginCommandTargets)
+          ?? buildLegalDiagnosisContinuation(call, language).replace("/legal-diagnosis", "$labor-risk-diagnosis"),
         displayContent: t("plugin.ui.generateDiagnosis"),
         language,
         pendingAttachments: [],
@@ -2526,11 +2595,11 @@ export function HomePage() {
       && command.command !== "/last-compaction"
     ))
   ];
-  const visibleSlashCommands = buildVisibleSlashCommands(slashCommandsWithLocal, state.agent.isSending, stopSlashCommand);
+  const visibleSlashCommands = buildVisibleSlashCommands(slashCommandsWithLocal, state.agent.isSending, stopSlashCommand, slashQuery ?? "");
   const modeVisibleSlashCommands = selectedComposerCommand
     ? filterGoalModeSlashCommands(visibleSlashCommands, Boolean(state.agent.currentChatId))
     : visibleSlashCommands;
-  const filteredSlashCommands = slashQuery == null ? [] : filterSlashCommands(modeVisibleSlashCommands, slashQuery, recentSlashCommands);
+  const filteredSlashCommands = slashQuery == null ? [] : filterSlashCommands(modeVisibleSlashCommands, slashQuery, recentSlashCommands, state.agent.modelPresets);
   const slashMenuOpen = filteredSlashCommands.length > 0;
   const displayConnectionStatus = state.agent.recoveryKind === "initial"
     ? "connecting"
@@ -2556,12 +2625,14 @@ export function HomePage() {
   const hasComposerIntent = Boolean(input.trim() || pendingAttachments.length > 0);
   const stopInFlight = state.agent.currentChatId ? Boolean(state.agent.stopInFlightByChatId[state.agent.currentChatId]) : false;
   const pluginCommandInvocation = parsePluginCommandInvocation(input, pluginCommandTargets);
+  // A login-required official plugin in the composer still requires sign-in,
+  // but does not force the model. The official model stays a recommendation on the plugin page.
+  const loginRequiredPluginActive = Boolean(pluginCommandInvocation?.plugin.manifest.rules?.requiresLogin);
   const agentRoutedPluginPrompt = buildAgentRoutedPluginPrompt(input, pluginCommandTargets);
   const isDirectPluginCommand = Boolean(pluginCommandInvocation && !agentRoutedPluginPrompt);
   const composerSendDisabled = isDirectPluginCommand
     ? pendingAttachments.length > 0 || !clients
-    : stopInFlight
-      || !hasComposerPayload
+    : !hasComposerPayload
       || hasBlockedPendingMedia
       || !connection
       || isCreatingChat
@@ -2579,10 +2650,8 @@ export function HomePage() {
   const composerSubmitDisabled = composerPrimaryAction === "stop" ? composerStopDisabled : composerSendDisabled;
 
   useEffect(() => {
-    if (selectedCommandIndex >= filteredSlashCommands.length) {
-      setSelectedCommandIndex(0);
-    }
-  }, [filteredSlashCommands.length, selectedCommandIndex]);
+    setSelectedCommandIndex(defaultSlashCommandIndex(slashQuery, filteredSlashCommands.length));
+  }, [slashQuery, filteredSlashCommands.length]);
 
   useEffect(() => {
     composerDraftsRef.current = composerDrafts;
@@ -2771,6 +2840,33 @@ export function HomePage() {
     if (runExactLocalSlashCommand(input)) {
       return;
     }
+    if (loginRequiredPluginActive && !state.account.userId) {
+      dispatch(agentActions.operationFailed("chat", createAgentOperationError({
+        source: "send",
+        message: "home.modelSelector.pluginRequiresLogin",
+        ...(state.agent.currentChatId ? { chatId: state.agent.currentChatId } : { scopeKey: chatScopeKey })
+      })));
+      return;
+    }
+    if (pendingQuestion && input.trim() && !input.trimStart().startsWith("/")) {
+      const response = pendingAttachments.length ? null : composerQuestionAnswer(pendingQuestion, input);
+      if (!response) {
+        dispatch(agentActions.operationFailed("chat", createAgentOperationError({ source: "send", message: "home.question.useCard", chatId: state.agent.currentChatId ?? undefined })));
+        return;
+      }
+      if (messageSendLocksRef.current.has(chatScopeKey)) return;
+      const submitted = input;
+      messageSendLocksRef.current.add(chatScopeKey);
+      stageComposerForSend(chatScopeKey);
+      try {
+        const answered = await submitAgentQuestionResponse(pendingQuestion, response);
+        if (!answered) {
+          restoreComposerAfterFailedSend(chatScopeKey, submitted, [], null);
+          dispatch(agentActions.operationFailed("chat", createAgentOperationError({ source: "send", message: "home.question.submitFailed", chatId: state.agent.currentChatId ?? undefined })));
+        } else settleComposerAfterSend(chatScopeKey, []);
+      } finally { messageSendLocksRef.current.delete(chatScopeKey); }
+      return;
+    }
     const clientRequestId = crypto.randomUUID();
     const currentChatId = state.agent.currentChatId;
     if (
@@ -2848,6 +2944,11 @@ export function HomePage() {
         getChatSelectionEpoch: () => chatSelectionEpochRef.current,
         scopeKey: sendScopeKey,
         modelPreset: resolvedConversationModel.candidateId ?? undefined,
+        ...thinkingPayloadForSend(
+          modelWorkspace,
+          resolvedConversationModel.candidate,
+          state.agent.thinkingStateByScope[modelSelectionScopeKey]
+        ),
         onChatResolved: (chatId) => {
           threadPanel.promoteScope(sendScopeKey, chatId);
           dispatch(agentActions.modelSelectionRequestStarted(
@@ -3080,10 +3181,8 @@ export function HomePage() {
   function runExactLocalSlashCommand(command: string): boolean {
     const normalized = command.trim().toLowerCase();
     const pluginInvocation = parsePluginCommandInvocation(command, pluginCommandTargets);
-    // A command with agentSkillId goes to the Agent too, so it is NOT intercepted
-    // here as a terminal action. But if it also declares a capabilityId the card
-    // should open immediately — we fire the invoke side-effect and then return
-    // false so the caller still sends the agent message.
+    // An Agent-routed command stays on the normal message path. The explicit
+    // Skill prompt lets the Agent invoke the capability in its own tool turn.
     if (pluginInvocation?.contribution.agentSkillId) {
       if (pluginInvocation.plugin.manifest.conversation) return false;
       if (pluginInvocation.contribution.capabilityId && clients && pendingAttachments.length === 0) {
@@ -3311,7 +3410,6 @@ export function HomePage() {
     setComposerSelection({ start: selectionStart, end: selectionEnd });
     setSlashPickerOpen(false);
     setSlashMenuDismissed(false);
-    setSelectedCommandIndex(0);
     if (
       slashQueryFromInput(value) != null &&
       clients?.memmyAgent &&
@@ -3454,21 +3552,6 @@ export function HomePage() {
     ) {
       dispatch(agentActions.composerScopeCleared(scopeKey));
     }
-  }
-
-  function resetComposerDraftUi(scopeKey = chatScopeKey) {
-    setSelectedComposerCommandForScope(scopeKey, null);
-    for (const item of pendingAttachmentsRef.current[scopeKey] ?? []) {
-      revokePendingAttachment(item);
-    }
-    const nextDrafts = { ...composerDraftsRef.current };
-    const nextPendingAttachments = { ...pendingAttachmentsRef.current };
-    delete nextDrafts[scopeKey];
-    delete nextPendingAttachments[scopeKey];
-    composerDraftsRef.current = nextDrafts;
-    pendingAttachmentsRef.current = nextPendingAttachments;
-    dispatch(agentActions.composerScopeCleared(scopeKey));
-    resetComposerHeight();
   }
 
   function closeLastCompactionPanel() {
@@ -3969,7 +4052,7 @@ export function HomePage() {
           }
         : item));
       return true;
-    } catch (error) {
+    } catch {
       setPendingAttachmentsForScope(scopeKey, (current) => {
         const failed = current.find((item) => item.id === id);
         if (failed) revokePendingAttachment(failed);
@@ -4021,8 +4104,8 @@ export function HomePage() {
             <button
               type="button"
               role="menuitem"
-              onClick={(event) => {
-                event.currentTarget.closest("details")?.removeAttribute("open");
+              onClick={() => {
+                dismissComposerAttachMenu(true);
                 openMediaFilePicker();
               }}
             >
@@ -4031,8 +4114,8 @@ export function HomePage() {
             <button
               type="button"
               role="menuitem"
-              onClick={(event) => {
-                event.currentTarget.closest("details")?.removeAttribute("open");
+              onClick={() => {
+                dismissComposerAttachMenu(true);
                 openFolderPicker();
               }}
             >
@@ -4296,6 +4379,7 @@ export function HomePage() {
         <AgentThreadPanel
           controller={threadPanel}
           messages={state.agent.messages}
+          artifacts={pluginThreadArtifacts}
           workspaceRoot={activeTask?.cwd.trim() || workspaceEnvironment.data?.snapshot.cwd || null}
           previewContext={{
             artifactClient: sessionArtifactClient,
@@ -4376,7 +4460,7 @@ export function HomePage() {
                   textareaRef={inputRef}
                   value={composerInput}
                   highlightedCommands={slashCommandsWithLocal.map((command) => command.command)}
-                  placeholder={selectedComposerCommand ? t("home.goal.input") : t("home.input")}
+                  placeholder={pendingQuestion ? t("home.question.waitingInput") : selectedComposerCommand ? t("home.goal.input") : t("home.input")}
                   rows={3}
                   onChange={(event) => {
                     updateComposerInput(
@@ -4567,7 +4651,7 @@ export function HomePage() {
                 calls={visiblePluginCalls}
                 legalDelivery={{
                   ready: !isCurrentAgentRunning,
-                  recordings: selectRecordingDeliveryFiles(recordingEntry.session.recordings, state.agent.currentChatId ?? state.agent.currentSessionKey)
+                  recordings: legalRecordingDeliveryFiles
                 }}
                 plugins={installedPlugins}
                 client={clients?.plugins ?? null}
@@ -4738,7 +4822,7 @@ export function HomePage() {
                     <textarea
                       ref={inputRef}
                       value={composerInput}
-                      placeholder={selectedComposerCommand ? t("home.goal.input") : t("home.input")}
+                      placeholder={pendingQuestion ? t("home.question.waitingInput") : selectedComposerCommand ? t("home.goal.input") : t("home.input")}
                       rows={1}
                       onChange={(event) => {
                         updateComposerInput(
@@ -5270,6 +5354,9 @@ export function agentErrorText(error: string | null, t: HomeTranslate = defaultH
   if (TRANSLATABLE_AGENT_ERROR_KEYS.has(error as MessageKey)) {
     return t(error as MessageKey);
   }
+  if (isAsrModelNotConfiguredError(error)) {
+    return t("home.asrNotConfigured");
+  }
   const stableCode = error.includes(":") ? error.slice(error.lastIndexOf(":") + 1) : error;
   const mapped = AGENT_OPERATION_ERROR_MESSAGE_KEYS[stableCode];
   if (mapped) return t(mapped);
@@ -5407,13 +5494,22 @@ function browserStorage(): SlashCommandStorageLike | null {
  * @param error An unknown exception.
  * @returns Error text or a MessageKey that can be shown to the user.
  */
-function toReadableAsrError(error: unknown, t: HomeTranslate = defaultHomeTranslate): string {
+export function toReadableAsrError(error: unknown, t: HomeTranslate = defaultHomeTranslate): string {
   if (error instanceof MicrophonePermissionError) {
     return microphonePermissionDeniedMessageKey();
+  }
+  if (isAsrModelNotConfiguredError(error)) {
+    return "home.asrNotConfigured";
   }
   return error instanceof Error && error.message
     ? t("home.asrFailedWithMessage", { message: error.message })
     : t("home.asrFailed");
+}
+
+/** Detects backend ASR configuration errors that should not fall through to the generic operation error. */
+function isAsrModelNotConfiguredError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /ASR (?:model catalog|model|client) is not configured|Assigned ASR model is unavailable|ASR requires account or BYOK mode/i.test(message);
 }
 
 function readableError(error: unknown): string {
@@ -5703,10 +5799,6 @@ function formatBytes(bytes: number): string {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function isMessageKey(value: string): value is MessageKey {
-  return Object.prototype.hasOwnProperty.call(zhCNMessages, value);
 }
 
 export function hasCompletedAssistantAnswer(messages: AgentChatMessage[]): boolean {

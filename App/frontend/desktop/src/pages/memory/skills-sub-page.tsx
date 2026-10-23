@@ -16,6 +16,7 @@ import { MemoryDrawerDeleteAction } from "./memory-delete-action.js";
 import { toMemoryDetailErrorMessage } from "./memory-detail-error.js";
 import { cleanMemoryBody, cleanMemoryText, drawerEyebrow } from "./memory-display.js";
 import { displayMemoryId } from "./memory-id.js";
+import { MemoryMarkdown } from "./memory-markdown.js";
 import {
   MemoryReferenceTags,
   type MemoryReferenceOpenRequest,
@@ -541,7 +542,7 @@ function SkillDrawer(props: {
           {awaitingObservedReview ? (
             <section className="memory-detail-card">
               <p>{t("memory.skills.observedCandidateReview")}</p>
-              {props.onApprove ? <button type="button" disabled={approving} onClick={() => {
+              {props.onApprove ? <button className="memory-skill-editor__button" type="button" disabled={approving} onClick={() => {
                 if (!readyDetail) return;
                 setApproving(true);
                 setApproveError(null);
@@ -634,7 +635,10 @@ function SkillDetail(props: {
 
       <SkillTimelineSection entries={props.timeline} />
       {skill.usageGuide && <DetailTextSection title={t("memory.skills.invocationGuide")} body={skill.usageGuide} />}
-      <DetailTextSection title={t("memory.skills.body")} body={skill.body} />
+      <section className="memory-detail-card">
+        <h5 className="memory-detail-card__label">{t("memory.skills.body")}</h5>
+        <MemoryMarkdown text={skill.body || "-"} />
+      </section>
 
       {hasDecisionGuidance && (
         <section className="memory-detail-card">

@@ -34,6 +34,8 @@ export interface SavePluginInput {
 
 export interface PluginRepository {
   list(): PluginRecord[];
+  /** Machine-level removals that bundled startup must not undo. */
+  listUserUninstalledIds(): string[];
   get(id: string): PluginRecord | null;
   save(input: SavePluginInput): PluginRecord;
   setState(id: string, state: PluginState, lastError?: string | null): PluginRecord;
@@ -41,6 +43,7 @@ export interface PluginRepository {
   setConfig(id: string, config: Record<string, unknown>): PluginRecord;
   setApprovedPermissions(id: string, permissions: PluginPermission[]): PluginRecord;
   recordCall(input: PluginCallLogInput): void;
+  /** Removes the installation and atomically remembers the user's uninstall. */
   delete(id: string): boolean;
 }
 
@@ -85,6 +88,12 @@ export function createPluginRepository(db: DatabaseSync): PluginRepository {
       return rows.map(toPluginRecord);
     },
 
+    listUserUninstalledIds() {
+      const rows = db.prepare("SELECT plugin_id FROM plugin_uninstall_preferences ORDER BY plugin_id")
+        .all() as { plugin_id: string }[];
+      return rows.map((row) => row.plugin_id);
+    },
+
     get(id) {
       return readPlugin(db, id);
     },
@@ -93,36 +102,39 @@ export function createPluginRepository(db: DatabaseSync): PluginRepository {
       const manifest = PluginManifestSchema.parse(input.manifest);
       const state = PluginStateSchema.parse(input.state);
       const now = new Date().toISOString();
-      db.prepare(
-        `INSERT INTO installed_plugins (
-          id, version, manifest_json, state, artifact_hash, root_path, native_execution_allowed, registry_origin, desired_enabled, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          version = excluded.version,
-          manifest_json = excluded.manifest_json,
-          state = excluded.state,
-          artifact_hash = excluded.artifact_hash,
-          root_path = excluded.root_path,
-          native_execution_allowed = excluded.native_execution_allowed,
-          registry_origin = excluded.registry_origin,
-          desired_enabled = COALESCE(?, installed_plugins.desired_enabled),
-          last_error = NULL,
-          updated_at = excluded.updated_at`
-      ).run(
-        manifest.id,
-        manifest.version,
-        JSON.stringify(manifest),
-        state,
-        input.artifactHash ?? null,
-        input.rootPath ?? null,
-        input.nativeExecutionAllowed ? 1 : 0,
-        input.registryOrigin ?? null,
-        (input.desiredEnabled ?? (state === "active" || state === "enabling")) ? 1 : 0,
-        now,
-        now,
-        input.desiredEnabled === undefined ? null : Number(input.desiredEnabled)
-      );
-      return getRequired(manifest.id);
+      return withPluginTransaction(db, () => {
+        db.prepare(
+          `INSERT INTO installed_plugins (
+            id, version, manifest_json, state, artifact_hash, root_path, native_execution_allowed, registry_origin, desired_enabled, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            version = excluded.version,
+            manifest_json = excluded.manifest_json,
+            state = excluded.state,
+            artifact_hash = excluded.artifact_hash,
+            root_path = excluded.root_path,
+            native_execution_allowed = excluded.native_execution_allowed,
+            registry_origin = excluded.registry_origin,
+            desired_enabled = COALESCE(?, installed_plugins.desired_enabled),
+            last_error = NULL,
+            updated_at = excluded.updated_at`
+        ).run(
+          manifest.id,
+          manifest.version,
+          JSON.stringify(manifest),
+          state,
+          input.artifactHash ?? null,
+          input.rootPath ?? null,
+          input.nativeExecutionAllowed ? 1 : 0,
+          input.registryOrigin ?? null,
+          (input.desiredEnabled ?? (state === "active" || state === "enabling")) ? 1 : 0,
+          now,
+          now,
+          input.desiredEnabled === undefined ? null : Number(input.desiredEnabled)
+        );
+        db.prepare("DELETE FROM plugin_uninstall_preferences WHERE plugin_id = ?").run(manifest.id);
+        return getRequired(manifest.id);
+      });
     },
 
     setDesiredEnabled(id, enabled) {
@@ -175,9 +187,30 @@ export function createPluginRepository(db: DatabaseSync): PluginRepository {
     },
 
     delete(id) {
-      return db.prepare("DELETE FROM installed_plugins WHERE id = ?").run(id).changes > 0;
+      return withPluginTransaction(db, () => {
+        const deleted = db.prepare("DELETE FROM installed_plugins WHERE id = ?").run(id).changes > 0;
+        if (deleted) {
+          db.prepare(`INSERT INTO plugin_uninstall_preferences (plugin_id, uninstalled_at)
+            VALUES (?, ?) ON CONFLICT(plugin_id) DO UPDATE SET uninstalled_at = excluded.uninstalled_at`)
+            .run(id, new Date().toISOString());
+        }
+        return deleted;
+      });
     }
   };
+}
+
+function withPluginTransaction<T>(db: DatabaseSync, operation: () => T): T {
+  db.exec("SAVEPOINT plugin_lifecycle");
+  try {
+    const result = operation();
+    db.exec("RELEASE SAVEPOINT plugin_lifecycle");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK TO SAVEPOINT plugin_lifecycle");
+    db.exec("RELEASE SAVEPOINT plugin_lifecycle");
+    throw error;
+  }
 }
 
 const SELECT_PLUGIN = `SELECT

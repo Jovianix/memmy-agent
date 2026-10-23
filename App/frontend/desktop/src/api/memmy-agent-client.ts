@@ -283,7 +283,9 @@ const SessionSummarySchema = z.object({
   projectId: z.string().nullable(),
   cwd: z.string(),
   model_preset: z.string().nullable().optional(),
-  model_selection: ModelSelectionSchema.nullable().optional()
+  model_selection: ModelSelectionSchema.nullable().optional(),
+  thinking_enabled: z.boolean().nullable().optional(),
+  thinking_level: z.string().nullable().optional()
 }).passthrough();
 
 const ProjectSchema = z.object({
@@ -429,18 +431,6 @@ const SlashCommandSchema = z.object({
 const SlashCommandsResponseSchema = z.object({
   commands: z.array(SlashCommandSchema)
 });
-
-const WEBUI_HIDDEN_SLASH_COMMANDS = new Set([
-  "/stop",
-  "/restart",
-  "/dream",
-  "/dream-log",
-  "/dream-restore",
-  "/history",
-  "/pairing",
-  "/help",
-  "/model"
-]);
 
 const SidebarStateSchema = z.object({
   schema_version: z.literal(1),
@@ -744,10 +734,13 @@ export type MemmyAgentSendMessageInput = {
   language?: MemmyAgentUiLanguage;
   media?: MemmyAgentMediaInput[];
   modelPreset?: string | null;
+  thinkingEnabled?: boolean;
+  thinkingLevel?: string | null;
 };
 
 export type MemmyAgentQuestionResponseInput = {
   requestId: string;
+  cancelled?: boolean;
   answers: Array<{
     questionId: string;
     selectedOptionIds: string[];
@@ -1504,7 +1497,6 @@ class HttpMemmyAgentClient implements MemmyAgentClient {
   async listSlashCommands(): Promise<MemmyAgentSlashCommand[]> {
     const response = await this.request("/api/commands", SlashCommandsResponseSchema);
     return response.commands
-      .filter((command) => !WEBUI_HIDDEN_SLASH_COMMANDS.has(command.command))
       .map((command) => ({
         command: command.command,
         title: command.title,
@@ -2062,6 +2054,7 @@ class MemmyAgentWebSocketSession implements MemmyAgentWebSocketConnection {
           type: "agent_question_response",
           chat_id: chatId,
           request_id: response.requestId,
+          ...(response.cancelled === true ? { cancelled: true } : {}),
           answers: response.answers.map((answer) => ({
             question_id: answer.questionId,
             selected_option_ids: answer.selectedOptionIds,
@@ -2769,6 +2762,8 @@ class MemmyAgentWebSocketSession implements MemmyAgentWebSocketConnection {
       ...(input.language ? { language: input.language } : {}),
       ...(input.taskRecording ? { task_recording: input.taskRecording } : {}),
       ...(input.modelPreset !== undefined ? { model_preset: input.modelPreset } : {}),
+      ...(input.thinkingEnabled !== undefined ? { thinking_enabled: input.thinkingEnabled } : {}),
+      ...(input.thinkingLevel ? { thinking_level: input.thinkingLevel } : {}),
       ...(input.media?.length ? { media_paths: input.media.map((item) => item.path) } : {})
     }, expectedGeneration);
     this.knownChats.add(input.chatId);

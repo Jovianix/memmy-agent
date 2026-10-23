@@ -225,6 +225,7 @@ type WebSocketChannelOptions = {
   standaloneTaskRoot?: string | null;
   runtimeModelName?: RuntimeModelNameResolver;
   runtimeToolNames?: RuntimeToolNamesResolver;
+  runtimeReady?: (() => boolean) | null;
   modelSelectionResolver?: ((input: ModelSelectionInput) => ResolvedModelSelection | null) | null;
   cancelActiveTasks?: (sessionKey: string) => Promise<number>;
   stopCurrentTurn?: (sessionKey: string, expectedTurnId: string | null) => Promise<number>;
@@ -254,6 +255,38 @@ type SessionDeletionServices = {
   sessionDagQueue: SessionDagQueueManager | null;
 };
 export type WebuiLanguage = "zh-CN" | "en-US";
+
+export type WebuiMessageDigestInput = {
+  chatId: string;
+  content: string;
+  mediaPaths: string[];
+  language: WebuiLanguage | null;
+  target: WebuiSessionTarget | null;
+  modelPreset: string | null | undefined;
+  queueSurface: "chat_composer" | null;
+  turnAdmission: "queue" | "steer";
+  expectedTurnId: string | null;
+  thinkingEnabled?: boolean;
+  thinkingLevel?: string | null;
+  taskRecording?: unknown;
+};
+
+export function computeWebuiMessageDigest(input: WebuiMessageDigestInput): string {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    chat_id: input.chatId,
+    content: input.content,
+    media_paths: input.mediaPaths,
+    language: input.language,
+    target: input.target,
+    model_preset: input.modelPreset,
+    queue_surface: input.queueSurface,
+    turn_admission: input.turnAdmission,
+    expected_turn_id: input.expectedTurnId,
+    thinking_enabled: input.thinkingEnabled ?? null,
+    thinking_level: input.thinkingLevel ?? null,
+    ...(input.taskRecording ? { task_recording: input.taskRecording } : {}),
+  })).digest("hex");
+}
 
 const CHAT_ID_RE = /^[A-Za-z0-9_:-]{1,64}$/;
 const API_KEY_RE = /^[A-Za-z0-9_:.-]{1,128}$/;
@@ -289,8 +322,10 @@ const MCP_PRESET_ACTIONS_BY_PATH: Record<string, string> = {
 function normalizeAgentQuestionResponse(
   requestId: unknown,
   value: unknown,
+  cancelled?: unknown,
 ): AgentQuestionResponse | null {
   if (typeof requestId !== "string" || !UUID_RE.test(requestId)) return null;
+  if (cancelled === true) return Array.isArray(value) && value.length === 0 ? { requestId, answers: [], cancelled: true } : null;
   if (!Array.isArray(value) || value.length < 1 || value.length > 4) return null;
   const answers: AgentQuestionAnswer[] = [];
   for (const raw of value) {
@@ -764,6 +799,7 @@ export class WebSocketChannel extends BaseChannel {
   staticDistPath: string | null = null;
   runtimeModelName: RuntimeModelNameResolver = null;
   runtimeToolNames: RuntimeToolNamesResolver = null;
+  private readonly runtimeReady: (() => boolean) | null;
   private computerHistoryModelSignature: string | null = null;
   private computerHistoryModelTimer: ReturnType<typeof setInterval> | null = null;
   modelSelectionResolver: WebSocketChannelOptions["modelSelectionResolver"] = null;
@@ -817,6 +853,7 @@ export class WebSocketChannel extends BaseChannel {
     this.staticDistPath = staticDistPath ? path.resolve(String(staticDistPath)) : null;
     this.runtimeModelName = options.runtimeModelName ?? config?.runtimeModelName ?? null;
     this.runtimeToolNames = options.runtimeToolNames ?? config?.runtimeToolNames ?? null;
+    this.runtimeReady = options.runtimeReady ?? null;
     this.modelSelectionResolver = options.modelSelectionResolver
       ?? config?.modelSelectionResolver
       ?? null;
@@ -1040,41 +1077,8 @@ export class WebSocketChannel extends BaseChannel {
     return null;
   }
 
-  private webuiMessageDigest({
-    chatId,
-    content,
-    mediaPaths,
-    language,
-    target,
-    modelPreset,
-    queueSurface,
-    turnAdmission,
-    expectedTurnId,
-    taskRecording,
-  }: {
-    chatId: string;
-    content: string;
-    mediaPaths: string[];
-    language: WebuiLanguage | null;
-    target: WebuiSessionTarget | null;
-    modelPreset: string | null | undefined;
-    queueSurface: "chat_composer" | null;
-    turnAdmission: "queue" | "steer";
-    expectedTurnId: string | null;
-    taskRecording?: unknown;
-  }): string {
-    return crypto.createHash("sha256").update(JSON.stringify({
-      chat_id: chatId,
-      content,
-      media_paths: mediaPaths,
-      language,
-      target,
-      model_preset: modelPreset,
-      queue_surface: queueSurface,
-      turn_admission: turnAdmission,
-      expected_turn_id: expectedTurnId,
-      ...(taskRecording ? { task_recording: taskRecording } : {}),
-    })).digest("hex");
+  private webuiMessageDigest(input: WebuiMessageDigestInput): string {
+    return computeWebuiMessageDigest(input);
   }
 
   private resolveMessageModel(
@@ -1478,6 +1482,13 @@ export class WebSocketChannel extends BaseChannel {
     return true;
   }
 
+  private isRuntimeReady(): boolean {
+    // Standalone channels without an AgentLoop keep their existing bootstrap behavior.
+    if (!this.runtimeReady) return true;
+    try { return this.runtimeReady() === true; }
+    catch { return false; }
+  }
+
   handleBootstrap(connection: any, request: any): HttpLikeResponse {
     const secret = this.config.tokenIssueSecret.trim() || this.config.token.trim();
     if (secret) {
@@ -1485,6 +1496,7 @@ export class WebSocketChannel extends BaseChannel {
     } else if (!isLocalhost(connection)) {
       return httpError(403, "bootstrap is localhost-only");
     }
+    if (!this.isRuntimeReady()) return httpError(503, "agent_runtime_initializing");
     this.purgeExpiredIssuedTokens();
     this.purgeExpiredApiTokens();
     if (this.issuedTokens.size >= MAX_ISSUED_TOKENS || this.apiTokens.size >= MAX_ISSUED_TOKENS) {
@@ -2038,6 +2050,7 @@ export class WebSocketChannel extends BaseChannel {
         [`${tab.connectionId}:${tab.tabId}`, tab.status]));
       const response = httpJsonResponse({
         connected: externalBrowserBridge.listConnected(),
+        connectionDiagnostics: externalBrowserBridge.connectionDiagnostics(),
         controllableTabCount: claims.filter(tab => {
           const status = statusesByTab.get(`${tab.connectionId}:${tab.tabId}`);
           return status === undefined || status === "ready";
@@ -3155,6 +3168,8 @@ export class WebSocketChannel extends BaseChannel {
   }
 
   authorizeWebsocketHandshake(connection: any, query: Query): HttpLikeResponse | null {
+    // Do not consume one-use tokens while the message loop is still starting or stopping.
+    if (!this.isRuntimeReady()) return connectionRespond(connection, 503, "agent_runtime_initializing");
     const supplied = queryFirst(query, "token");
     const staticToken = this.config.token.trim();
     if (staticToken) {
@@ -3906,6 +3921,8 @@ export class WebSocketChannel extends BaseChannel {
           turnAdmission,
           expectedTurnId,
           taskRecording: recording?.success ? recording.data : null,
+          thinkingEnabled: typeof envelope.thinking_enabled === "boolean" ? envelope.thinking_enabled : undefined,
+          thinkingLevel: typeof envelope.thinking_level === "string" ? envelope.thinking_level : undefined,
         })
       : null;
     if (existing && clientRequestId) {
@@ -4016,6 +4033,8 @@ export class WebSocketChannel extends BaseChannel {
       model: modelSelection.model,
       model_selection: modelSelectionWire(modelSelection),
     };
+    if (typeof envelope.thinking_enabled === "boolean") metadata.thinking_enabled = envelope.thinking_enabled;
+    if (typeof envelope.thinking_level === "string") metadata.thinking_level = envelope.thinking_level;
     if (clientRequestId && digest) {
       metadata.client_request_id = clientRequestId;
       metadata.webui_request_digest = digest;
@@ -4079,7 +4098,7 @@ export class WebSocketChannel extends BaseChannel {
       const chatId = typeof envelope.chat_id === "string" && isValidGuiChatId(envelope.chat_id)
         ? envelope.chat_id
         : "";
-      const response = normalizeAgentQuestionResponse(envelope.request_id, envelope.answers);
+      const response = normalizeAgentQuestionResponse(envelope.request_id, envelope.answers, envelope.cancelled);
       if (
         !chatId
         || !response
@@ -4101,6 +4120,7 @@ export class WebSocketChannel extends BaseChannel {
           chat_id: chatId,
           request_id: response.requestId,
           answers: response.answers,
+          ...(response.cancelled === true ? { cancelled: true } : {}),
         });
       }
       await this.safeSendTo(connection, {

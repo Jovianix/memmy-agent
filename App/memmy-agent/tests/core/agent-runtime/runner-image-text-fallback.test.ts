@@ -96,7 +96,7 @@ class StaticTool extends Tool {
     return { type: "object", properties: {} };
   }
 
-  async execute(): Promise<string> {
+  async execute(_params: Record<string, any> = {}, _context?: ToolExecutionContext): Promise<string> {
     return "tool result";
   }
 }
@@ -114,7 +114,7 @@ class ImageTool extends StaticTool {
 class ContextTool extends StaticTool {
   context: ToolExecutionContext | undefined;
 
-  async execute(_params: Record<string, any>, context?: ToolExecutionContext): Promise<string> {
+  async execute(_params?: Record<string, any>, context?: ToolExecutionContext): Promise<string> {
     this.context = context;
     return "tool result";
   }

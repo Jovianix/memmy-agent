@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { reconcileEntitledPlugins } from "../plugin-entitlement-reconcile-service.js";
 import { createInMemoryPluginRegistry, type PluginRelease } from "../../adapters/outbound/plugin-registry/index.js";
 import { createAppStateStore, type AppStateStore } from "../../infrastructure/app-state-store/index.js";
 import {
@@ -54,7 +55,9 @@ const release = {
 function createContext(
   releases: PluginRelease[] = [release],
   localArtifactService?: PluginLocalArtifactService,
-  lifecycle: Partial<CreatePluginServiceOptions> = {}
+  lifecycleOrAuthenticated: Partial<CreatePluginServiceOptions> | (() => boolean) = {},
+  catalogPluginIds?: () => readonly string[],
+  isEntitlementGranted?: (entitlement: string) => boolean
 ) {
   root = mkdtempSync(join(tmpdir(), "memmy-plugin-service-"));
   store = createAppStateStore({ databasePath: join(root, "app.sqlite") });
@@ -80,19 +83,23 @@ function createContext(
     activate: vi.fn(async () => undefined),
     deactivate: vi.fn(async () => undefined)
   };
+  const registry = createInMemoryPluginRegistry(releases);
   return {
+    registry,
     runtimeHost,
     artifactManager,
     skillManager,
     service: createPluginService({
       repository: store.repositories.plugins,
       secretStore: store.secretStore,
-      registry: createInMemoryPluginRegistry(releases),
+      registry,
       runtimeHost,
       artifactManager,
       skillManager,
       localArtifactService,
-      ...lifecycle
+      ...(typeof lifecycleOrAuthenticated === "object" ? lifecycleOrAuthenticated : { isAuthenticated: lifecycleOrAuthenticated }),
+      catalogPluginIds,
+      isEntitlementGranted
     })
   };
 }
@@ -203,6 +210,69 @@ describe("PluginService", () => {
     await deferred.service.restoreActive(); await deferred.service.shutdown();
     expect(deferred.runtimeHost.activate).not.toHaveBeenCalled();
   });
+  it("does not expose a private plugin from the public registry without its entitlement", async () => {
+    const publicRelease: PluginRelease = { manifest: {
+      ...release.manifest, id: "office", permissions: [], configSchema: undefined
+    } };
+    const legalRelease: PluginRelease = { manifest: {
+      ...release.manifest,
+      id: "legal-labor",
+      name: "用工合规诊断",
+      permissions: [],
+      configSchema: undefined,
+      requiredEntitlement: "plugin:legal-labor",
+      rules: { distribution: "account", installation: "automatic", requiresLogin: true,
+        unavailableVisibility: "hidden", autoUpdate: true, recommendsOfficialModel: false }
+    } };
+    const { service } = createContext(
+      [publicRelease, legalRelease],
+      undefined,
+      () => true,
+      () => [],
+      () => false
+    );
+
+    expect((await service.catalog()).map((entry) => entry.manifest.id)).toEqual(["office"]);
+  });
+
+  it("adds entitled private releases to the catalog and keeps them visible after uninstall", async () => {
+    const publicRelease: PluginRelease = { manifest: {
+      ...release.manifest, id: "office", permissions: [], configSchema: undefined
+    } };
+    const legalRelease: PluginRelease = { manifest: {
+      ...release.manifest,
+      id: "legal-labor",
+      name: "用工合规诊断",
+      permissions: [],
+      configSchema: undefined,
+      requiredEntitlement: "plugin:legal-labor",
+      rules: { distribution: "account", installation: "automatic", requiresLogin: true,
+        unavailableVisibility: "hidden", autoUpdate: true, recommendsOfficialModel: false }
+    } };
+    const { service, registry } = createContext(
+      [publicRelease, legalRelease],
+      undefined,
+      () => true,
+      () => ["legal-labor"],
+      (entitlement) => entitlement === "plugin:legal-labor"
+    );
+    vi.spyOn(registry, "list").mockResolvedValue([publicRelease.manifest]);
+
+    expect((await service.catalog()).map((entry) => entry.manifest.id)).toEqual(["office", "legal-labor"]);
+    await service.install("legal-labor", legalRelease.manifest.version);
+    await service.approvePermissions("legal-labor", []);
+    await service.enable("legal-labor");
+    expect((await service.catalog()).find((entry) => entry.manifest.id === "legal-labor")?.installed?.state).toBe("active");
+
+    await service.uninstall("legal-labor");
+    const uninstalled = (await service.catalog()).find((entry) => entry.manifest.id === "legal-labor");
+    expect(uninstalled?.installed).toBeUndefined();
+    expect(uninstalled?.eligibility).toMatchObject({ visible: true, canInstall: true, canUse: true });
+
+    await service.install("legal-labor", legalRelease.manifest.version);
+    expect(store!.repositories.plugins.listUserUninstalledIds()).toEqual([]);
+  });
+
   it("does not download or reinstall an unchanged installed release on account refresh", async () => {
     const { service, artifactManager } = createContext();
     await service.install(release.manifest.id);
@@ -211,6 +281,50 @@ describe("PluginService", () => {
     await service.update(release.manifest.id);
     expect(artifactManager.install).not.toHaveBeenCalled();
     expect(service.list()).toHaveLength(1);
+  });
+
+  it("automatically installs after login, drains calls on logout, restores without download, and respects uninstall", async () => {
+    let authenticated = false;
+    const literature: PluginRelease = { manifest: {
+      ...release.manifest, id: "literature-review", permissions: [], configSchema: undefined,
+      rules: { distribution: "account", installation: "automatic", requiresLogin: true,
+        unavailableVisibility: "visible", autoUpdate: true, recommendsOfficialModel: true }
+    } };
+    const { service, artifactManager, runtimeHost } = createContext([literature], undefined, () => authenticated);
+    const reconcile = () => reconcileEntitledPlugins({ plugins: service, entitlements: [],
+      userUninstalledIds: new Set(store!.repositories.plugins.listUserUninstalledIds()) });
+    expect((await service.catalog())[0].eligibility.reason).toBe("login_required");
+    await expect(service.install("literature-review")).rejects.toThrow(/access denied/);
+    await reconcile();
+    expect(service.list()).toHaveLength(0);
+    authenticated = true;
+    await reconcile();
+    expect(service.get("literature-review").state).toBe("active");
+    runtimeHost.invoke = async function* () {
+      yield { type: "progress", current: 1 };
+      yield { type: "result", output: { ok: true } };
+    };
+    const call = service.invoke({ callId: "existing", pluginId: "literature-review", capabilityId: "run",
+      conversationId: "chat", input: { topic: "memory" } })[Symbol.asyncIterator]();
+    await call.next();
+    authenticated = false;
+    await reconcile();
+    expect(runtimeHost.deactivate).not.toHaveBeenCalled();
+    expect(service.list()[0].eligibility?.canUse).toBe(false);
+    await expect(service.invoke({ callId: "new", pluginId: "literature-review", capabilityId: "run",
+      conversationId: "chat", input: { topic: "memory" } })[Symbol.asyncIterator]().next()).rejects.toThrow(/access denied/);
+    expect((await call.next()).value).toMatchObject({ type: "result" });
+    await call.next();
+    expect(service.get("literature-review").state).toBe("disabled");
+    authenticated = true;
+    await reconcile();
+    expect(service.get("literature-review").state).toBe("active");
+    expect(artifactManager.install).toHaveBeenCalledTimes(1);
+    await service.uninstall("literature-review");
+    await reconcile();
+    expect(service.list()).toHaveLength(0);
+    await service.install("literature-review");
+    expect(store!.repositories.plugins.listUserUninstalledIds()).toEqual([]);
   });
 
   it("loads a declared renderer from the installed plugin artifact", async () => {

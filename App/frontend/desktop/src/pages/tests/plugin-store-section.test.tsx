@@ -14,18 +14,27 @@ function fixture() {
   let installed: any[] = [];
   const plugin = { id: item.id, version: item.version, state: "pending_approval", manifest: { ...item,
     permissions: [{ type: "host-service", services: ["native-execution"], description: "读取已授权事件并保留本机插件数据。" }] } };
-  const client = { catalog: vi.fn(async () => [item]), list: vi.fn(async () => installed),
+  const entry = { manifest: plugin.manifest, eligibility: { visible: true, canInstall: true, canUse: true, reason: null as string | null } };
+  const client = { catalog: vi.fn(async () => [entry]), list: vi.fn(async () => installed),
     install: vi.fn(async () => { installed = [plugin]; return plugin; }),
     approvePermissions: vi.fn(async () => { plugin.state = "installed"; return plugin; }),
     enable: vi.fn(async () => { plugin.state = "active"; return plugin; }), disable: vi.fn(async () => { plugin.state = "disabled"; return plugin; }),
     uninstall: vi.fn(async () => { installed = []; }) };
-  return { client: client as unknown as PluginsClient, mocks: client };
+  return { client: client as unknown as PluginsClient, mocks: client, entry };
 }
 async function render(client: PluginsClient, platform = "win32") {
   await act(async () => root.render(<I18nProvider language="zh-CN"><PluginStoreSection client={client} platform={platform} /></I18nProvider>));
 }
 function button(text: string) { return [...node.querySelectorAll("button")].find(b => b.textContent === text)!; }
 describe("plugin store", () => {
+  it("honors official account eligibility before installation", async () => {
+    const f = fixture();
+    f.entry.eligibility = { visible: true, canInstall: false, canUse: false, reason: "login_required" };
+    await render(f.client);
+    expect(node.textContent).toContain("登录后可用");
+    expect(button("安装").disabled).toBe(true);
+    expect(f.mocks.install).not.toHaveBeenCalled();
+  });
   it("shows a manual install without requiring an account, then requires explicit permission approval", async () => {
     const f = fixture(); await render(f.client); expect(node.textContent).toContain("Capture Plugin");
     await act(async () => button("安装").click()); expect(f.mocks.install).toHaveBeenCalledWith("fixture.capture", "0.1.0");

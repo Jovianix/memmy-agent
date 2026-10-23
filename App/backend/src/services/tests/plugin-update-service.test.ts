@@ -5,12 +5,32 @@ import { compareVersions, type PluginService } from "../plugin-service.js";
 afterEach(() => vi.useRealTimers());
 function fixture() {
   let busy = false;
-  const update = vi.fn(async () => ({})), catalog = vi.fn(async () => [{ id: "teach-mode", version: "0.2.0" }, { id: "not-installed", version: "1.0.0" }]);
-  const plugins = { list: () => [{ id: "teach-mode", version: "0.1.0", state: "active", manifest: { updateMode: "automatic" } }],
+  const entries = ["teach-mode", "not-installed"].map(id => ({ manifest: { id, version: id === "teach-mode" ? "0.2.0" : "1.0.0" },
+    eligibility: { visible: true, canInstall: true, canUse: true, reason: null } }));
+  const manifest: { updateMode?: string; rules?: { autoUpdate: boolean } } = { updateMode: "automatic" };
+  const update = vi.fn(async () => ({})), catalog = vi.fn(async () => entries);
+  const plugins = { list: () => [{ id: "teach-mode", version: "0.1.0", state: "active", manifest }],
     catalog, isBusy: () => busy, update } as unknown as PluginService;
-  return { plugins, update, catalog, setBusy: (value: boolean) => { busy = value; } };
+  return { plugins, update, catalog, manifest, entries, setBusy: (value: boolean) => { busy = value; } };
 }
 describe("automatic plugin updates", () => {
+  it("applies official automatic-update defaults to manifests without rules", async () => {
+    const f = fixture(), updates = createPluginUpdateService(f.plugins);
+    delete f.manifest.updateMode;
+    await updates.check(); expect(f.update).toHaveBeenCalledWith("teach-mode", "0.2.0");
+    await updates.close();
+  });
+  it("honors official update rules and current account eligibility", async () => {
+    const f = fixture(), updates = createPluginUpdateService(f.plugins);
+    f.manifest.rules = { autoUpdate: false };
+    await updates.check(); expect(f.update).not.toHaveBeenCalled();
+    f.manifest.rules.autoUpdate = true;
+    f.entries[0]!.eligibility.canUse = false;
+    await updates.check(); expect(f.update).not.toHaveBeenCalled();
+    f.entries[0]!.eligibility.canUse = true;
+    await updates.check(); expect(f.update).toHaveBeenCalledWith("teach-mode", "0.2.0");
+    await updates.close();
+  });
   it("checks at startup and every six hours, without automatically installing catalog entries", async () => {
     vi.useFakeTimers(); const f = fixture(), updates = createPluginUpdateService(f.plugins);
     updates.start(); await vi.advanceTimersByTimeAsync(0); expect(f.update).toHaveBeenCalledWith("teach-mode", "0.2.0");

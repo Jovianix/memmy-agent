@@ -42,7 +42,7 @@ const plugin = InstalledPluginSchema.parse({
 
 function createService(): PluginService {
   return {
-    catalog: vi.fn(async () => []), isBusy: () => false,
+    catalog: vi.fn(async () => []), isBusy: () => false, suspend: vi.fn(async () => undefined),
     list: vi.fn(() => [plugin]),
     get: vi.fn(() => plugin),
     readUi: vi.fn(async (_id, slot) => `<main>${slot}</main>`),
@@ -113,7 +113,7 @@ describe("plugin routes", () => {
     expect((await app.inject({ method: "DELETE", url: `/api/v1/plugins/${plugin.id}` })).json()).toEqual({ ok: true });
     expect(plugins.install).toHaveBeenCalledWith(plugin.id, plugin.version);
     expect(plugins.uninstall).toHaveBeenCalledWith(plugin.id);
-    expect(refreshAgentTools).toHaveBeenCalledTimes(2);
+    expect(refreshAgentTools).toHaveBeenCalledTimes(3);
   });
 
   it("returns the installed plugin renderer", async () => {

@@ -1,5 +1,5 @@
 /** HTTPS-backed trusted plugin registry. */
-import { PluginManifestSchema, PluginCatalogSchema } from "@memmy/local-api-contracts";
+import { PluginManifestSchema } from "@memmy/local-api-contracts";
 import { z } from "zod";
 import type { PluginRegistry } from "./index.js";
 
@@ -7,7 +7,8 @@ const MAX_REGISTRY_RESPONSE_BYTES = 1024 * 1024;
 const PluginReleaseSchema = z.object({
   manifest: PluginManifestSchema,
   artifact: z.object({
-    url: z.string().min(1),
+    // Local registries return an origin-relative authenticated download path.
+    url: z.string().url().or(z.string().regex(/^\/(?!\/)/)),
     sha256: z.string().regex(/^[a-f0-9]{64}$/i)
   }).optional(),
   nativeExecutionAllowed: z.boolean().optional()
@@ -28,13 +29,13 @@ export function createHttpPluginRegistry(options: CreateHttpPluginRegistryOption
   const fetchFn = options.fetchFn ?? fetch.bind(globalThis);
 
   return {
-    async catalog() {
-      const response = await fetchFn(new URL("/api/v1/plugins/catalog", baseUrl), {
+    async list() {
+      const response = await fetchFn(new URL("/api/v1/plugins", baseUrl), {
         headers: { accept: "application/json", ...options.authHeaders?.() },
         redirect: "error", signal: AbortSignal.timeout(15_000)
       });
       if (!response.ok) throw new Error(`Plugin catalog request failed with ${response.status}`);
-      return PluginCatalogSchema.parse(JSON.parse(await readLimitedText(response)));
+      return z.array(PluginManifestSchema).parse(JSON.parse(await readLimitedText(response)));
     },
     async resolve(pluginId, version) {
       const url = new URL(`/api/v1/plugins/${encodeURIComponent(pluginId)}`, baseUrl);

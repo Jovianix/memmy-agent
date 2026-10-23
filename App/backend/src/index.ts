@@ -85,6 +85,8 @@ export interface CreateLocalBackendOptions {
   memmyAgentAdminClient?: MemmyAgentAdminClient;
   /** Directory containing immutable `*.release.json` files and their MPP archives. */
   bundledPluginDirectory?: string;
+  /** Skip only the startup MCP reload when the caller will start the Agent after bridge config is written. */
+  skipAgentMcpReload?: boolean;
 }
 
 export interface LocalBackend {
@@ -214,6 +216,7 @@ export async function createLocalBackend(options: CreateLocalBackendOptions): Pr
       const failures = await reconcileBundledPlugins({
         plugins: services.plugins,
         releases: bundledCatalog.releases,
+        userUninstalledIds: new Set(appStateStore.repositories.plugins.listUserUninstalledIds()),
         enabledById: Object.fromEntries(
           bundledCatalog.releases.map((release) => [
             release.id,
@@ -229,6 +232,7 @@ export async function createLocalBackend(options: CreateLocalBackendOptions): Pr
     const reconcileEntitlements = async () => {
       const failures = await reconcileEntitledPlugins({
         plugins: services.plugins,
+        userUninstalledIds: new Set(appStateStore.repositories.plugins.listUserUninstalledIds()),
         entitlements: appStateStore.repositories.accountSession.getEntitlements()
       });
       for (const failure of failures) {
@@ -281,7 +285,7 @@ export async function createLocalBackend(options: CreateLocalBackendOptions): Pr
       toolTimeout: 7 * 24 * 60 * 60
     });
     const memmyAgentAdminClient = options.memmyAgentAdminClient;
-    if (memmyAgentAdminClient) {
+    if (memmyAgentAdminClient && !options.skipAgentMcpReload) {
       // The bridge config must be written first, but MCP connections must not delay the first window.
       void Promise.resolve()
         .then(() => memmyAgentAdminClient.reloadMcpConfig())
@@ -337,9 +341,9 @@ function configuredPluginRegistry(
 ): PluginRegistry | undefined {
   const baseUrl = resolvePluginRegistryBaseUrl(env);
   const remoteRegistry = baseUrl ? createHttpPluginRegistry({ baseUrl, authHeaders, trustedNativeOrigin: resolveCloudClientConfig(env).baseUrl }) : undefined;
-  return bundledRegistry
-    ? createCompositePluginRegistry(bundledRegistry, remoteRegistry)
-    : remoteRegistry;
+  // Explicit remote distribution must never fall back to a locally bundled package.
+  if (env.MEMMY_PLUGIN_REGISTRY_URL?.trim()) return remoteRegistry;
+  return bundledRegistry ? createCompositePluginRegistry(bundledRegistry, remoteRegistry) : remoteRegistry;
 }
 
 async function tryLoadBundledPluginCatalog(directory: string | undefined): Promise<BundledPluginCatalog | null> {

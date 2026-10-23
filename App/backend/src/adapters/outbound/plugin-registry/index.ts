@@ -1,5 +1,5 @@
 /** Trusted plugin registry boundary. */
-import type { PluginManifest, PluginCatalogItem } from "@memmy/local-api-contracts";
+import type { PluginManifest } from "@memmy/local-api-contracts";
 
 export type PluginArtifactDescriptor = {
   sha256: string;
@@ -17,7 +17,7 @@ export interface PluginRelease {
 }
 
 export interface PluginRegistry {
-  catalog?(): Promise<PluginCatalogItem[]>;
+  list?(): Promise<PluginManifest[]>;
   resolve(pluginId: string, version?: string): Promise<PluginRelease>;
 }
 
@@ -34,9 +34,9 @@ export function createCompositePluginRegistry(
   fallback?: PluginRegistry
 ): PluginRegistry {
   return {
-    async catalog() {
-      const [bundled, remote] = await Promise.all([primary.catalog?.() ?? [], fallback?.catalog?.() ?? []]);
-      return [...new Map([...remote, ...bundled].map(item => [item.id, item])).values()];
+    async list() {
+      const entries = [...await primary.list?.() ?? [], ...await fallback?.list?.() ?? []];
+      return [...new Map(entries.map((manifest) => [manifest.id, manifest])).values()];
     },
     async resolve(pluginId, version) {
       try {
@@ -51,13 +51,7 @@ export function createCompositePluginRegistry(
 
 export function createInMemoryPluginRegistry(releases: PluginRelease[]): PluginRegistry {
   return {
-    async catalog() {
-      return [...new Map(releases.map(({ manifest: m }) => [m.id, {
-        id: m.id, name: m.name, description: m.description ?? "", version: m.version,
-        platforms: m.platforms ?? [], minimumHostVersion: m.minimumHostVersion,
-        installMode: "manual" as const, updateMode: m.updateMode ?? "manual" as const
-      }])).values()];
-    },
+    async list() { return releases.map((release) => structuredClone(release.manifest)); },
     async resolve(pluginId, version) {
       const matches = releases.filter((release) =>
         release.manifest.id === pluginId && (!version || release.manifest.version === version)

@@ -5,12 +5,14 @@ import {
   PluginManifestSchema,
   PluginPermissionSchema,
   type InstalledPlugin,
+  type PluginCatalogEntry,
   type CapabilityCall,
   type CapabilityEvent,
   type PluginPermission,
   type PluginUiSlot,
   type UpdatePluginConfigInput
 } from "@memmy/local-api-contracts";
+import { pluginEligibility } from "./plugin-rules.js";
 import { Ajv } from "ajv";
 import { fileURLToPath } from "node:url";
 import type { PluginRegistry } from "../adapters/outbound/plugin-registry/index.js";
@@ -29,9 +31,10 @@ export type { PluginArtifactManager } from "../adapters/outbound/plugin-artifact
 export type { PluginRuntimeHost } from "../adapters/outbound/plugin-runtime/index.js";
 
 export interface PluginService {
-  catalog(): Promise<import("@memmy/local-api-contracts").PluginCatalogItem[]>;
   isBusy(id: string): boolean;
   list(): InstalledPlugin[];
+  catalog(): Promise<PluginCatalogEntry[]>;
+  suspend(id: string): Promise<void>;
   get(id: string): InstalledPlugin;
   readUi(id: string, slot: PluginUiSlot): Promise<string>;
   openArtifact(id: string, token: string): Promise<HostedPluginArtifact>;
@@ -56,8 +59,10 @@ export interface CreatePluginServiceOptions {
   runtimeHost: PluginRuntimeHost;
   artifactManager: PluginArtifactManager;
   skillManager?: PluginSkillManager;
+  onSkillContentInvalidated?: (pluginId?: string) => void;
   localArtifactService?: PluginLocalArtifactService;
   /** Resolves whether the signed-in account holds a manifest-declared entitlement. */
+  isAuthenticated?: () => boolean;
   isEntitlementGranted?: (entitlement: string) => boolean;
   platform?: NodeJS.Platform;
   hostVersion?: string;
@@ -68,6 +73,8 @@ export interface CreatePluginServiceOptions {
   gatewayReady?: Promise<void>;
   restoreRetryDelaysMs?: readonly number[];
   onRestored?: () => Promise<unknown>;
+  /** Private plugin IDs discoverable through server-issued account entitlements. */
+  catalogPluginIds?: () => readonly string[];
 }
 
 export function createPluginService(options: CreatePluginServiceOptions): PluginService {
@@ -86,7 +93,11 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     (manifest.requiredHostCapabilities ?? []).filter(feature => !(PLUGIN_HOST_CAPABILITIES as readonly string[]).includes(feature));
   const busy = (id: string) => Boolean(options.runtimeHost.isBusy?.(id) || options.hasResourceLease?.(id));
   // Enforced here rather than only in the reconciler so a direct local-API call cannot bypass it.
-  const assertEntitled = (manifest: { id: string; requiredEntitlement?: string }) => {
+  const eligibility = (manifest: PluginRecord["manifest"]) => pluginEligibility(manifest, options.isAuthenticated?.() ?? false, isEntitlementGranted);
+  const activeCalls = new Map<string, number>();
+  const suspended = new Set<string>();
+  const assertEntitled = (manifest: PluginRecord["manifest"]) => {
+    if (!eligibility(manifest).canUse) throw pluginError("plugin_entitlement_required", `Plugin access denied: ${manifest.id}`);
     const entitlement = manifest.requiredEntitlement;
     if (!entitlement || isEntitlementGranted(entitlement)) return;
     throw pluginError(
@@ -112,6 +123,7 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     }
   };
   const deactivateContributions = async (pluginId: string) => {
+    options.onSkillContentInvalidated?.(pluginId);
     const results = await Promise.allSettled([
       options.runtimeHost.deactivate(pluginId),
       skillManager.deactivate(pluginId)
@@ -191,14 +203,36 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
   };
 
   const service: PluginService = {
-    catalog: () => options.registry.catalog?.() ?? Promise.resolve([]),
     isBusy: busy,
     list() {
-      return options.repository.list().map(publicPlugin);
+      return options.repository.list().map((plugin) => ({ ...publicPlugin(plugin), eligibility: eligibility(plugin.manifest) }));
+    },
+    async catalog() {
+      const listed = await options.registry.list?.() ?? [];
+      const manifests = new Map(listed.map((manifest) => [manifest.id, manifest]));
+      const privatePluginIds = [...new Set(options.catalogPluginIds?.() ?? [])]
+        .filter((pluginId) => !manifests.has(pluginId));
+      const privateReleases = await Promise.allSettled(
+        privatePluginIds.map((pluginId) => options.registry.resolve(pluginId))
+      );
+      for (const result of privateReleases) {
+        if (result.status === "fulfilled") {
+          manifests.set(result.value.manifest.id, result.value.manifest);
+        }
+      }
+      return [...manifests.values()].filter((manifest) => eligibility(manifest).visible).map((manifest) => ({
+        manifest, eligibility: eligibility(manifest),
+        ...(options.repository.get(manifest.id) ? { installed: this.list().find((plugin) => plugin.id === manifest.id) } : {})
+      }));
+    },
+    async suspend(id) {
+      suspended.add(id);
+      if (!activeCalls.get(id)) await this.disable(id);
     },
 
     get(id) {
-      return publicPlugin(required(id));
+      const plugin = required(id);
+      return { ...publicPlugin(plugin), eligibility: eligibility(plugin.manifest) };
     },
 
     async readUi(id, slot) {
@@ -383,11 +417,12 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     },
 
     async enable(id) {
+      suspended.delete(id);
       const plugin = required(id);
       compatible(plugin.manifest);
       if (missingFeatures(plugin.manifest).length) throw pluginError("plugin_incompatible", "Required Host capabilities are unavailable");
-      if (plugin.state === "active") return publicPlugin(options.repository.setDesiredEnabled(id, true));
       assertEntitled(plugin.manifest);
+      if (plugin.state === "active") return publicPlugin(options.repository.setDesiredEnabled(id, true));
       if (!hasAllPermissions(plugin)) {
         throw pluginError("plugin_permission_denied", "Plugin permissions have not been approved");
       }
@@ -425,6 +460,7 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     },
 
     async uninstall(id) {
+      options.onSkillContentInvalidated?.(id);
       let plugin = required(id);
       if (plugin.state === "active" || plugin.state === "enabling" || plugin.state === "failed") {
         await this.disable(id);
@@ -449,6 +485,7 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
       if (!plugin.manifest.capabilities.some((capability) => capability.id === call.capabilityId)) {
         throw pluginError("plugin_unavailable", `Capability not found: ${call.capabilityId}`);
       }
+      activeCalls.set(plugin.id, (activeCalls.get(plugin.id) ?? 0) + 1);
       const startedAt = Date.now();
       let outcome: "success" | "error" | "interrupted" = "interrupted";
       let errorCode: string | null = null;
@@ -482,6 +519,8 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
           : "plugin_runtime_error";
         throw error;
       } finally {
+        activeCalls.set(plugin.id, (activeCalls.get(plugin.id) ?? 1) - 1);
+        if (suspended.has(plugin.id) && !activeCalls.get(plugin.id)) await this.disable(plugin.id);
         try {
           options.repository.recordCall({
             callId: call.callId,
@@ -512,6 +551,10 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
     async restoreActive() {
       if (closing) return;
       for (const plugin of options.repository.list().filter(plugin => wantsEnabled(plugin) && plugin.state !== "pending_approval")) {
+        if (!eligibility(plugin.manifest).canUse) {
+          options.repository.setState(plugin.id, "disabled");
+          continue;
+        }
         const recovery = restore(plugin.id);
         // Preserve Windows' first-window optimization. Gateway-backed workers
         // wait independently; local plugins retain the existing startup flow.
@@ -524,6 +567,7 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
       const restoring = [...recoveries.values()];
       for (const id of recoveries.keys()) cancelRecovery(id);
       await Promise.allSettled(restoring.map(job => job.promise));
+      options.onSkillContentInvalidated?.();
       await Promise.allSettled(options.repository.list()
         .filter((plugin) => plugin.state === "active" || plugin.state === "enabling")
         .map((plugin) => deactivateContributions(plugin.id)));

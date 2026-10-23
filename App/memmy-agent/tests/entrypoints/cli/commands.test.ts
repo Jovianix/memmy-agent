@@ -531,7 +531,7 @@ describe("CLI command helpers", () => {
       .toThrow("unsupported config key");
   });
 
-  it("serve uses api.timeout from config when no CLI timeout override is supplied", async () => {
+  it("serve ignores legacy api.timeout while a task is still executing", async () => {
     const root = tempRoot("memmy-serve-timeout-");
     const workspace = path.join(root, "workspace");
     const configPath = writeConfig(root, {
@@ -561,8 +561,8 @@ describe("CLI command helpers", () => {
       });
       const body = await response.json() as any;
 
-      expect(response.status).toBe(504);
-      expect(body.error.message).toContain("Request timed out after 0.01s");
+      expect(response.status).toBe(200);
+      expect(body.choices[0].message.content).toBe("late");
       expect(fs.existsSync(path.join(workspace, "AGENTS.md"))).toBe(true);
     } finally {
       await closeServer(server);
@@ -679,6 +679,7 @@ describe("CLI command helpers", () => {
     const toolInitialization = new Promise<void>((resolve) => { finishToolInitialization = resolve; });
     const fakeLoop: any = {
       workspace,
+      isReady: false,
       model: "agent_chat",
       unifiedSession: false,
       fileMemoryEnabled: true,
@@ -691,9 +692,11 @@ describe("CLI command helpers", () => {
       }),
       run: vi.fn(async () => {
         await fakeLoop.initializeRuntimeTools();
+        fakeLoop.isReady = loopRunning;
         while (loopRunning) {
           await new Promise((resolve) => setTimeout(resolve, 5));
         }
+        fakeLoop.isReady = false;
       }),
       dispatchMessage: vi.fn(async () => undefined),
       processMessage: vi.fn(async () => null),
@@ -714,6 +717,7 @@ describe("CLI command helpers", () => {
       },
       stop: vi.fn(() => {
         loopRunning = false;
+        fakeLoop.isReady = false;
       }),
       closeMcp: vi.fn(async () => undefined),
       sessions: null,
@@ -773,7 +777,9 @@ describe("CLI command helpers", () => {
     await vi.waitFor(() => expect((websocketChannel as WebSocketChannel).server).not.toBeNull());
     const websocketPort = (websocketChannel as WebSocketChannel).server.address().port;
     const bootstrap = await fetch(`http://127.0.0.1:${websocketPort}/webui/bootstrap`);
-    expect(bootstrap.status).toBe(200);
+    expect(bootstrap.status).toBe(503);
+    expect((websocketChannel as WebSocketChannel).issuedTokens.size).toBe(0);
+    expect((websocketChannel as WebSocketChannel).apiTokens.size).toBe(0);
     expect(fakeLoop.initializeRuntimeTools).toHaveBeenCalledTimes(1);
     const snapshot = (websocketChannel as WebSocketChannel).webuiSessionSnapshot();
     expect(snapshot.sessions).toEqual(
@@ -835,9 +841,14 @@ describe("CLI command helpers", () => {
 
     const migratedBytes = fs.readFileSync(legacySessionPath);
     const appliedBeforeRestart = JSON.parse(fs.readFileSync(migrationStatePath, "utf8")).applied;
+    loopRunning = true;
     const secondRuntime = await gateway({ config: configPath });
     expect(fs.readFileSync(legacySessionPath)).toEqual(migratedBytes);
     expect(JSON.parse(fs.readFileSync(migrationStatePath, "utf8")).applied).toEqual(appliedBeforeRestart);
+    const secondChannel = secondRuntime.manager.getChannel("websocket") as WebSocketChannel;
+    await vi.waitFor(() => expect(secondChannel.server).not.toBeNull());
+    const secondPort = secondChannel.server.address().port;
+    expect((await fetch(`http://127.0.0.1:${secondPort}/webui/bootstrap`)).status).toBe(200);
     await secondRuntime.stop();
     expect(fakeLoop.stop).toHaveBeenCalledTimes(2);
   });
@@ -2260,4 +2271,54 @@ describe("CLI command parity with memmy test_commands", () => {
     expect(fs.existsSync(path.join(legacyDir, "jobs.json"))).toBe(true);
     expect(fs.existsSync(path.join(customWorkspace, "cron", "jobs.json"))).toBe(false);
   });
+});
+
+it("serve admits silent tasks immediately and reserves cancellation for explicit stop", async () => {
+  const root = tempRoot("memmy-serve-stop-");
+  const configPath = writeConfig(root, {
+    agents: { defaults: { workspace: path.join(root, "workspace"), model: "openai/test-model" } },
+    api: { host: "127.0.0.1", port: 0 },
+  });
+  let signal!: AbortSignal;
+  let release!: () => void;
+  vi.spyOn(AgentLoop, "fromConfig").mockReturnValue({
+    processMessageInternal() {},
+    async processDirect(_text: string, opts: any) {
+      signal = opts.abortSignal;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return { content: "finished" };
+    },
+    connectMcp: vi.fn(async () => undefined),
+    closeMcp: vi.fn(async () => undefined),
+  } as any);
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const server = await serve({ config: configPath });
+  try {
+    const port = (server.address() as any).port;
+    const base = `http://127.0.0.1:${port}`;
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "go" }], stream: true, session_id: "s", request_id: "r" }),
+      signal: AbortSignal.timeout(2000),
+    });
+    expect(response.status).toBe(200);
+    expect(signal.aborted).toBe(false);
+    await response.body!.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(signal.aborted).toBe(false);
+    const stopped = await fetch(`${base}/v1/chat/cancel`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: "s", request_id: "r" }),
+      signal: AbortSignal.timeout(2000),
+    });
+    expect(await stopped.json()).toEqual({ status: "cancelled" });
+    expect(signal.aborted).toBe(true);
+    expect((await fetch(`${base}/health`)).status).toBe(200);
+  } finally {
+    release?.();
+    await closeServer(server);
+  }
 });

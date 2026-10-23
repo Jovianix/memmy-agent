@@ -1,5 +1,5 @@
 import { BookOpen } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   productTourIncludesLogs,
@@ -241,7 +241,8 @@ const projectCreateMenuSize: SidebarMenuSize = {
   margin: 8,
   gap: 2
 };
-const sidebarMenuOverlayZIndex = 9999;
+const COMPACT_APP_FRAME_QUERY = "(max-width: 720px)";
+const sidebarMenuOverlayZIndex = 10010;
 const SIDEBAR_PROFILE_NAME_MAX_VISUAL_WIDTH = 10;
 const SIDEBAR_PROFILE_META_MAX_VISUAL_WIDTH = 12;
 const ACCOUNT_DISPLAY_ELLIPSIS = "…";
@@ -315,7 +316,45 @@ export function AppFrame(props: AppFrameProps) {
     byokConfigured: Boolean(state.modelConfig?.catalog?.modelAssignments.byok.agent.candidates.length),
     guidanceDone: true,
   });
-  const [sidebarHidden, setSidebarHidden] = useState(false);
+  const [desktopSidebarHidden, setDesktopSidebarHidden] = useState(false);
+  const [compactViewport, setCompactViewport] = useState(() => (
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(COMPACT_APP_FRAME_QUERY).matches
+      : false
+  ));
+  const [compactSidebarOpen, setCompactSidebarOpen] = useState(false);
+  const sidebarHidden = compactViewport ? !compactSidebarOpen : desktopSidebarHidden;
+  const closeCompactSidebar = useCallback(() => setCompactSidebarOpen(false), []);
+  const toggleSidebar = () => {
+    if (compactViewport) setCompactSidebarOpen((open) => !open);
+    else setDesktopSidebarHidden((hidden) => !hidden);
+  };
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(COMPACT_APP_FRAME_QUERY);
+    const update = ({ matches }: Pick<MediaQueryListEvent, "matches">) => {
+      setCompactViewport(matches);
+      if (matches) setCompactSidebarOpen(false);
+    };
+    update(query);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    closeCompactSidebar();
+  }, [closeCompactSidebar, state.navigation.currentPath, state.agent.currentSessionKey,
+    state.agent.currentChatId, state.agent.newChatRequestId]);
+
+  useEffect(() => {
+    if (!compactViewport || !compactSidebarOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeCompactSidebar();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [closeCompactSidebar, compactSidebarOpen, compactViewport]);
   const windowsChrome = isWindowsDesktopPlatform();
   const taskScrollRef = useRef<HTMLDivElement | null>(null);
   const [taskScrollFade, setTaskScrollFade] = useState(false);
@@ -514,6 +553,7 @@ export function AppFrame(props: AppFrameProps) {
   }
 
   function openNewAgent(target?: WebuiSessionTarget) {
+    closeCompactSidebar();
     const nextDraftRequestId = shouldCreateNewAgentDraft(state.agent)
       ? state.agent.newChatRequestId + 1
       : state.agent.newChatRequestId;
@@ -618,6 +658,7 @@ export function AppFrame(props: AppFrameProps) {
   }
 
   async function openAgentTask(task: AgentTaskView) {
+    closeCompactSidebar();
     handleFirstSidebarInteraction();
     if (!clients?.memmyAgent) {
       dispatch(appActions.navigate("/main"));
@@ -1042,7 +1083,7 @@ export function AppFrame(props: AppFrameProps) {
     }
   }
 
-  const sidebarStyle = sidebarHidden
+  const sidebarStyle = compactViewport ? undefined : sidebarHidden
     ? { ...sidebarResize.sidebarStyle, width: 0, minWidth: 0, maxWidth: 0, flexBasis: 0 }
     : sidebarResize.sidebarStyle;
 
@@ -1053,7 +1094,7 @@ export function AppFrame(props: AppFrameProps) {
       {windowsChrome ? (
         <WindowsTitlebar
           sidebarHidden={sidebarHidden}
-          onToggleSidebar={() => setSidebarHidden((hidden) => !hidden)}
+          onToggleSidebar={toggleSidebar}
         />
       ) : null}
       <div className={windowsChrome ? "sidebar-shell__body" : "sidebar-shell__passthrough"}>
@@ -1061,6 +1102,9 @@ export function AppFrame(props: AppFrameProps) {
         aria-hidden={sidebarHidden ? true : undefined}
         inert={sidebarHidden ? true : undefined}
         className="app-frame-sidebar flex flex-col"
+        onClickCapture={(event) => {
+          if (event.target instanceof Element && event.target.closest(".app-frame-nav-button")) closeCompactSidebar();
+        }}
         style={sidebarStyle}
       >
         {!windowsChrome && (
@@ -1070,7 +1114,7 @@ export function AppFrame(props: AppFrameProps) {
             className="sidebar-toolbar-button"
             aria-label={t("appFrame.hideSidebar")}
             title={t("appFrame.hideSidebar")}
-            onClick={() => setSidebarHidden(true)}
+            onClick={() => compactViewport ? closeCompactSidebar() : setDesktopSidebarHidden(true)}
           >
             <PanelLeft size={20} />
           </button>
@@ -1526,11 +1570,20 @@ export function AppFrame(props: AppFrameProps) {
           className="sidebar-restore-button"
           aria-label={t("appFrame.showSidebar")}
           title={t("appFrame.showSidebar")}
-          onClick={() => setSidebarHidden(false)}
+          onClick={() => compactViewport ? setCompactSidebarOpen(true) : setDesktopSidebarHidden(false)}
         >
           <PanelLeftCollapsed size={20} />
         </button>
       )}
+
+      {compactViewport && compactSidebarOpen ? (
+        <button
+          type="button"
+          className="app-frame-sidebar-backdrop"
+          aria-label={t("appFrame.hideSidebar")}
+          onClick={closeCompactSidebar}
+        />
+      ) : null}
 
       <SidebarResizeHandle
         label={t("appFrame.resizeSidebar")}
@@ -1538,7 +1591,7 @@ export function AppFrame(props: AppFrameProps) {
         minWidth={sidebarResize.minWidth}
         maxWidth={sidebarResize.maxWidth}
         isResizing={sidebarResize.isResizing}
-        isDisabled={sidebarHidden}
+        isDisabled={sidebarHidden || compactViewport}
         onResizeStart={sidebarResize.beginResize}
         onResizeBy={sidebarResize.resizeBy}
       />

@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import type { InstalledPlugin, PluginCatalogItem } from "@memmy/local-api-contracts";
+import type { InstalledPlugin, PluginCatalogEntry } from "@memmy/local-api-contracts";
 import type { PluginsClient } from "../api/plugins-client.js";
 import { ConfirmDialog } from "../components/confirm-dialog.js";
 import { useTranslation } from "../i18n/use-translation.js";
 
 export function PluginStoreSection({ client, platform }: { client?: PluginsClient; platform?: string }) {
   const { language } = useTranslation(), cn = language === "zh-CN";
-  const [catalog, setCatalog] = useState<PluginCatalogItem[]>([]), [installed, setInstalled] = useState<InstalledPlugin[]>([]);
+  const [catalog, setCatalog] = useState<PluginCatalogEntry[]>([]), [installed, setInstalled] = useState<InstalledPlugin[]>([]);
   const [busy, setBusy] = useState<string | null>(null), [error, setError] = useState<string | null>(null);
   const [approval, setApproval] = useState<InstalledPlugin | null>(null);
   const mutating = useRef(false);
@@ -24,24 +24,28 @@ export function PluginStoreSection({ client, platform }: { client?: PluginsClien
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { mutating.current = false; setBusy(null); }
   };
-  const items = [...catalog, ...installed.filter(p => !catalog.some(c => c.id === p.id)).map(p => ({ id: p.id, name: p.manifest.name,
-    description: p.manifest.description ?? "", version: p.version, platforms: p.manifest.platforms ?? [], minimumHostVersion: p.manifest.minimumHostVersion,
-    installMode: "manual" as const, updateMode: p.manifest.updateMode ?? "manual" as const }))];
+  const items: PluginCatalogEntry[] = [...catalog, ...installed.filter(p => !catalog.some(c => c.manifest.id === p.id)).map(p => ({
+    manifest: p.manifest,
+    eligibility: p.eligibility ?? { visible: true, canInstall: true, canUse: true, reason: null },
+    installed: p
+  }))];
   return <section aria-label={cn ? "插件商店" : "Plugin store"} className="mb-6 rounded-card border border-border-stone/30 bg-background-paper p-4">
     <header className="flex items-center justify-between"><h2>{cn ? "插件商店" : "Plugin store"}</h2><button onClick={() => void refresh()}>{cn ? "刷新" : "Refresh"}</button></header>
     {error && <p role="alert">{error}</p>}
-    {items.map(item => {
-      const plugin = installed.find(p => p.id === item.id), supported = !item.platforms.length || item.platforms.some(p => p === os);
+    {items.filter(item => item.eligibility.visible).map(({ manifest: item, eligibility }) => {
+      const platforms = item.platforms ?? [];
+      const plugin = installed.find(p => p.id === item.id), supported = !platforms.length || platforms.some(p => p === os);
       return <article key={item.id} className="mt-3 rounded-card border border-border-stone/30 p-4">
-        <h3>{item.name}</h3><p>{item.description}</p><p className="text-xs text-text-ink/60">{item.version} · {plugin?.state ?? (cn ? "未安装" : "Not installed")}{item.updateMode === "automatic" ? cn ? " · 自动更新" : " · Automatic updates" : ""}</p>
-        <p className="text-xs text-text-ink/60">{item.platforms.map(platform => ({ win32: "Windows", darwin: "macOS", linux: "Linux" })[platform]).join(" / ")}{item.minimumHostVersion ? ` · Memmy ≥ ${item.minimumHostVersion}` : ""}</p>
-        {!supported && <p>{cn ? "当前平台暂不支持" : "Not supported on this platform"} ({item.platforms.join(", ")})</p>}
+        <h3>{item.name}</h3><p>{item.description ?? item.capabilities[0]?.description}</p><p className="text-xs text-text-ink/60">{item.version} · {plugin?.state ?? (cn ? "未安装" : "Not installed")}{(item.rules?.autoUpdate ?? item.updateMode === "automatic") ? cn ? " · 自动更新" : " · Automatic updates" : ""}</p>
+        <p className="text-xs text-text-ink/60">{platforms.map(platform => ({ win32: "Windows", darwin: "macOS", linux: "Linux" })[platform]).join(" / ")}{item.minimumHostVersion ? ` · Memmy ≥ ${item.minimumHostVersion}` : ""}</p>
+        {!supported && <p>{cn ? "当前平台暂不支持" : "Not supported on this platform"} ({platforms.join(", ")})</p>}
+        {!eligibility.canUse && <p>{eligibility.reason === "login_required" ? cn ? "登录后可用" : "Sign in to use" : cn ? "当前账号未获授权" : "Account access required"}</p>}
         <div className="mt-2 flex gap-3">
-          {!plugin ? <button disabled={!client || !supported || busy !== null} onClick={() => void mutate(item.id, async () => {
+          {!plugin ? <button disabled={!client || !supported || !eligibility.canInstall || busy !== null} onClick={() => void mutate(item.id, async () => {
             const result = await client!.install(item.id, item.version);
             if (result.state === "pending_approval") setApproval(result); else await client!.enable(item.id);
           })}>{busy === item.id ? cn ? "下载中…" : "Downloading…" : cn ? "安装" : "Install"}</button>
-            : <>{plugin.manifest.conversation && plugin.state !== "pending_approval" ? <span className="text-sm">{cn ? "在对话中启用或停用插件" : "Enable or disable this plugin in chat"}</span> : <button disabled={busy !== null || !supported} onClick={() => plugin.state === "pending_approval" ? setApproval(plugin)
+            : <>{plugin.manifest.conversation && plugin.state !== "pending_approval" ? <span className="text-sm">{cn ? "在对话中启用或停用插件" : "Enable or disable this plugin in chat"}</span> : <button disabled={busy !== null || !supported || (plugin.state !== "active" && !eligibility.canUse)} onClick={() => plugin.state === "pending_approval" ? setApproval(plugin)
               : void mutate(item.id, () => plugin.state === "active" ? client!.disable(item.id) : client!.enable(item.id))}>
               {plugin.state === "active" ? cn ? "停用" : "Disable" : plugin.state === "pending_approval" ? cn ? "授权并启用" : "Approve and enable" : cn ? "启用" : "Enable"}</button>}
               <button disabled={busy !== null} onClick={() => void mutate(item.id, () => client!.uninstall(item.id))}>{cn ? "卸载（保留插件数据）" : "Uninstall (keep plugin data)"}</button></>}
