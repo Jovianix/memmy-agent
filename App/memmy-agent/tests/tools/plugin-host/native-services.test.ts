@@ -18,6 +18,22 @@ function fixture(options: Parameters<typeof createNativePluginServices>[0] = {})
   return { service, dataRoot, invoke };
 }
 describe("identity-bound native plugin services", () => {
+  it("advertises ordered checkpoints without upgrading incomplete capture evidence", async () => {
+    const checkpoint = vi.fn(async () => ({ running: true, complete: false, rangeEvaluated: true,
+      boundaryConfirmed: true, limitations: ["Controlled coverage gap"], streams: [] }));
+    const f = fixture({ history: { acquireEventCapture: async () => ({ checkpoint, release: async () => undefined }) } });
+    const configuration = await f.invoke("test.capture", "event-sessions", { action: "configuration" });
+    expect(configuration.features).toContain("memmy.event-checkpoints/v1");
+    const started = await f.invoke("test.capture", "event-sessions", {
+      action: "start", conversationId: "checkpoint-test", goal: "Keep missing coverage visible", consent: true
+    });
+    const stopped = await f.invoke("test.capture", "event-sessions", {
+      action: "stop", conversationId: "checkpoint-test", session_id: started.id
+    });
+    expect(stopped.availability).toBe("partial");
+    expect(stopped.limitations).toContain("Controlled coverage gap");
+    expect(checkpoint).toHaveBeenCalled();
+  });
   it("shares collection ownership with Computer History and other task recorders", async () => {
     const historyBusy = vi.fn(() => true), f = fixture({ historyBusy });
     await expect(f.invoke("test.capture", "collector", { action: "acquire" })).rejects.toThrow("collector_busy");

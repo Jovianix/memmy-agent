@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryLayerError, MemoryLayerNetworkError } from "../../adapters/outbound/memory-client/index.js";
 import { API_ERROR_CODES, HTTP_STATUS_BY_CODE, withErrorEnvelope } from "../error-envelope.js";
+import { ApiErrorBodySchema } from "@memmy/local-api-contracts";
 import type { FastifyInstance } from "fastify";
 
 let app: FastifyInstance | undefined;
@@ -41,6 +42,7 @@ describe("withErrorEnvelope", () => {
       });
 
       expect(response.statusCode).toBe(HTTP_STATUS_BY_CODE[code]);
+      expect(ApiErrorBodySchema.parse(response.json())).toEqual(response.json());
       expect(response.json()).toEqual({
         error: {
           code,
