@@ -13,6 +13,8 @@ export interface LlmCompletionOptions {
   /** Keep a length retry within this output cap when input has a fixed budget. */
   retryTokenCeiling?: number;
   timeoutMs?: number;
+  /** Absolute interactive deadline, shared by JSON repair attempts. */
+  deadlineMs?: number;
   maxRetries?: number;
   jsonMode?: boolean;
 }

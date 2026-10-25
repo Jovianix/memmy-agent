@@ -2,7 +2,7 @@ import path from "node:path";
 import { scrubRecord, type HistoryEvent } from "../core/recording.js";
 import { authorizedRule, pathKey, windowsApplicationId, type NativePolicy } from "./policy.js";
 import type { NativeNode, NativeSnapshotEvent } from "./protocol.js";
-import { documentTextIsLabel, isVsCodeEditorBody, isWordDocument } from "./document-regions.js";
+import { documentTextIsLabel, isVsCodeEditorBody, isWordDocument, isNotepadDocument } from "./document-regions.js";
 import type { RecordingObservation } from "@memmy/local-api-contracts";
 
 const operationRoles = new Set(["Button", "CheckBox", "ComboBox", "Hyperlink", "ListItem", "MenuItem",
@@ -84,6 +84,9 @@ export class SnapshotNormalizer {
     let roots = 0;
     let total = 0;
     const blocks = new Set<string>();
+    // Authority is recomputed for each full/delta frame, once per node. Rendering
+    // reuses that result instead of walking the same ancestry several more times.
+    const adapters = new Map<string, "vscode.editor" | "word.document" | "notepad.document">();
     const boundedEditor = rule.documentRegions?.some((selector) => "scope" in selector && selector.scope === "vscode.editor");
     for (const node of nodes.values()) {
       if (node.depth > policy.limits.maxDepth) return invalid();
@@ -94,7 +97,11 @@ export class SnapshotNormalizer {
       }
       const content = fields.some((field) => node[field] !== undefined);
       const masked = sensitive.has(node.automationId.toLowerCase()) || node.password !== false;
-      const scoped = isVsCodeEditorBody(node, nodes, rule) || isWordDocument(node, nodes, rule);
+      const adapter = node.controlType === "Edit" && isVsCodeEditorBody(node, nodes, rule) ? "vscode.editor"
+        : node.controlType === "Document" && isWordDocument(node, nodes, rule) ? "word.document"
+        : node.controlType === "Document" && isNotepadDocument(node, nodes, rule) ? "notepad.document" : undefined;
+      if (adapter) adapters.set(node.key, adapter);
+      const scoped = adapter !== undefined;
       const document = matches(rule.documentRegions, node) || scoped;
       const search = node.controlType === "Edit" && node.focused && matches(rule.searchFields, node);
       if ((node.documentStatus && !scoped) || (scoped && content && node.documentStatus !== "available")) return invalid();
@@ -133,12 +140,12 @@ export class SnapshotNormalizer {
         key: node.key, parentKey: node.parentKey, controlType: node.controlType,
         providerOffscreen: node.providerOffscreen, ...(node.redaction ? { redaction: node.redaction } : {}),
         ...(node.documentStatus ? { documentStatus: node.documentStatus } : {}),
-        ...(node.documentStatus === "available" && !node.redaction && isVsCodeEditorBody(node, nodes, rule)
+        ...(node.documentStatus === "available" && !node.redaction && adapters.get(node.key) === "vscode.editor"
           ? { documentContext: "vscode.editor" as const } : {}),
-        ...(node.documentStatus === "available" && !node.redaction && (isVsCodeEditorBody(node, nodes, rule) || isWordDocument(node, nodes, rule))
+        ...(node.documentStatus === "available" && !node.redaction && adapters.has(node.key)
           ? { documentEvidence: {
-            adapter: isVsCodeEditorBody(node, nodes, rule) ? "vscode.editor" as const : "word.document" as const,
-            labelKind: isVsCodeEditorBody(node, nodes, rule) ? "editor_label" as const : "document_label" as const,
+            adapter: adapters.get(node.key)!,
+            labelKind: adapters.get(node.key) === "vscode.editor" ? "editor_label" as const : "document_label" as const,
             labelSource: "uia.name" as const, textSource: "uia.document_range" as const,
             ...(node.visibleText !== undefined ? { visibleTextSource: "uia.visible_ranges" as const } : {}),
             providerFocused: node.focused,
