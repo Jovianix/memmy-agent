@@ -132,7 +132,7 @@ function extractRequestId(request: FastifyRequest): string {
 
   const headerValue = request.headers["x-request-id"] ?? request.headers["x-requestid"];
   const header = Array.isArray(headerValue) ? headerValue[0] : headerValue;
-  return typeof header === "string" && header.length > 0 ? header : "unknown";
+  return typeof header === "string" && header.length > 0 ? header : request.id;
 }
 
 /** Checks is api error code. */

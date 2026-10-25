@@ -488,6 +488,13 @@ export class ManagedOcuSession {
               const label = code === 'not-found' ? '未找到这个已安装应用'
                 : code === 'ambiguous' ? '找到多个匹配应用，无法确定操作对象'
                   : code === 'blocked' ? '这个应用不允许通过电脑操作使用' : '未能读取已安装应用的身份';
+              // A Windows name can match several running processes. No target
+              // operation or permission decision has occurred: allow discovery
+              // with list_apps and an exact PID instead of ending the user turn.
+              if (this.platform === 'win32' && code === 'ambiguous') return {
+                isError: true, _meta: { memmyComputerUse: { noActionDispatched: true } },
+                content: [{ type: 'text', text: `${label}，本次应用操作未执行，尚未请求应用授权。请调用 list_apps，使用返回的准确进程 ID 观察候选窗口并确认目标文档；不要猜测当前前台窗口或发送输入。诊断编号：${diagnostic.id}。` }],
+              };
               throw new NativeAppApprovalDenied(`${label}，本次应用操作未执行。诊断编号：${diagnostic.id}。`);
             }
           }
