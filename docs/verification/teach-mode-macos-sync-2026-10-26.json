@@ -1,6 +1,6 @@
 {
   "schema": "memmy.teach-mode-macos-sync/v1",
-  "recordedAt": "2026-10-26T05:29:09.235016+00:00",
+  "recordedAt": "2026-10-26T05:36:49.846903+00:00",
   "scope": "Synchronize Windows Teach Mode fixes into shared/macOS source; prepare for subsequent physical Mac acceptance.",
   "host": {
     "repository": "Jovianix/memmy-agent",
@@ -13,7 +13,7 @@
     "repository": "Jovianix/teach-mode",
     "branch": "codex/teach-mode-macos-sync-20261026",
     "version": "0.4.1",
-    "sourceCommit": "7a5f737a4047496665cc66900a23a592f84b635e"
+    "sourceCommit": "12a1442adb7f06b4cd5241500381b9474d9d77a7"
   },
   "synchronizedFeatures": [
     "Teaching tab departure revokes content immediately and drains the previous document before tab-left; missing close proof remains partial.",
@@ -21,7 +21,8 @@
     "macOS native enrichment barrier, ordered normalization and fsync-backed exact byte watermark.",
     "macOS continuous output rotation at the native barrier without restarting capture; bounded failure and overlapping checkpoints/stops.",
     "Each macOS segment re-establishes a full sanitized AX snapshot/page context; native capture state and coverage gaps remain continuous.",
-    "Packaged macOS History recorder matches the current standalone source, including the upstream application/website observation policy."
+    "Packaged macOS History recorder matches the current standalone source, including the upstream application/website observation policy.",
+    "Prototype data migration canonicalizes macOS parent directory aliases while retaining symlink, containment and hash checks; reproduced and validated on a real macOS CI runner."
   ],
   "checks": [
     {
@@ -47,12 +48,12 @@
     },
     {
       "name": "Teach Mode plugin tests",
-      "passed": 50,
+      "passed": 53,
       "failed": 0
     },
     {
-      "name": "Plugin release validation script",
-      "passed": 1,
+      "name": "Plugin release validation cases (also verified in three-platform CI)",
+      "passed": 4,
       "failed": 0
     },
     {
@@ -110,13 +111,21 @@
       "reason": "GitHub Actions is disabled for Jovianix/memmy-agent. Manual workflow dispatch returned HTTP 422: Actions has been disabled for this repository."
     },
     "plugin": {
-      "status": "triggered",
-      "run": "https://github.com/Jovianix/teach-mode/actions/runs/40274602933",
-      "matrix": [
-        "ubuntu-latest",
-        "windows-latest",
-        "macos-latest"
-      ]
+      "status": "passed",
+      "run": "https://github.com/Jovianix/teach-mode/actions/runs/40274963468",
+      "validatedRuntimeCommit": "2dc7de366705c5cd625d1586ea9ff60e2421a92d",
+      "matrix": {
+        "macos-latest": "passed",
+        "windows-latest": "passed",
+        "ubuntu-latest": "passed"
+      },
+      "checks": [
+        "typecheck",
+        "53 plugin tests",
+        "4 release validation cases",
+        "ZIP build"
+      ],
+      "headDifference": "The subsequent plugin commit updates only the documented minimum Host version to 1.2.4."
     }
   }
 }
