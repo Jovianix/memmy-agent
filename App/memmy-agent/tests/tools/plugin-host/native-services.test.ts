@@ -18,21 +18,31 @@ function fixture(options: Parameters<typeof createNativePluginServices>[0] = {})
   return { service, dataRoot, invoke };
 }
 describe("identity-bound native plugin services", () => {
-  it("advertises ordered checkpoints without upgrading incomplete capture evidence", async () => {
-    const checkpoint = vi.fn(async () => ({ running: true, complete: false, rangeEvaluated: true,
-      boundaryConfirmed: true, limitations: ["Controlled coverage gap"], streams: [] }));
-    const f = fixture({ history: { acquireEventCapture: async () => ({ checkpoint, release: async () => undefined }) } });
-    const configuration = await f.invoke("test.capture", "event-sessions", { action: "configuration" });
-    expect(configuration.features).toContain("memmy.event-checkpoints/v1");
-    const started = await f.invoke("test.capture", "event-sessions", {
-      action: "start", conversationId: "checkpoint-test", goal: "Keep missing coverage visible", consent: true
-    });
-    const stopped = await f.invoke("test.capture", "event-sessions", {
-      action: "stop", conversationId: "checkpoint-test", session_id: started.id
-    });
-    expect(stopped.availability).toBe("partial");
-    expect(stopped.limitations).toContain("Controlled coverage gap");
-    expect(checkpoint).toHaveBeenCalled();
+  it("exposes the shared event flow on macOS without acquiring Windows legacy primitives", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mac-plugin-events-")); roots.push(root);
+    const stream = path.join(root, "events.jsonl"); fs.writeFileSync(stream, "");
+    let released = false;
+    const f = fixture({ platform: "darwin", osRelease: "23.0.0", toolNames: () => ["read_file", "write_file"],
+      history: { acquireEventCapture: async () => ({
+        checkpoint: async () => ({ running: !released, complete: true, boundaryConfirmed: true,
+          limitations: [], streams: [{ id: "mac-fixture", file: stream, size: fs.statSync(stream).size }] }),
+        release: async () => { released = true; },
+      }) } });
+    const config = await f.invoke("teach-mode", "event-sessions", { action: "configuration" });
+    expect(config.supported).toBe(true);
+    expect(config.features).toContain("memmy.event-checkpoints/v1");
+    const active = await f.invoke("teach-mode", "event-sessions", { action: "start", conversationId: "mac-chat", goal: "Teach a Mac workflow", consent: true });
+    fs.appendFileSync(stream, JSON.stringify({ recordType: "human_event", eventType: "mouse_click", sequence: 1,
+      timestamp: new Date().toISOString(), application: { name: "Controlled Mac app", bundleId: "test.mac-app" } }) + "\n");
+    const ended = await f.invoke("teach-mode", "event-sessions", { action: "stop", conversationId: "mac-chat", session_id: active.id });
+    expect(ended).toMatchObject({ state: "ready", eventCount: 1 }); expect(released).toBe(true);
+    await expect(f.invoke("teach-mode", "collector", { action: "acquire" })).rejects.toThrow("requires Windows");
+  });
+  it("does not advertise event capture below the native macOS 14 runtime baseline", async () => {
+    const acquireEventCapture = vi.fn();
+    const f = fixture({ platform: "darwin", osRelease: "22.6.0", history: { acquireEventCapture } });
+    expect(await f.invoke("teach-mode", "event-sessions", { action: "configuration" })).toMatchObject({ supported: false });
+    expect(acquireEventCapture).not.toHaveBeenCalled();
   });
   it("shares collection ownership with Computer History and other task recorders", async () => {
     const historyBusy = vi.fn(() => true), f = fixture({ historyBusy });

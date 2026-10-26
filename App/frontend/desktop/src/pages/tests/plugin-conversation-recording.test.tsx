@@ -32,6 +32,28 @@ function fixture() {
   return { plugin, client, invoke, onPrompt, render, click, refresh };
 }
 describe("conversation-owned recording", () => {
+  it("shows a saved coverage gap separately from an unconfirmed end boundary", async () => {
+    const f = fixture(); await f.render();
+    await f.refresh({state: "ready", availability: "partial", endedAt: new Date().toISOString(),
+      captureIntegrity: {protocolVersion: 2, coverageComplete: false, boundaryConfirmed: true, snapshotSaved: true, proofSha256: null, gaps: ["navigation_gap"]}});
+    expect(node.textContent).toContain("录制已结束并保存，部分网页操作未能确认完整");
+    expect(node.textContent).not.toContain("结束确认未完成");
+    await f.refresh({captureIntegrity: {protocolVersion: 2, coverageComplete: false, boundaryConfirmed: false, snapshotSaved: true, proofSha256: null, gaps: ["navigation_gap"]}});
+    expect(node.textContent).toContain("已保留已收到的事件，结束确认未完成");
+  });
+  it("keeps teaching-window preparation at zero and shows its browser-only scope after readiness", async () => {
+    vi.useFakeTimers(); const f = fixture(); await f.render();
+    await f.refresh({ state: "starting", browserCapture: { browser: "chrome", scope: "teaching-window-and-popups" } });
+    expect(node.textContent).toContain("正在准备教学窗口");
+    expect(node.textContent).toContain("尚未开始录制");
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(node.querySelector('[role="timer"]')?.textContent).toBe("00:00");
+    expect(node.querySelector('.recording-bar--live')).toBeNull();
+    await f.refresh({ state: "recording", startedAt: new Date().toISOString(),
+      browserCapture: { browser: "chrome", windowId: 20, scope: "teaching-window-and-popups" } });
+    expect(node.textContent).toContain("原有窗口不纳入");
+    expect(node.querySelector('.recording-bar--live')).not.toBeNull();
+  });
   it("shows an advancing video-style recording bar only for an actual active session and freezes its end time", async () => {
     vi.useFakeTimers(); const f = fixture(); await f.render();
     expect(node.querySelector('.recording-bar--activity.recording-bar--live')).not.toBeNull();

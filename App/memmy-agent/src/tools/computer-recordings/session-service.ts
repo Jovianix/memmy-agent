@@ -8,6 +8,8 @@ import { RecordingSessionSchema, RecordingEventSchema, RecordingFrameSchema, Rec
   type RecordingConfiguration, type RecordingPermission } from "@memmy/local-api-contracts";
 import { collectorGate, type CollectorGate } from "../computer-history/core/collector-gate.js";
 import { buildRecordingOperationEvidence } from "../computer-use/operation-evidence.js";
+import { writeJsonAtomic } from "../../utils/atomic-json.js";
+export { writeJsonAtomic } from "../../utils/atomic-json.js";
 
 export class RecordingError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -38,14 +40,6 @@ interface ActiveRecording {
 }
 const terminal = (state: RecordingSession["state"]) => state === "ready" || state === "failed";
 const recordingId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
-export function writeJsonAtomic(file: string, value: unknown): void {
-  const temporary = `${file}.${crypto.randomUUID()}.tmp`;
-  try {
-    const fd = fs.openSync(temporary, "wx", 0o600);
-    try { fs.writeFileSync(fd, JSON.stringify(value, null, 2)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    fs.renameSync(temporary, file);
-  } finally { fs.rmSync(temporary, { force: true }); }
-}
 export function readLines<T>(file: string, parse: (value: unknown) => T, maxBytes = 64 * 1024 * 1024): T[] {
   const info = fs.lstatSync(file);
   if (!info.isFile() || info.isSymbolicLink() || info.size > maxBytes) throw new RecordingError(422, "recording_index_invalid");

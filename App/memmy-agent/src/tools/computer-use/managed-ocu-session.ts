@@ -192,6 +192,14 @@ export class ManagedOcuSession {
     this.targetWindows.set(key, windowID);
     while (this.targetWindows.size > 256) this.targetWindows.delete(this.targetWindows.keys().next().value!);
   }
+  private forgetUnavailableWindow(key: string, windowID: number): void {
+    if (this.targetWindows.get(key) === windowID) this.targetWindows.delete(key);
+    if (this.modelTargetWindows.get(key) === windowID) this.modelTargetWindows.delete(key);
+    const observationKey = this.windowKey(key, windowID);
+    this.modelObservations.delete(observationKey);
+    for (const [imageKey, image] of this.windowsImageObservations)
+      if (image.targetKey === observationKey) this.windowsImageObservations.delete(imageKey);
+  }
   private windowKey(targetKey: string, windowID: number | undefined): string {
     return windowID === undefined ? targetKey : JSON.stringify([targetKey, windowID]);
   }
@@ -622,6 +630,13 @@ export class ManagedOcuSession {
             result = await this.observeAfterYield(name, target, timeout,
               new OcuUserYielded(yielded.dispatched, !idle), signal, windowID, authorizedAppId);
           }
+        }
+        const nativeWindow = result?._meta?.memmyComputerUse;
+        if (this.platform === 'win32' && nativeWindow?.targetWindowUnavailable === true
+          && isWindowsWindowID(nativeWindow.requestedWindowID) && nativeWindow.requestedWindowID === windowID) {
+          // A closed dialog cannot remain the default for later observations.
+          // Forget only that binding; never choose another window or replay input.
+          this.forgetUnavailableWindow(targetKey, nativeWindow.requestedWindowID);
         }
         const returnedWindowID = mcpTargetWindowId(result, this.platform);
         if (windowBoundPlatform && protectedTool && result?.isError !== true

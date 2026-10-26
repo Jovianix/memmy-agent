@@ -53,6 +53,41 @@ function setup(mode = "normal") {
 }
 describe("owned Windows collector lifecycle", () => {
   const request = (id = "12345678-1234-1234-1234-123456789abc", range = {}) => checkpointRequest.parse({ kind: "checkpoint", id, ...range });
+  it("rotates files at the native marker while retaining the collector, coverage and later snapshots", async () => {
+    const test = setup(), recorder = await WindowsHistoryRecorder.start(test.options);
+    const nextFile = path.join(test.directory, "next", "events.jsonl");
+    const at = (ms: number) => `2026-10-02T01:00:00.${String(ms).padStart(3, "0")}Z`;
+    test.send(full([root, {...text, name: "BEFORE_ROTATION"}]), at(1));
+    test.send({kind: "capture.gap", code: "query_unavailable", from: at(2), through: at(3)}, at(3));
+    const id = "12345678-1234-1234-1234-123456789ab1";
+    const rotation = recorder.rotate({kind: "rotate", id, eventsFile: nextFile, title: "Next segment"});
+    expect(fs.existsSync(nextFile)).toBe(false);
+    test.send({kind: "session.checkpoint", id, captureSequence: 10, complete: true}, at(4));
+    const {nodes: _nodes, ...snapshot} = full().snapshot;
+    const delta = {...full(), snapshot: {...snapshot, mode: "delta", added: [{...text, name: "AFTER_ROTATION"}],
+      removed: [text.key], unchangedCount: 1}};
+    test.send(delta, at(5));
+    await rotation;
+    const original = fs.readFileSync(test.eventsFile, "utf8");
+    expect(original).toContain("BEFORE_ROTATION"); expect(original).not.toContain("AFTER_ROTATION");
+    const next = fs.readFileSync(nextFile, "utf8");
+    expect(next).toContain("AFTER_ROTATION"); expect(next).toContain('"collectorContinues":true');
+    const nativeId = JSON.parse(original.split("\n")[1]!).details.nativeSessionId;
+    expect(JSON.parse(next.split("\n")[1]!).details.nativeSessionId).toBe(nativeId);
+    expect(recorder.pid).toBe(test.child.pid); expect(spawn).toHaveBeenCalledOnce();
+    const command = request(undefined, {from: at(0), through: at(6)}), checkpoint = recorder.checkpoint(command);
+    test.send({kind: "session.checkpoint", id: command.id, captureSequence: 20, complete: true}, at(7));
+    expect(await checkpoint).toMatchObject({complete: false, issues: ["query_unavailable"]});
+    expect(fs.readFileSync(test.eventsFile, "utf8")).toBe(original);
+    await recorder.stop();
+    expect(fs.readFileSync(test.eventsFile, "utf8")).toBe(original);
+  });
+  it("rejects unsafe rotation paths without interrupting the active collector", async () => {
+    const test = setup(), recorder = await WindowsHistoryRecorder.start(test.options);
+    for (const eventsFile of [test.eventsFile, test.policyFile, "relative.jsonl"])
+      await expect(recorder.rotate({kind: "rotate", id: request().id, eventsFile, title: "Invalid"})).rejects.toThrow("path_invalid");
+    expect(recorder.state).toBe("running"); await recorder.stop();
+  });
   it("waits for the ordered native marker, fsyncs it and freezes the exact byte position", async () => {
     const test = setup(), recorder = await WindowsHistoryRecorder.start(test.options);
     const flush = vi.spyOn(fs, "fsyncSync"), write = vi.spyOn(test.child.stdin, "write");

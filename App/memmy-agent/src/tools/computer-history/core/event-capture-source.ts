@@ -1,3 +1,4 @@
+import type { CaptureIntegrity } from "@memmy/local-api-contracts";
 /** The recorder remains owned by Computer History; consumers own subscriptions. */
 export interface CaptureRange { from: string; through?: string }
 export interface CaptureCheckpoint {
@@ -9,6 +10,7 @@ export interface CaptureCheckpoint {
   rangeEvaluated?: boolean;
   /** The ordered boundary reached durable storage, independently of interval health. */
   boundaryConfirmed?: boolean;
+  captureIntegrity?: CaptureIntegrity;
   limitations: string[];
 }
 export interface EventCaptureSubscription {

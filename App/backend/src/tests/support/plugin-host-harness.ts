@@ -12,6 +12,7 @@ import { createMockMemoryClient } from "./mock-memory-client.js";
 import { createNativePluginServices } from "../../../../memmy-agent/src/tools/plugin-host/native-services.js";
 import { SkillsLoader } from "../../../../memmy-agent/src/core/agent-runtime/skills.js";
 import type { EventCaptureSource } from "../../../../memmy-agent/src/tools/computer-history/core/event-capture-source.js";
+import type { BrowserCaptureProvider } from "../../../../memmy-agent/src/tools/computer-history/browser-event-capture.js";
 
 export { MEMMY_VERSION } from "../../project-version.js";
 export { PLUGIN_HOST_CAPABILITIES } from "../../services/plugin-host-capabilities.js";
@@ -19,7 +20,7 @@ export { EventCaptureSessionSchema, PluginManifestSchema } from "@memmy/local-ap
 
 export function createPluginHostHarness(options: {
   root: string; registryUrl: string; platform?: NodeJS.Platform;
-  source: EventCaptureSource; availableTools?: string[];
+  source: EventCaptureSource; availableTools?: string[]; browser?: BrowserCaptureProvider;
 }) {
   const assetRoot = path.dirname(fileURLToPath(import.meta.url));
   const workspace = path.join(options.root, "workspace"), data = path.join(options.root, "agent-data");
@@ -32,7 +33,9 @@ export function createPluginHostHarness(options: {
     { pluginDataRoot: path.join(options.root, "plugin-data"), pluginSkillsRoot: path.join(options.root, "plugin-skills"), includePlugins: true });
   loader.availableTools = () => options.availableTools ?? ["read_file", "write_file"];
   const native = createNativePluginServices({ dataRoot: path.join(options.root, "plugin-data"),
-    platform: options.platform ?? process.platform, history: options.source,
+    platform: options.platform ?? process.platform, history: options.source, browser: options.browser,
+    // A cross-platform fixture controls the OS version as well as its event source.
+    ...(options.platform === "darwin" && process.platform !== "darwin" ? { osRelease: "23.0.0" } : {}),
     toolNames: loader.availableTools, skills: () => loader.listSkills(false).map(({ name, path }) => ({ name, path })),
     skillCreatorFile: path.join(assetRoot, "skills", "skill-creator", "SKILL.md") });
   let reloads = 0;

@@ -17,6 +17,12 @@ export const persistedCheckpoint = z.object({ id: checkpointId, complete: z.bool
 }).strict();
 export type PersistedCheckpoint = z.infer<typeof persistedCheckpoint>;
 
+/** Internal writer handoff; the native collector and its coverage ledger stay alive. */
+export const recorderRotationRequest = z.object({ kind: z.literal("rotate"), id: checkpointId,
+  eventsFile: z.string().min(1).max(4096), title: z.string().max(200),
+}).strict();
+export const recorderRotationResult = z.object({ id: checkpointId, complete: z.boolean() }).strict();
+
 export const recordingCheckpointRecord = z.object({ recordType: z.literal("human_event"), sequence: count.min(1),
   eventType: z.literal("recording_checkpoint"), timestamp: checkpointTime,
   details: z.object({ checkpointId, nativeSessionId: z.string().regex(/^[0-9a-f]{32}$/u),

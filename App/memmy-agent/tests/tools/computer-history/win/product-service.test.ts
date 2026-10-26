@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as settings from "../../../../src/tools/computer-history/win/settings.js";
 import { WindowsComputerHistoryService } from "../../../../src/tools/computer-history/win/computer-history-api.js";
+import { WindowsPlatformDriver } from "../../../../src/tools/computer-history/win/platform-driver.js";
 import { context, executable } from "./fixtures.js";
 
 const roots: string[] = [];
@@ -39,6 +40,24 @@ afterEach(async () => {
 });
 
 describe("Windows managed service", () => {
+  it("hands Unicode output paths to the same managed process and validates the rotation acknowledgement", async () => {
+    const {root, store} = setup([
+      'import fs from "node:fs";import readline from "node:readline";',
+      'console.log(JSON.stringify({kind:"recorder.state",state:"running"}));',
+      'readline.createInterface({input:process.stdin}).on("line",line=>{',
+      'if(line==="stop"){console.log(JSON.stringify({kind:"recorder.state",state:"stopped"}));process.exit(0);}',
+      'const request=JSON.parse(line);fs.writeFileSync(process.argv[process.argv.indexOf("--out")+1]+".request",JSON.stringify(request));',
+      'console.log("[recorder-rotation] "+JSON.stringify({id:request.id,complete:true}));});',
+    ].join("\n"));
+    store.write({version: 1, applications: [{executable}]});
+    const driver = new WindowsPlatformDriver(store, path.join(root,"native.exe"), path.join(root,"recorder.mjs"));
+    const first = {title: "First", eventsFile: path.join(root,"events.jsonl"), observationSettingsFile: path.join(root,"mac-settings.json")};
+    const child = driver.launch(first); await driver.ready(child);
+    const next = {...first, title: "下一段 📝", eventsFile: path.join(root,"中文 📝","events.jsonl")};
+    await driver.rotate(child,next);
+    expect(JSON.parse(fs.readFileSync(first.eventsFile+".request","utf8"))).toMatchObject({kind:"rotate",eventsFile:next.eventsFile,title:next.title});
+    expect(child.exitCode).toBeNull(); await driver.stop(child);
+  });
   it("uses the durable marker offset even when later events reach disk before the acknowledgement", async () => {
     const { service, store } = setup([
       'import fs from "node:fs"; import readline from "node:readline";',

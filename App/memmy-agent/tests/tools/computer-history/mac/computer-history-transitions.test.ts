@@ -34,6 +34,7 @@ beforeEach(() => {
   const recorderScript = path.join(root, "unused.js");
   fs.writeFileSync(recorderScript, "// spawn is replaced by an inert child");
   service = new ComputerHistoryDemoService({ recorderScript,
+    permissionReader: async () => ({ supported: true, accessibility: true, inputMonitoring: true }),
     historyDirectory: path.join(root, "histories"), recordingDirectory: path.join(root, "recordings"),
     workflowDirectory: path.join(root, "workflows"), observationSettingsFile: path.join(root, "settings.json"),
   });
@@ -47,6 +48,78 @@ afterEach(async () => {
 });
 
 describe("recorder transition ordering", () => {
+  async function continuousDriver(rotate = vi.fn(async () => {})) {
+    await service.shutdown();
+    const driver = {
+      launch: vi.fn(() => { const child = new RecorderChild(); state.children.push(child); return child as unknown as import("node:child_process").ChildProcessWithoutNullStreams; }),
+      rotate, stop: vi.fn(async (child: any) => { child.exit(); }), ready: async () => {},
+      readPermissions: async () => ({supported: true, accessibility: false, inputMonitoring: false, platform: "windows" as const, ready: true}),
+      openPermission: async () => ({supported: true, accessibility: false, inputMonitoring: false, platform: "windows" as const, ready: true}),
+      permissionError: () => null, iconFor: async () => null,
+    };
+    service = new ComputerHistoryDemoService({platformDriver: driver,
+      historyDirectory: path.join(root, "histories"), recordingDirectory: path.join(root, "recordings"),
+      workflowDirectory: path.join(root, "workflows"), observationSettingsFile: path.join(root, "settings.json")});
+    return driver;
+  }
+  it("keeps the same collector across rotation and retries a fence whose output file changed", async () => {
+    const driver = await continuousDriver();
+    vi.setSystemTime(new Date("2026-09-13T00:09:59Z"));
+    const subscription = await service.acquireEventCapture(), child = state.children[0]!;
+    const pending = subscription.checkpoint({from: "2026-09-13T00:09:59.000Z"});
+    const first = JSON.parse(child.stdin.read().toString());
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(driver.launch).toHaveBeenCalledOnce(); expect(driver.rotate).toHaveBeenCalledOnce();
+    expect(driver.stop).not.toHaveBeenCalled(); expect(child.signals).toEqual([]);
+    child.stdout.write(`[recorder-checkpoint] ${JSON.stringify({id: first.id, complete: true, rangeEvaluated: true})}\n`);
+    await vi.advanceTimersByTimeAsync(0);
+    const retried = JSON.parse(child.stdin.read().toString());
+    expect(retried.id).not.toBe(first.id); expect(retried.from).toBe("2026-09-13T00:09:59.000Z");
+    child.stdout.write(`[recorder-checkpoint] ${JSON.stringify({id: retried.id, complete: true, rangeEvaluated: true})}\n`);
+    expect(await pending).toMatchObject({running: true, complete: true, boundaryConfirmed: true});
+    child.stdout.write('[recorder-health] {"code":"event_recorded","timestamp":"2026-09-13T00:10:00.000Z"}\n');
+    expect(service.snapshot().observation.captureHealth?.lastEventAt).toBe("2026-09-13T00:10:00.000Z");
+  });
+  it("stops the retained collector after an overlapping output rotation finishes", async () => {
+    let finish!: () => void;
+    const driver = await continuousDriver(vi.fn(() => new Promise<void>(resolve => {finish = resolve;})));
+    vi.setSystemTime(new Date("2026-09-13T00:09:59Z")); const subscription = await service.acquireEventCapture();
+    await vi.advanceTimersByTimeAsync(1000);
+    const stopped = subscription.release();
+    expect(driver.stop).not.toHaveBeenCalled(); finish(); await stopped;
+    expect(driver.launch).toHaveBeenCalledOnce(); expect(driver.stop).toHaveBeenCalledOnce();
+    expect(service.snapshot().observation.state).toBe("stopped");
+  });
+  it("retries a checkpoint when rotation detaches its writer while the acknowledgement is pending", async () => {
+    vi.setSystemTime(new Date("2026-09-13T00:09:59Z"));
+    const subscription = await service.acquireEventCapture();
+    const first = state.children[0]!;
+    const range = { from: "2026-09-13T00:09:59Z", through: "2026-09-13T00:09:59.500Z" };
+    let settled = false;
+    const pending = subscription.checkpoint(range).then(point => { settled = true; return point; });
+    const request = JSON.parse(first.stdin.read().toString());
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(first.signals).toEqual(["SIGTERM"]);
+    first.stdout.write(`[recorder-checkpoint] ${JSON.stringify({ id: request.id, complete: true, rangeEvaluated: true })}\n`);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    first.exit();
+    await vi.advanceTimersByTimeAsync(0);
+    const second = state.children[1]!;
+    const retried = JSON.parse(second.stdin.read().toString());
+    expect(retried).toMatchObject({ kind: "checkpoint", ...range });
+    // A new native session cannot confirm the old interval. Keep this real gap.
+    second.stdout.write(`[recorder-checkpoint] ${JSON.stringify({ id: retried.id, complete: false, rangeEvaluated: true })}\n`);
+    expect(await pending).toMatchObject({ running: true, complete: false, boundaryConfirmed: false });
+  });
+
+  it("still reports a real collector exit during a pending checkpoint as stopped", async () => {
+    const subscription = await service.acquireEventCapture();
+    const pending = subscription.checkpoint();
+    state.children[0]!.exit(1);
+    expect(await pending).toMatchObject({ running: false, complete: false });
+  });
+
   it("restores an explicitly running recorder after agent restart, and keeps pause across restarts", async () => {
     service.startObservation();
     const intentFile = path.join(root, "histories", "recording-intent.json");
