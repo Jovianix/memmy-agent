@@ -11,7 +11,7 @@
   },
   "plugin": {
     "repository": "Jovianix/teach-mode",
-    "branch": "codex/teach-mode-macos-sync-20261026",
+    "branch": "main",
     "version": "0.4.1",
     "sourceCommit": "11df9450bc1b1c84e3b41ca0b296ac14772439ba"
   },
@@ -125,7 +125,7 @@
         "4 release validation cases",
         "ZIP build"
       ],
-      "headDifference": "The subsequent plugin commit updates only the documented minimum Host version to 1.2.4."
+      "headDifference": "Only documentation changed after the validated runtime commit: the minimum Host version and canonical target branches."
     }
   }
 }
