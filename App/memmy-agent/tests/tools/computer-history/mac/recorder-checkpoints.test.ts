@@ -44,4 +44,41 @@ describe("recorder native-to-disk checkpoint", () => {
     expect(JSON.parse(write.mock.calls[0]![0].slice(22)).complete).toBe(false);
     queue.close(); input.destroy();
   });
+  it("keeps the durable watermark and deduplicates acknowledgements while persistence is pending", async () => {
+    const input = new PassThrough(), write = vi.fn();
+    let finish!: () => void; const gate = new Promise<void>(resolve => { finish = resolve; });
+    const through = "2026-10-21T01:00:00.000Z";
+    const position = { through, watermark: { nativeSessionId: "a".repeat(32), nativeSequence: 10, captureSequence: 10, recordingSequence: 2, bytes: 512 }, issues: [] };
+    const persist = vi.fn(async () => { await gate; return position; });
+    const queue = recorderCheckpoints({ input, write, requestNative: () => {}, persist });
+    try {
+      const command = JSON.stringify({ kind: "checkpoint", id, from: through, through }) + "\n";
+      input.write(command);
+      const marker = { kind: "session.checkpoint", id, complete: true };
+      queue.acknowledge(marker); queue.acknowledge(marker); input.write(command);
+      expect(persist).toHaveBeenCalledOnce(); expect(write).not.toHaveBeenCalled();
+      finish(); await delay(0);
+      expect(JSON.parse(write.mock.calls[0]![0].slice(22))).toEqual({ id, complete: true, rangeEvaluated: false, ...position });
+    } finally { queue.close(); input.destroy(); }
+  });
+  it("keeps an ordered boundary but never certifies completeness while a native fault was throttled", async () => {
+    const input = new PassThrough(), write = vi.fn();
+    const position = { through: "2026-10-21T01:00:00.000Z", watermark: { nativeSessionId: "a".repeat(32), nativeSequence: 10, captureSequence: 10, recordingSequence: 2, bytes: 512 }, issues: ["enrichment_backlog"] };
+    const queue = recorderCheckpoints({ input, write, requestNative: () => {}, persist: async () => position });
+    try {
+      input.write(JSON.stringify({ kind: "checkpoint", id }) + "\n");
+      queue.acknowledge({ kind: "session.checkpoint", id, complete: true }); await delay(0);
+      expect(JSON.parse(write.mock.calls[0]![0].slice(22))).toEqual({ id, complete: false, rangeEvaluated: false, ...position });
+    } finally { queue.close(); input.destroy(); }
+  });
+  it("returns an unconfirmed result rather than an unhandled rejection for an invalid durable position", async () => {
+    const input = new PassThrough(), write = vi.fn();
+    const queue = recorderCheckpoints({ input, write, requestNative: () => {}, persist: async () => ({ through: "invalid",
+      watermark: { nativeSessionId: "a".repeat(32), nativeSequence: 1, captureSequence: 1, recordingSequence: 1, bytes: 1 }, issues: [] }) });
+    try {
+      input.write(JSON.stringify({ kind: "checkpoint", id }) + "\n");
+      queue.acknowledge({ kind: "session.checkpoint", id, complete: true }); await delay(0);
+      expect(JSON.parse(write.mock.calls[0]![0].slice(22))).toEqual({ id, complete: false });
+    } finally { queue.close(); input.destroy(); }
+  });
 });

@@ -12,16 +12,21 @@ import { CollectorGate, collectorGate } from "../computer-history/core/collector
 import { RecordingSessionService, type TaskRecordingDriver } from "../computer-recordings/session-service.js";
 import { WindowsTaskRecordingDriver } from "../computer-recordings/windows-driver.js";
 import { revealWindowsWindow } from "../computer-use/windows-focus-guard.js";
+import { isMacNativeRuntimeSupported } from "../computer-use/mac-native-runtime-support.js";
+import { createBrowserCaptureProvider, type BrowserCaptureProvider } from "../computer-history/browser-event-capture.js";
+import { externalBrowserBridge } from "../../core/agent-runtime/tools/external-browser-bridge.js";
+import { launchTeachingBrowser } from "../computer-history/browser-capture-launch.js";
 
 const Request = z.object({ pluginId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/),
   service: z.enum(["collector", "recording", "window-focus", "event-sessions", "release"]), input: z.record(z.string(), z.unknown()).default({}) });
 const uuid = z.string().uuid();
 export function createNativePluginServices(options: {
-  dataRoot?: string; platform?: NodeJS.Platform; historyBusy?: () => boolean;
+  dataRoot?: string; platform?: NodeJS.Platform; osRelease?: string; historyBusy?: () => boolean;
   now?: () => number; leaseTimeoutMs?: number;
   driverFactory?: () => TaskRecordingDriver;
   focus?: (pid: number, hwnd: number) => Promise<unknown>;
   history?: EventCaptureSource; skillCreatorFile?: string; toolNames?: () => string[];
+  browser?: BrowserCaptureProvider;
   skills?: () => Array<{ name: string; path: string }>;
 } = {}) {
   const leases = new Map<string, { id: string; release: () => void }>();
@@ -56,13 +61,19 @@ export function createNativePluginServices(options: {
       if (!source) throw new Error("Host event-sessions/v1 is unavailable; update the desktop Host");
       if (input.action === "configuration") {
         const file = options.skillCreatorFile ?? fileURLToPath(new URL("../../skills/skill-creator/SKILL.md", import.meta.url));
-        return { version: 1, features: [...PLUGIN_HOST_CAPABILITIES], supported: ["win32", "darwin"].includes(options.platform ?? process.platform),
+        const platform = options.platform ?? process.platform;
+        return { version: 1, features: [...PLUGIN_HOST_CAPABILITIES], supported: ["win32", "darwin"].includes(platform)
+            && isMacNativeRuntimeSupported(platform, options.osRelease ?? os.release()),
           toolNames: options.toolNames?.() ?? context?.toolNames ?? [],
           skills: options.skills?.() ?? context?.skills ?? [],
           skillCreator: { available: fs.existsSync(file), ...(fs.existsSync(file) ? { instructions: fs.readFileSync(file, "utf8") } : {}) } };
       }
       const conversationId = z.string().trim().min(1).max(500).parse(input.conversationId).replace(/^websocket:/, "");
-      events ??= new PluginEventSessions({ dataRoot: options.dataRoot ?? path.join(os.homedir(), ".memmy", "plugin-data"), source });
+      if (!events) {
+        events = new PluginEventSessions({ dataRoot: options.dataRoot ?? path.join(os.homedir(), ".memmy", "plugin-data"), source,
+          browser: options.browser ?? createBrowserCaptureProvider(externalBrowserBridge, { platform: options.platform,
+            launch: browser => launchTeachingBrowser(browser, options.platform) }) });
+      }
       return events.invoke(pluginId, conversationId, input);
     }
     if (service === "collector") {

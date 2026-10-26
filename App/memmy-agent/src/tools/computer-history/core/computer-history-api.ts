@@ -529,9 +529,10 @@ export class ComputerHistoryDemoService {
     }
     const health = this.captureHealth();
     const rangeEvaluated = fence.rangeEvaluated;
-    const issues = rangeEvaluated
-      ? (range ? this.captureCoverageGaps.within(Date.parse(range.from), Date.parse(fence.through)) : [])
-      : health.issues.map(issue => issue.code);
+    const issues = [...new Set([
+      ...(range ? this.captureCoverageGaps.within(Date.parse(range.from), Date.parse(fence.through)) : []),
+      ...(!rangeEvaluated ? health.issues.map(issue => issue.code) : []),
+    ])];
     const heartbeat = this.captureLastHeartbeatAt && Date.parse(this.captureLastHeartbeatAt);
     if (range && rangeEvaluated && heartbeat && heartbeat + CAPTURE_HEARTBEAT_TIMEOUT_MS < Date.parse(fence.through)) issues.push("heartbeat_missing");
     // Coverage errors describe an unreadable foreground window or a restarting
@@ -544,7 +545,8 @@ export class ComputerHistoryDemoService {
         && current.exitCode === null && current.signalCode === null,
       rangeEvaluated,
       boundaryConfirmed,
-      complete: fence.complete && current === child && (rangeEvaluated ? issues.length === 0 : this.captureObserverReadyAt > 0 && health.status === "healthy"),
+      complete: fence.complete && current === child && issues.length === 0 && !fence.issues?.length
+        && (rangeEvaluated || (this.captureObserverReadyAt > 0 && health.status === "healthy")),
       limitations: [...health.limitations,
         ...[...new Set([...issues, ...(fence.issues ?? [])])].map(code => `Capture coverage is incomplete (${code}).`),
         ...(!rangeEvaluated && this.captureObserverReadyAt === 0 ? ["The accessibility observer is still starting; no readable window has been confirmed yet."] : []),

@@ -1,35 +1,42 @@
 import readline from "node:readline";
 import type { Readable } from "node:stream";
 import type { CaptureRange } from "../core/event-capture-source.js";
+import { checkpointRequest, persistedCheckpoint, type PersistedCheckpoint } from "../core/recorder-checkpoint.js";
 
-const identity = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+type DurablePosition = Pick<PersistedCheckpoint, "through" | "watermark" | "issues">;
 
 /** Acknowledgement follows the native barrier, queued normalization and fsync. */
 export function recorderCheckpoints(options: {
   input: Readable; requestNative?: (id: string, range?: CaptureRange) => void;
-  persist: () => Promise<void>; write: (line: string) => void; timeoutMs?: number;
+  persist: (event?: Record<string, unknown>, through?: string) => Promise<DurablePosition | void>;
+  write: (line: string) => void; timeoutMs?: number;
 }) {
-  const pending = new Map<string, ReturnType<typeof setTimeout>>();
+  const pending = new Map<string, { timer: ReturnType<typeof setTimeout>; through: string; finishing: boolean }>();
   const lines = readline.createInterface({ input: options.input });
   let closed = false;
-  const finish = async (id: string, complete: boolean, rangeEvaluated = false) => {
-    const timer = pending.get(id);
-    if (!timer) return;
-    clearTimeout(timer); pending.delete(id);
-    try { await options.persist(); }
-    catch { complete = false; }
-    if (!closed) options.write("[recorder-checkpoint] " + JSON.stringify({ id, complete, ...(rangeEvaluated ? { rangeEvaluated: true } : {}) }));
+  const finish = async (id: string, complete: boolean, rangeEvaluated = false, event?: Record<string, unknown>) => {
+    const request = pending.get(id);
+    if (!request || request.finishing) return;
+    request.finishing = true; clearTimeout(request.timer);
+    let result: Record<string, unknown>;
+    try {
+      const durable = await options.persist(event, request.through);
+      if (durable?.issues.length) complete = false;
+      result = durable ? persistedCheckpoint.parse({ id, complete, rangeEvaluated, ...durable })
+        : { id, complete, ...(rangeEvaluated ? { rangeEvaluated: true } : {}) };
+    }
+    catch { result = { id, complete: false }; }
+    pending.delete(id);
+    if (!closed) options.write("[recorder-checkpoint] " + JSON.stringify(result));
   };
   lines.on("line", line => {
     if (closed || line.length > 512 || pending.size >= 16) return;
     try {
-      const command = JSON.parse(line);
-      if (command.kind !== "checkpoint" || typeof command.id !== "string" || !identity.test(command.id) || pending.has(command.id)) return;
-      const range = typeof command.from === "string" && Number.isFinite(Date.parse(command.from))
-        && (command.through === undefined || (typeof command.through === "string" && Date.parse(command.through) >= Date.parse(command.from)))
-        ? { from: command.from, ...(command.through ? { through: command.through } : {}) } : undefined;
+      const command = checkpointRequest.parse(JSON.parse(line));
+      if (pending.has(command.id)) return;
+      const range = command.from ? { from: command.from, ...(command.through ? { through: command.through } : {}) } : undefined;
       const timer = setTimeout(() => { void finish(command.id, false); }, options.timeoutMs ?? 9_000);
-      timer.unref(); pending.set(command.id, timer);
+      timer.unref(); pending.set(command.id, { timer, through: command.through ?? new Date().toISOString(), finishing: false });
       if (!options.requestNative) { void finish(command.id, false); return; }
       try { range ? options.requestNative(command.id, range) : options.requestNative(command.id); } catch { void finish(command.id, false); }
     } catch { /* Recorder stdin carries controls, never executable instructions. */ }
@@ -37,9 +44,9 @@ export function recorderCheckpoints(options: {
   return {
     acknowledge(event: Record<string, unknown>): boolean {
       if (event.kind !== "session.checkpoint") return false;
-      if (typeof event.id === "string") void finish(event.id, event.complete === true, event.rangeEvaluated === true);
+      if (typeof event.id === "string") void finish(event.id, event.complete === true, event.rangeEvaluated === true, event);
       return true;
     },
-    close() { closed = true; lines.close(); for (const timer of pending.values()) clearTimeout(timer); pending.clear(); }
+    close() { closed = true; lines.close(); for (const request of pending.values()) clearTimeout(request.timer); pending.clear(); }
   };
 }

@@ -7,7 +7,7 @@ import { collectorGate } from "../../../src/tools/computer-history/core/collecto
 
 const roots: string[] = [], services: ComputerHistoryDemoService[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(service => service.shutdown())); roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })); });
-function fixture(authorized = true, health = ["observer_ready", "heartbeat"]) {
+function fixture(authorized = true, health = ["observer_ready", "heartbeat"], intervalAware = true) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared-history-capture-")); roots.push(root);
   const recorderScript = path.join(root, "recorder.cjs");
   fs.writeFileSync(recorderScript, `
@@ -21,7 +21,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  setTimeout(() => {
   fs.appendFileSync(file, JSON.stringify({recordType:'human_event', eventType:'text_input', timestamp:new Date().toISOString(), details:{text:'controlled fixture'}})+'\\n');
   const fd=fs.openSync(file,'r+'); fs.fsyncSync(fd); fs.closeSync(fd);
-  console.log('[recorder-checkpoint] '+JSON.stringify({id:input.id,complete:true,rangeEvaluated:!!input.from}));
+  console.log('[recorder-checkpoint] '+JSON.stringify({id:input.id,complete:true,rangeEvaluated:${intervalAware} && !!input.from}));
  },10);
 });
 process.on('SIGTERM',()=>process.exit(0));
@@ -36,6 +36,17 @@ process.on('SIGTERM',()=>process.exit(0));
   return { service, root, pid: () => child()?.pid };
 }
 describe("Computer History capture subscriptions", () => {
+  it("retains an earlier gap after recovery when a Mac boundary does not certify the interval", async () => {
+    const f = fixture(true, ["observer_unavailable", "observer_ready", "heartbeat"], false);
+    const subscription = await f.service.acquireEventCapture();
+    await subscription.checkpoint();
+    const damaged = await subscription.checkpoint({ from: "2020-01-01T00:00:00.000Z" });
+    expect(damaged).toMatchObject({ running: true, complete: false, rangeEvaluated: false });
+    expect(damaged.limitations.some(value => value.includes("observer_unavailable"))).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(await subscription.checkpoint({ from: new Date().toISOString() })).toMatchObject({ running: true, complete: true, rangeEvaluated: false });
+    await subscription.release();
+  });
   it("judges historical health gaps by the requested interval and merges identical native checkpoints", async () => {
     const f = fixture(true, ["observer_ready", "heartbeat", "ax_snapshot_budget_exceeded"]);
     const subscription = await f.service.acquireEventCapture();

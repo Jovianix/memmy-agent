@@ -485,7 +485,7 @@ export type PluginCapabilityEventPayload = z.infer<typeof PluginCapabilityEventP
 /** Extension capabilities advertised by the production Host and release kit. */
 export const PLUGIN_HOST_CAPABILITIES = [
   "memmy.mcp-native/v1", "memmy.host-service/v1", "memmy.event-sessions/v1",
-  "memmy.generated-skills/v1", "memmy.conversation/v1"
+  "memmy.generated-skills/v1", "memmy.conversation/v1", "memmy.event-checkpoints/v1", "memmy.browser-event-sessions/v1"
 ] as const;
 export const PluginCatalogEntrySchema = z.object({
   manifest: PluginManifestSchema,

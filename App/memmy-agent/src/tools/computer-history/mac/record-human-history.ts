@@ -1,4 +1,5 @@
 import { recorderCheckpoints } from "./recorder-checkpoints.js";
+import { persistMacCheckpoint } from "./persisted-checkpoint.js";
 // Record authorized foreground activity as a local JSONL event stream.
 
 import crypto from "node:crypto";
@@ -928,8 +929,8 @@ export async function run(
       if (pendingKeyTimer) clearTimeout(pendingKeyTimer);
       // Let the Windows supervisor remove its temporary worker and close its
       // child job before falling back to termination if it cannot respond.
-      if (windows && helper.stdin && !helper.stdin.destroyed) {
-        helper.stdin.end('{"kind":"stop"}\n');
+      if (helper.stdin && !helper.stdin.destroyed) {
+        helper.stdin.end(windows ? '{"kind":"stop"}\n' : undefined);
       } else if (!helper.killed) helper.kill("SIGTERM");
       await Promise.race([
         childClosed,
@@ -951,7 +952,7 @@ export async function run(
   };
 
   if (windows) command.args.push("--wechat-consent", defaultWeChatConsentFile());
-  const helper = spawn(command.binary, command.args, { stdio: [windows ? "pipe" : "ignore", "pipe", "pipe"], windowsHide: true,
+  const helper = spawn(command.binary, command.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
     ...(command.env ? { env: command.env } : {}) });
   helper.stdin?.on("error", () => { /* A closed stop pipe is covered by the child-exit handler. */ });
   if (!helper.stdout || !helper.stderr) throw new Error("history observer pipes are unavailable");
@@ -959,14 +960,22 @@ export async function run(
   helper.once("close", () => { helperClosed = true; childClosedResolve(); });
   const checkpoints = !process.stdin.isTTY ? recorderCheckpoints({
     input: process.stdin,
-    ...(windows ? { requestNative: (id: string, range?: import("../core/event-capture-source.js").CaptureRange) => {
+    requestNative: (id: string, range?: import("../core/event-capture-source.js").CaptureRange) => {
       if (!helper.stdin?.writable) throw new Error("native checkpoint unavailable");
       helper.stdin.write(JSON.stringify({ kind: "checkpoint", id, ...range }) + "\n");
-    } } : {}),
-    persist: async () => {
-      await processing; await flushKeys();
-      const fd = fs.openSync(output, "r+");
-      try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    },
+    persist: (event, through) => {
+      // Enqueue synchronously at receipt of the marker. Awaiting the mutable
+      // processing tail would include later observations in the saved position.
+      const boundary = processing.then(async () => {
+        await flushKeys();
+        health.flush();
+        if (!windows && event && through) return persistMacCheckpoint({ file: output, event, through, sequence: ++sequence });
+        const fd = fs.openSync(output, "r+");
+        try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      });
+      processing = boundary.then(() => undefined, () => { health.report("event_processing_error"); });
+      return boundary;
     },
     write: line => console.log(line),
   }) : null;
