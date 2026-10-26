@@ -260,12 +260,29 @@ describe("browser extension teaching isolation", () => {
   });
   it("revokes a tab as it leaves and rebinds it only after entry into the teaching window", async () => {
     const f = harness(); await f.start();
+    await f.input(8, "before-departure");
     f.tabs.get(8).windowId = 1; f.chrome.tabs.onDetached.emit(8, { oldWindowId: 20 });
-    await f.input(8, "outside-value"); await f.settle();
+    await f.settle(); await f.input(8, "outside-value");
     expect(f.recorder.owns(8)).toBe(false); expect(JSON.stringify(f.sent)).not.toContain("outside-value");
     f.tabs.get(8).windowId = 20; f.chrome.tabs.onAttached.emit(8, { newWindowId: 20 }); await f.settle();
     expect(f.recorder.owns(8)).toBe(true); await f.input(8, "inside-again");
     expect(JSON.stringify(f.sent)).toContain("inside-again");
+    const left = f.sent.findIndex(item => item.kind === "tab-left");
+    expect(f.sent.slice(0, left)).toContainEqual(expect.objectContaining({kind: "document-closed", documentSequence: 1, confirmed: true}));
+    expect(await f.command("stop", {through: new Date().toISOString()})).toMatchObject({complete: true, coverageComplete: true});
+  });
+  it("waits for a departing document when Stop overlaps tab removal", async () => {
+    const f = harness(); await f.start(); await f.input();
+    f.tabs.get(8).windowId = 1; f.chrome.tabs.onDetached.emit(8, { oldWindowId: 20 });
+    expect(await f.command("stop", {through: new Date().toISOString()})).toMatchObject({complete: true, coverageComplete: true});
+    expect(f.sent.filter(item => item.kind === "tab-left")).toHaveLength(1);
+  });
+  it("retains a coverage gap when a departing document loses its close proof", async () => {
+    const f = harness(); await f.start(); await f.input(); f.breakFences();
+    f.tabs.get(8).windowId = 1; f.chrome.tabs.onDetached.emit(8, { oldWindowId: 20 });
+    const result = await f.command("stop", {through: new Date().toISOString()});
+    expect(result.coverageComplete).toBe(false);
+    expect(f.sent).toContainEqual(expect.objectContaining({kind: "fault", code: "browser_capture_document_tail_unconfirmed"}));
   });
   it("does not attach to excluded sites or private popups, including before page text reads", async () => {
     const f = harness();

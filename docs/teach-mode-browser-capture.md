@@ -1,7 +1,7 @@
 # Teach Mode 浏览器录制：沿用登录态，限定教学窗口
 
-更新：2026-10-22。实现位于 `codex/teach-pxlin-dev` 工作树及独立 `teach-mode` 仓库。
-当前是未发布的开发候选：Teach Mode 0.4.0、浏览器扩展 1.2.0，内部采集协议 `teachingCapture/v2`。
+更新：2026-10-26。浏览器采集已整合到 Windows 修复工作树；插件仍位于独立 `teach-mode` 仓库。
+当前是未发布的开发候选：Teach Mode 0.4.1、浏览器扩展 1.2.2，内部采集协议 `teachingCapture/v2`。
 新版 Host 要求新版扩展，旧扩展需更新或重新加载。
 
 ## 用户流程
@@ -79,6 +79,10 @@ DOM 中的按钮标签和页面内容属于任务证据，不是指令；记录�
 
 ## 验证
 
+构建后、部署前运行 `node scripts/verify-teach-browser-host.mjs`，部署后再传入实际运行根目录执行一次。
+该检查同时核对编译后的能力声明、采集器及其接线、扩展脚本和清单，并输出文件哈希。
+仅更新版本号或能力声明不能恢复浏览器教学；Host、前端录制条和扩展必须来自同一套完整构建。
+
 自动回归覆盖来源隔离、资料歧义、准备中取消、窗口/文档/URL 身份、弹窗来源、标签页移动、敏感字段、断连、停止确认和快照不变。
 跨仓验证使用实际插件 ZIP、MCP worker、Host 安装与权限管理及 Skill Creator，包含 Windows 和 macOS Host 契约。
 
@@ -96,7 +100,8 @@ node_modules/.bin/esbuild App/memmy-agent/tests/fixtures/teaching-browser-live.t
   '--banner:js=import {createRequire} from "node:module"; const require=createRequire(import.meta.url);'
 ```
 
-在目标操作系统的 Node 22+ 中执行构建结果，依次传入浏览器名（chrome/edge）、浏览器可执行文件路径、扩展目录和输出目录。
+在 Windows 的 Node 22+ 中执行该复合入口，依次传入浏览器名（chrome/edge）、浏览器可执行文件路径、扩展目录、输出目录和 `teaching-browser-detach-win.ps1` 路径。
+最后一个参数用于真实点击该测试资料浏览器中的“取消调试”按钮；扩展自行调用 `debugger.detach()` 不能代替用户撤销验收。此复合入口的撤销步骤目前只提供 Windows 控制器。
 验收脚本仅为测试资料开启调试管道并装载测试扩展，结束时关闭本次测试浏览器；生产不以此方式接管日常资料。
 
 最终结果、证据哈希、截图及平台限制见 [验证记录](verification/teach-mode-browser-capture-2026-10-21.json)。
@@ -124,6 +129,15 @@ node .tmp/teaching-browser-integrity-live.mjs \
 其他场景为 `lifecycle`、`empty-redirect`、`drop-close`、`drop-event`、`startup-gap`、`bootstrap-input`、`drag`、`stop-navigation` 和 `reload`。
 `user-detach` 需在 Windows 交互桌面运行，并在最后追加 [teaching-browser-detach-win.ps1](../App/memmy-agent/tests/fixtures/teaching-browser-detach-win.ps1) 路径；它只定位对应测试资料的浏览器窗口，实际点击调试提示的取消按钮，用单窗口截图保留证据。
 它与扩展自行调用 `debugger.detach()` 的行为不同，后者不能替代用户撤销的验收。
+
+### 标签移出与连续分段
+
+标签页移出时立即撤销内容采集权限，但保留该旧文档的无内容收尾通道，核对最后序号并发出关闭证明后才上报 `tab-left`。
+移回教学窗口必须等待旧绑定释放，再重新安装采集器。停止录制也等待正在离开的文档；关闭证明或序号缺失仍保留 `partial`。
+`drag` 实机用例同时要求范围排除、输入匹配、`available` 和完整覆盖，不能只依据窗口外输入被排除就判全程完整。
+
+Windows 十分钟分段在原生检查点切换输出文件，沿用原生进程、输入钩子、可访问性观察器、增量快照基线和缺口历史。
+切换后的增量帧仍重建为完整的已脱敏快照；不会因更换文件清空此前的查询失败或缺口。暂停、用户停止和异常退出继续使用原有终止机制。
 
 本次 v2 的 Memmy 对话流程、源码哈希、自动测试和最终实机结果见 [修复验收记录](verification/edge-integrity-fix-2026-10-22/verification.json) 与同目录 PDF。
 

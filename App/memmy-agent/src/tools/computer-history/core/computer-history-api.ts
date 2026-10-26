@@ -495,8 +495,8 @@ export class ComputerHistoryDemoService {
     this.eventCaptureOperation = next; return next;
   }
   private historyLease: (() => void) | null = null;
-  private async eventCheckpoint(released: () => boolean, range?: CaptureRange): Promise<CaptureCheckpoint> {
-    const through = range?.through ?? new Date().toISOString();
+  private async eventCheckpoint(released: () => boolean, range?: CaptureRange, attempt = 0,
+    through = range?.through ?? new Date().toISOString()): Promise<CaptureCheckpoint> {
     if (range && (!Number.isFinite(Date.parse(range.from)) || !Number.isFinite(Date.parse(through)) || Date.parse(through) < Date.parse(range.from))) throw new Error("capture_invalid_range");
     if (this.recorderTransition) await this.recorderTransition;
     const segment = this.segment;
@@ -508,6 +508,17 @@ export class ComputerHistoryDemoService {
       try { const stat = fs.lstatSync(file); if (stat.isFile() && !stat.isSymbolicLink()) streams.push({ id: entry.name, file, size: stat.size }); } catch { /* A rotated empty segment is not a stream. */ }
     }
     const fence: RecorderFence = child ? await this.checkpointRecorder(child, range, through) : { complete: false, rangeEvaluated: false, through };
+    // Rotation may begin after the preflight above, while the old writer is
+    // acknowledging this fence. Its detached child is not a stopped lease.
+    // Wait for the transition and fence the replacement writer, retaining the
+    // original cutoff and any coverage gaps. Bound retries if writers churn.
+    if (this.recorderTransition || this.segment !== segment || this.segment?.child !== child) {
+      if (this.recorderTransition) await this.recorderTransition;
+      if (attempt < 2 && !released() && !this.shuttingDown
+        && this.observationState === "running" && this.segment?.child) {
+        return this.eventCheckpoint(released, range, attempt + 1, through);
+      }
+    }
     if (fence.watermark && segment) {
       // Use the position captured by the writer at the native marker, not a later stat.
       // A post-marker observation may be written before stdout delivers the acknowledgement.
@@ -611,6 +622,7 @@ export class ComputerHistoryDemoService {
   private browserHistoryBridge: ReturnType<typeof connectBrowserHistoryBridge> | null = null;
   private readonly liveSummaryIntervalMs: number;
   private segment: SegmentState | null = null;
+  private readonly recorderSegments = new WeakMap<ChildProcessWithoutNullStreams, SegmentState>();
   private observationState: ObservationState = "stopped";
   private observationStartedAt: string | null = null;
   private observationError: string | null = null;
@@ -1752,6 +1764,7 @@ export class ComputerHistoryDemoService {
       stdio: ["pipe", "pipe", "pipe"],
     });
     segment.child = child;
+    this.recorderSegments.set(child, segment);
     if (this.platformDriver?.ready) void this.platformDriver.ready(child).catch((error) => {
       if (this.segment?.child === child && this.observationState === "running") this.failObservation(error instanceof Error ? error.message : "recorder startup failed");
     });
@@ -1772,7 +1785,7 @@ export class ComputerHistoryDemoService {
     const healthGeneration = this.captureHealthGeneration;
     child.stdout.on("data", (chunk: Buffer) => {
       const finalEventOnly = this.segment?.child !== child;
-      if (healthGeneration !== this.captureHealthGeneration || (this.segment !== segment && this.observationState === "running")
+      if (healthGeneration !== this.captureHealthGeneration
         || (finalEventOnly && !this.captureHealthDrainingChildren.has(child))) return;
       // Bound incomplete/untrusted stdout lines. No rejected payload is logged
       // or copied to health state, where observed text or credentials could leak.
@@ -1797,6 +1810,7 @@ export class ComputerHistoryDemoService {
       this.failObservation(error.message);
     });
     child.once("exit", (code) => {
+      const segment = this.recorderSegments.get(child)!;
       if (this.platformDriver?.stop && this.segment?.child === child && this.observationState === "running") {
         // exit precedes pipe close: the managed driver must validate terminal status and
         // fully drained output before an independent exit can finish observation.
@@ -2454,6 +2468,17 @@ export class ComputerHistoryDemoService {
     const previous = this.segment;
     if (!previous || this.recorderTransition || this.shuttingDown) return;
     void this.trackRecorderTransition(async () => {
+      if (this.platformDriver?.rotate && previous.child) {
+        const child = previous.child;
+        const next = this.openSegment();
+        await this.platformDriver.rotate(child, { title: `Computer History ${next.id}`, eventsFile: next.eventsFile,
+          observationSettingsFile: this.observationSettings.filePath, weChatConsentFile: this.weChatConsent.filePath });
+        previous.child = null; next.child = child;
+        this.recorderSegments.set(child, next); this.segment = next;
+        void this.finalizeSegment(previous);
+        if (this.observationState === "running" && !this.shuttingDown) this.startRotationTimer();
+        return;
+      }
       await this.detachRecorder(previous);
       // Not awaited: the entry already on the timeline stays right while the
       // model writes the fuller one, so nothing is held up waiting for it.

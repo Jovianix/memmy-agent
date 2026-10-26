@@ -582,6 +582,46 @@ TEST(word_scope_requires_class_ancestry_and_correct_application) {
   CHECK(f.Validate(f.Response(descendants)) == "worker_privacy_violation");
 }
 
+TEST(notepad_scope_binds_application_and_exact_native_class_chain) {
+  const auto good = R"({"version":1,"applications":[{"pid":4242,"executable":"C:\\WindowsApps\\Notepad.exe","documentRegions":[{"controlType":"Document","automationId":"","scope":"notepad.document"}]}]})";
+  auto parsed = policy::Parse(good);
+  CHECK(parsed.policy && policy::HasNotepadDocumentScope(parsed.policy->applications[0]));
+  CHECK(!policy::MatchesSelector(parsed.policy->applications[0].documentRegions, classify::kDocument, L""));
+  Json input = *ParseJsonStrict(good, 32);
+  input["applications"][0]["executable"] = "C:\\Other.exe";
+  CHECK(!policy::Parse(DumpJson(input)).policy);
+  input = *ParseJsonStrict(good, 32);
+  input["applications"][0]["documentRegions"][0]["controlType"] = "Edit";
+  CHECK(!policy::Parse(DumpJson(input)).policy);
+
+  ResponseFixture f;
+  f.policy.applications[0].executable = L"C:\\WindowsApps\\Notepad.exe";
+  f.policy.applications[0].documentRegions = {{classify::kDocument, L"", false, false, true}};
+  const Json nodes = Json::array({f.Node("Window", 0, -1, {{"className", "Notepad"}}),
+    f.Node("Pane", 1, 0, {{"className", "NotepadTextBox"}}),
+    f.Node("Document", 2, 1, {{"className", "RichEditD2DPT"}, {"name", "Text editor"},
+      {"text", "NOTEPAD-BODY"}, {"documentStatus", "available"}})});
+  CHECK(f.Validate(f.Response(nodes)) == "ok");
+  for (const auto& mutate : std::vector<std::function<void(Json&)>>{
+      [](Json& n) { n[0]["className"] = "#32770"; },
+      [](Json& n) { n[1]["className"] = "SearchPane"; },
+      [](Json& n) { n[1]["password"] = nullptr; },
+      [](Json& n) { n[1]["missing"] = Json::array({"automationId"}); },
+      [](Json& n) { n[2]["className"] = "RichEdit50W"; },
+      [](Json& n) { n[2]["automationId"] = "search"; },
+      [](Json& n) { n[2]["password"] = true; },
+      [](Json& n) { n[2]["missing"] = Json::array({"automationId"}); },
+      [](Json& n) { n[2]["text"] = "Text editor\r\n"; },
+      [](Json& n) { n[2].erase("documentStatus"); },
+      [](Json& n) { n[2]["value"] = "private input"; }}) {
+    Json changed = nodes; mutate(changed);
+    CHECK(f.Validate(f.Response(changed)) == "worker_privacy_violation");
+  }
+  Json descendants = nodes;
+  descendants.push_back(f.Node("Text", 3, 2, {{"name", "private input"}}));
+  CHECK(f.Validate(f.Response(descendants)) == "worker_privacy_violation");
+}
+
 TEST(scoped_editor_rejects_sibling_input_echoes) {
   ResponseFixture f;
   auto& rule = f.policy.applications[0];

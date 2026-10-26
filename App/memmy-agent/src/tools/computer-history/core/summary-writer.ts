@@ -593,7 +593,7 @@ function clockTime(timestamp: string | undefined): string {
 
 interface DocumentObservation {
   ref: string;
-  adapter: "vscode.editor" | "word.document";
+  adapter: "vscode.editor" | "word.document" | "notepad.document";
   label?: { kind: "editor_label" | "document_label"; source: "uia.name"; value: string };
   provider_focused: boolean;
   pixel_visibility: "unverified";
@@ -608,8 +608,9 @@ function documentObservation(node: CaptureNode, ref: string, truncated: boolean)
       || source.textSource !== "uia.document_range" || typeof source.providerFocused !== "boolean") return null;
   const code = source.adapter === "vscode.editor" && source.labelKind === "editor_label" && node.controlType === "Edit"
     && node.documentContext === "vscode.editor";
-  const word = source.adapter === "word.document" && source.labelKind === "document_label" && node.controlType === "Document";
-  if (!code && !word) return null;
+  const document = (source.adapter === "word.document" || source.adapter === "notepad.document")
+    && source.labelKind === "document_label" && node.controlType === "Document";
+  if (!code && !document) return null;
   const clean = (value: string) => redactSensitive(value).replace(/\s+/gu, " ").trim();
   const label = typeof node.name === "string" ? clean(node.name) : "";
   return { ref, adapter: source.adapter, provider_focused: source.providerFocused, pixel_visibility: "unverified",

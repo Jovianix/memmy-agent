@@ -186,7 +186,7 @@ function createMemmyTeachingRecorder(services) {
         const doc = [...info.documents.values()].find(d => d.port === port && d.requests.has(message.id));
         doc?.requests.get(message.id)?.resolve(message.state); return;
       }
-      if (session.closed || info.revoked) return;
+      if (session.closed) return;
       if (message.type === "ready") {
         void serial(session, () => registerPage(session, info, sender, port, message.state)).catch(() => undefined);
       } else if (message.type === "observation" && typeof message.payload === "string") {
@@ -285,6 +285,9 @@ function createMemmyTeachingRecorder(services) {
     if (final && session.pendingPopups.length) error(session, "browser_capture_popup_unconfirmed");
     let boundaryConfirmed = true;
     await bounded(session.pending, deadline).catch(() => { boundaryConfirmed = false; });
+    // A departing tab loses content authority immediately, but its old document
+    // must still close before the Host receives tab-left or the final fence.
+    await bounded(Promise.all([...session.departures]), deadline).catch(() => { boundaryConfirmed = false; });
     if (final) {
       const pending = [...session.navigationDocuments.values()].filter(candidate => !candidate.ready && !candidate.reported);
       await Promise.all(pending.map(candidate => bounded(new Promise(resolve => candidate.waiters.add(resolve)), Math.min(deadline, Date.now() + HANDOFF_MS)).catch(() => undefined)));
@@ -314,7 +317,7 @@ function createMemmyTeachingRecorder(services) {
       if (input.protocolVersion !== 2) throw Error("browser_capture_protocol_update_required");
       if (sessions.has(id) || sessions.size || stopped.has(id)) throw Error("browser_capture_profile_busy");
       const session = { id, sequence: 0, fenceSequence: 0,
-        windows: new Set(), tabs: new Map(), issues: new Set(), navigationDocuments: new Map(), emptyDocuments: new Map(), pending: Promise.resolve(), stopping: false, stopPromise: null,
+        windows: new Set(), tabs: new Map(), departures: new Set(), issues: new Set(), navigationDocuments: new Map(), emptyDocuments: new Map(), pending: Promise.resolve(), stopping: false, stopPromise: null,
         binding: `__memmy_teach_${id.replaceAll("-", "")}`, control: `__memmy_teach_control_${id.replaceAll("-", "")}`,
         world: `memmy.teaching.${id}`, settings: input.settings, bundleId: input.bundleId, active: false, closed: false, touched: Date.now(), through: null,
         existingWindows: new Set(), firstTabs: new Map(), pendingPopups: [], popupProofs: [] };
@@ -400,7 +403,7 @@ function createMemmyTeachingRecorder(services) {
       // Markers and input enter the same queue. The coordinator waits outside this queue.
       void serial(session, async () => {
         let value; try { if (typeof payload !== "string" || payload.length > 8000) throw Error(); value = JSON.parse(payload); } catch { error(session, "browser_capture_invalid_payload"); return; }
-        if (session.closed || info.revoked) return;
+        if (session.closed || (info.revoked && value.kind !== "closed" && value.kind !== "fence")) return;
         if (value.kind === "resume") {
           if (session.active && !session.stopping) {
             const state = JSON.parse(payload);
@@ -478,13 +481,25 @@ function createMemmyTeachingRecorder(services) {
     const session = tabOwners.get(tabId);
     const info = session?.tabs.get(tabId);
     if (info) {
-      info.revoked = true; tabOwners.delete(tabId); emit(session, { kind: "tab-left", tabId });
-      for (const doc of info.documents.values()) if (!doc.retired) void pageCommand(doc, "stop").catch(() => undefined);
-      void serial(session, () => remove(session, tabId, info)).catch(() => undefined);
+      info.revoked = true; tabOwners.delete(tabId);
+      const departure = (async () => {
+        const deadline = Date.now() + HANDOFF_MS;
+        const closed = await Promise.all([...info.documents.values()].map(doc => fence(session, info, doc, true, deadline)));
+        await session.pending;
+        if (!closed.every(Boolean)) error(session, "browser_capture_document_tail_unconfirmed");
+        emit(session, { kind: "tab-left", tabId });
+        await remove(session, tabId, info);
+      })();
+      info.departure = departure; session.departures.add(departure);
+      void departure.catch(() => error(session, "browser_capture_document_tail_unconfirmed"))
+        .finally(() => session.departures.delete(departure));
     }
   });
   chrome.tabs.onAttached?.addListener((tabId, detail) => {
-    for (const session of sessions.values()) if (session.windows.has(detail.newWindowId)) void serial(session, () => install(session, tabId)).catch(() => undefined);
+    for (const session of sessions.values()) if (session.windows.has(detail.newWindowId)) {
+      const departure = session.tabs.get(tabId)?.departure;
+      void Promise.resolve(departure).then(() => serial(session, () => install(session, tabId))).catch(() => undefined);
+    }
   });
   chrome.tabs.onRemoved.addListener(tabId => { const session = tabOwners.get(tabId); if (session) void remove(session, tabId); });
   chrome.windows.onRemoved?.addListener(windowId => {

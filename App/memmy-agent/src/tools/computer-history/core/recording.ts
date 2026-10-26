@@ -28,7 +28,7 @@ export interface CaptureNode {
   documentContext?: "vscode.editor";
   /** Adapter-verified sources, not a filename or a persistent document identity. */
   documentEvidence?: {
-    adapter: "vscode.editor" | "word.document";
+    adapter: "vscode.editor" | "word.document" | "notepad.document";
     labelKind: "editor_label" | "document_label";
     labelSource: "uia.name";
     textSource: "uia.document_range";

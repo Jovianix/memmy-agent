@@ -105,6 +105,15 @@ function createContext(
 }
 
 describe("PluginService", () => {
+  it("installs a plugin requiring the implemented ordered event checkpoints", async () => {
+    const checkpointRelease: PluginRelease = { manifest: { ...release.manifest,
+      requiredHostCapabilities: ["memmy.event-checkpoints/v1"] } };
+    const { service, artifactManager } = createContext([checkpointRelease]);
+    await expect(service.install(checkpointRelease.manifest.id)).resolves.toMatchObject({
+      state: "pending_approval", version: "1.0.0"
+    });
+    expect(artifactManager.install).toHaveBeenCalledOnce();
+  });
   const gatewayRelease: PluginRelease = { manifest: { ...release.manifest,
     permissions: [...release.manifest.permissions, { type: "host-service", services: ["event-sessions"] }] } };
   async function persistedFailure(options: Partial<CreatePluginServiceOptions> = {}) {

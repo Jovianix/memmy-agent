@@ -4,7 +4,7 @@ import { WindowsHistoryRecorder, type WindowsRecorderOptions } from "./recorder.
 import { WindowsPolicySession } from "./session-policy.js";
 import { resolveWindowsCollector } from "./settings.js";
 import { recorderHealthReporter } from "../mac/recorder-health.js";
-import { checkpointRequest } from "../core/recorder-checkpoint.js";
+import { checkpointRequest, recorderRotationRequest } from "../core/recorder-checkpoint.js";
 
 export function parseRecorderArgs(argv: string[]): (WindowsRecorderOptions & { settingsFile?: string }) | null {
   if (argv.length === 1 && argv[0] === "--help") return null;
@@ -63,7 +63,14 @@ export async function runWindowsRecorder(argv = process.argv.slice(2)): Promise<
   const execute = (command: string) => {
     if (command.startsWith("{")) {
       try {
-        const input = checkpointRequest.parse(JSON.parse(command));
+        const parsed = JSON.parse(command);
+        if (parsed.kind === "rotate") {
+          const input = recorderRotationRequest.parse(parsed);
+          void recorder.rotate(input).then(() => console.log("[recorder-rotation] " + JSON.stringify({ id: input.id, complete: true })),
+            () => console.log("[recorder-rotation] " + JSON.stringify({ id: input.id, complete: false })));
+          return;
+        }
+        const input = checkpointRequest.parse(parsed);
         void recorder.checkpoint(input).then(result => {
           console.log("[recorder-checkpoint] " + JSON.stringify(result));
         }, () => {
@@ -85,7 +92,7 @@ export async function runWindowsRecorder(argv = process.argv.slice(2)): Promise<
       if (byte === 10) {
         if (overflow) diagnostic(new Error("windows_control_too_long")); else execute(line.trim());
         line = ""; overflow = false;
-      } else if (line.length >= 512 || byte > 127) { overflow = true; }
+      } else if (line.length >= 32768 || byte > 127) { overflow = true; }
       else if (!overflow) line += String.fromCharCode(byte);
     }
   };

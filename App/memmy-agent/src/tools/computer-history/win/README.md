@@ -49,13 +49,22 @@ node dist/tools/computer-history/core/summarize-history.js --file "D:\history-va
 
 ## 验证
 
-### Word 与 VS Code 正文适配
+### Word、VS Code 与 Notepad 正文适配
 
 应用获准并绑定实际进程后，未自定义正文规则的 `WINWORD.EXE` 默认使用
 `Edit + Body` 与 `{controlType:"Document", automationId:"", scope:"word.document"}`；
 `Code.exe` 默认使用 `{controlType:"Edit", automationId:"", scope:"vscode.editor"}`。
+新版 `Notepad.exe` 默认使用 `{controlType:"Document", automationId:"", scope:"notepad.document"}`，
+仅匹配 `Document(RichEditD2DPT) ← Pane(NotepadTextBox) ← Window(Notepad)` 的固定根层级。
+读取前后核对实际 HWND、Win32 类名、父子关系与进程；worker 与 TS 独立复核完整树。
+空 ID 不是通配符；Notepad 的通用“文本编辑器”标签也不代表文件名。
 显式 `documentRegions: []` 关闭默认正文规则，已有自定义规则保留。应用 deny、浏览器拒绝、
 密码和敏感子树检查不变。该适配不向未授权应用授予权限。
+
+原生遍历按父节点批量缓存直接子节点的元数据，不重复缓存已取得的父节点，
+也不预读 Name、Value 或 Text。TS 每帧只计算一次节点正文适配结果并用于输出，
+跨帧、跨进程的授权复核仍保留。默认查询预算 650ms、worker 上限 1500ms 不变；
+末节点调用超预算也会保留 `budget_ms`，部分结果不能作为后续 delta 的基线。
 
 VS Code 仅允许固定链 `Edit("") ← Text("") ← Group("") ← Group("workbench.parts.editor")`，
 节点及祖先的密码状态与 ID 都必须明确可读。C++ 在读取前后检查实时祖先、进程与敏感 ID；

@@ -77,7 +77,18 @@ Create files directly. There is no required init scaffold command for memmy-agen
 For a plugin-owned skill, use that plugin's validated save capability when one is
 provided. It must validate the same frontmatter and directory conventions,
 resource references and available tools, then register ownership with the Host.
-Keep provenance in `references/` and distinguish generation from execution.
+Keep provenance in `references/` and distinguish generation from execution. For a skill
+that must operate live native application UI, declare the actual managed Computer
+Use observation and action tools as dependencies. Require fresh target-document
+observations and exact window IDs before input. Do not use exec/PowerShell
+SendKeys, WScript, or raw global input to compensate for missing native tools.
+A Windows launcher PID may exit after handing a document to an existing app;
+resolve the real target document through Computer Use. Use literal native text
+input, then independently read the requested output and detect changes to other
+documents before claiming success. File-only workflows may use file/exec tools.
+If exact text formatting matters, specify an EOF check for the final newline.
+Notepad UIA SetValue can drop it, and numbered text alone cannot establish it.
+
 Do not write a duplicate workspace skill or require a Python installation when
 the plugin's save capability already performs these checks in the Host runtime.
 

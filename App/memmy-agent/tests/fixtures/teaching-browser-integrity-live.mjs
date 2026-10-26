@@ -214,7 +214,7 @@ try {
   if(['startup-gap','bootstrap-input'].includes(scenario)) Object.assign(report.checks,{missedInputNotInvented:!actual.includes('MISSED_STARTUP'),laterInputRetained:actual.includes('AFTER_READY')});
   if(scenario==='empty-redirect') Object.assign(report.checks,{closeProof:trace.some(x=>x.kind==='proof'&&(x.status==='empty_document_closed'||x.status==='closing'))});
   if(['reload','user-detach'].includes(scenario)) Object.assign(report.checks,{boundary:report.session.captureIntegrity?.boundaryConfirmed===false,saved:report.session.captureIntegrity?.snapshotSaved===false,failed:report.session.state==='failed',retainedInput:actual.includes('CASE_START')});
-  if(scenario==='drag') Object.assign(report.checks,{exactInputs:JSON.stringify(actual)===JSON.stringify(expected),outsideExcluded:!frozen.includes('DRAG_OUTSIDE_SECRET')});
+  if(scenario==='drag') Object.assign(report.checks,{exactInputs:JSON.stringify(actual)===JSON.stringify(expected),outsideExcluded:!frozen.includes('DRAG_OUTSIDE_SECRET'),available:report.session.availability==='available',coverage:report.session.captureIntegrity?.coverageComplete===true});
   await page.bringToFront();await page.locator('#query').fill('AFTER_STOP_SECRET');await delay(100);
   Object.assign(report.checks,{frozen:fs.readFileSync(file,'utf8')===frozen,badgeRemoved:await page.locator('#memmy-teaching-recording').count()===0});
   await page.screenshot({path:path.join(run,'after-stop.png')});

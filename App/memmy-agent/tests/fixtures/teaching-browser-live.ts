@@ -7,12 +7,12 @@ import path from "node:path";
 import os from "node:os";
 import http from "node:http";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { ExternalBrowserBridge } from "../../src/core/agent-runtime/tools/external-browser-bridge.js";
 import { createBrowserCaptureProvider } from "../../src/tools/computer-history/browser-event-capture.js";
 import { PluginEventSessions } from "../../src/tools/plugin-host/event-sessions.js";
 
-const [browserName, executable, extensionSource, output] = process.argv.slice(2);
+const [browserName, executable, extensionSource, output, detachHelper] = process.argv.slice(2);
 assert(browserName === "chrome" || browserName === "edge"); assert(executable && extensionSource && output);
 fs.mkdirSync(output, { recursive: true });
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), `memmy-teach-${browserName}-`));
@@ -156,8 +156,12 @@ try {
   const detachSession = await attach(detachTarget);
   await cdp("Page.navigate", { url: `${url}/detach` }, detachSession);
   await waitFor(() => evaluate(detachSession, "!!document.querySelector('#memmy-teaching-recording')"), "detach recorder");
-  const detachTab = await evaluate(workerSession, `(async()=>{const tabs=await chrome.tabs.query({});return tabs.find(t=>t.url===${JSON.stringify(`${url}/detach`)}).id})()`);
-  await evaluate(workerSession, `chrome.debugger.detach({tabId:${detachTab}})`);
+  // Extension-initiated debugger.detach does not exercise the user's cancel UI.
+  // Use the native control and verify that its revocation actually ends capture.
+  assert(process.platform === "win32" && detachHelper, "Windows user-detach helper required");
+  report.userDetach = JSON.parse(execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", detachHelper,
+    "-TestProfilePath", path.join(temp, "profile"), "-ExecutableName", path.basename(executable),
+    "-Screenshot", path.join(output, `${browserName}-user-detach.png`), "-WindowTitle", "Teach acceptance /detach"], { encoding: "utf8", timeout: 15000 }));
   const failed = await waitFor(() => { const value = service.list("teach-mode", "detach-chat")[0]; return value?.state === "failed" ? value : null; }, "detach ends recording");
   report.checks.detachEndsRecording = failed.availability === "partial";
   await type(detachSession, "#topic", "AFTER_DETACH_MUST_NOT_APPEAR");
@@ -175,6 +179,8 @@ try {
   for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new Error("Acceptance finished")); }
   await new Promise<void>(resolve => server.close(() => resolve()));
   fs.writeFileSync(path.join(output, `${browserName}-report.json`), JSON.stringify(report, null, 2));
+  const captures = path.join(temp, "data");
+  if (fs.existsSync(captures)) fs.cpSync(captures, path.join(output, `${browserName}-data`), { recursive: true });
   if (report.passed) fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
   console.log(JSON.stringify(report));
 }

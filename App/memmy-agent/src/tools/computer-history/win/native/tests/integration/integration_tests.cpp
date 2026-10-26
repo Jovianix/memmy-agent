@@ -1707,18 +1707,43 @@ void CaseTaskVideoIdle() {
     if (recording.Proc().Stderr().find("task_video_start_failed") != std::string::npos) Skip("Windows Graphics Capture / hardware D3D device unavailable");
     Fail("task recorder failed to acknowledge startup");
   }
-  fixture.Command("set-message idle-first"); Sleep(16000);
+  const auto waitInForeground = [&](DWORD milliseconds, const std::string& phase) {
+    for (DWORD elapsed = 0; elapsed < milliseconds; elapsed += 100) {
+      fixture.ExpectForeground('a', phase); Sleep(100);
+    }
+    fixture.ExpectForeground('a', phase);
+  };
+  fixture.Command("set-message idle-first");
+  // An all-blank recording can become idle without ever capturing the fixture.
+  // Establish actual capture before attributing a later failure to idle recovery.
+  bool capturedPrefix = false;
+  for (unsigned attempt = 0; attempt < 50 && !capturedPrefix; ++attempt) {
+    fixture.ExpectForeground('a', "before the first authorized idle-test frame");
+    const auto bytes = ReadFileBytes(directory / L"frames.jsonl");
+    const auto newline = bytes.find_last_of('\n');
+    if (newline != std::string::npos) {
+      for (const auto& line : SplitLines(bytes.substr(0, newline + 1))) {
+        if (line.empty()) continue;
+        const auto frame = ParseLine(line);
+        if (!frame.at("blank").get<bool>() && !frame.value("repeated", false)
+            && frame.at("window").at("hwnd") == fixture.HwndA()) { capturedPrefix = true; break; }
+      }
+    }
+    if (!capturedPrefix) Sleep(100);
+  }
+  Expect(capturedPrefix, "idle test requires an actual authorized captured frame before waiting");
+  waitInForeground(16000, "during the initial idle wait");
   const auto idle = ParseLine(ReadFileBytes(directory / L"idle-spans.json"));
   Expect(idle.at("activeStartMs").is_number(), "static image automatically suspends encoding after 10 seconds");
   Expect(fs::exists(directory / L"parts/000001.json"), "captured prefix is durably sealed during idle wait");
-  const auto before = ReadFileBytes(directory / L"frames.jsonl"); Sleep(1000);
+  const auto before = ReadFileBytes(directory / L"frames.jsonl"); waitInForeground(1000, "during idle file stability check");
   Expect(before == ReadFileBytes(directory / L"frames.jsonl"), "no frames written during idle wait");
-  fixture.Command("set-message idle-image-changed"); Sleep(2200);
+  fixture.Command("set-message idle-image-changed"); waitInForeground(2200, "after the idle image changes");
   const auto resumed = ParseLine(ReadFileBytes(directory / L"idle-spans.json"));
   Expect(resumed.at("activeStartMs").is_null() && resumed.at("spans").size() == 1, "image change resumes capture automatically");
   Expect(ReadFileBytes(directory / L"frames.jsonl").size() > before.size(), "changed frame immediately reaches the video index");
   // Ending while idle must omit the final waiting period as well.
-  Sleep(12500);
+  waitInForeground(12500, "during the final idle wait");
   recording.Send("stop"); recording.Wait("session.stopped", 5000);
   Expect(recording.Finish(5000, "task-idle-recording") == 0, "idle capture stops within bound");
   Expect(RunToEnd(g_paths.Recorder(), {L"finalize-task", L"--output-dir", directory.wstring()}, "task-idle-finalize").exitCode == 0, "idle video remux");

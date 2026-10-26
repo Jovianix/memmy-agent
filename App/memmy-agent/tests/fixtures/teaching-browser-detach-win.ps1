@@ -1,6 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$TestProfilePath,
       [Parameter(Mandatory=$true)][string]$ExecutableName,
-      [Parameter(Mandatory=$true)][string]$Screenshot)
+      [Parameter(Mandatory=$true)][string]$Screenshot,
+      [string]$WindowTitle='Teaching integrity /form')
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName UIAutomationClient
@@ -34,7 +35,7 @@ $seen=[Collections.Generic.List[string]]::new()
     $title=[Text.StringBuilder]::new(1024)
     [void][TeachWindowProbe]::GetWindowText($hwnd,$title,1024)
     $seen.Add($title.ToString())
-    if($title.ToString().Contains('Teaching integrity /form')) { $windows.Add($hwnd.ToInt64()) }
+    if($title.ToString().Contains($WindowTitle)) { $windows.Add($hwnd.ToInt64()) }
   }
   return $true
 },[IntPtr]::Zero)
