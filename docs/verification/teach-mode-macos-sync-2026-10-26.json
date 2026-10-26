@@ -103,5 +103,20 @@
       "Start desktop capture just before a ten-minute clock boundary and continue typing/clicking across it. Confirm one nativeSessionId, both segment markers, frozen old file and a full AX snapshot/page context in the new file.",
       "Check stop hotkey/API stop, denied/recovered permissions, background History intent, skill generation and independent execution."
     ]
+  },
+  "ci": {
+    "host": {
+      "status": "not_run",
+      "reason": "GitHub Actions is disabled for Jovianix/memmy-agent. Manual workflow dispatch returned HTTP 422: Actions has been disabled for this repository."
+    },
+    "plugin": {
+      "status": "triggered",
+      "run": "https://github.com/Jovianix/teach-mode/actions/runs/40274602933",
+      "matrix": [
+        "ubuntu-latest",
+        "windows-latest",
+        "macos-latest"
+      ]
+    }
   }
 }
