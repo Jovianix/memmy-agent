@@ -1,6 +1,6 @@
 # Teach Mode：Windows 流程、代码索引与 macOS 接入
 
-更新：2026-10-26。Host 的 `codex/teach-pxlin-dev` 已合并本轮 Windows Teach Mode 修复及 Mac 原生实现；插件在独立 `Jovianix/teach-mode` 仓库的 `codex/teach-mode-macos-sync-20261026`，开发版本 **0.4.1**。这批代码供后续 Mac 实机测试，尚未作为正式版本发布。
+更新：2026-10-26。Host 的 `pxlin/dev` 已合并本轮 Windows Teach Mode 修复及 Mac 原生实现；插件在独立 `Jovianix/teach-mode` 仓库的 `codex/teach-mode-macos-sync-20261026`，开发版本 **0.4.1**。这批代码供后续 Mac 实机测试，尚未作为正式版本发布。
 
 ## 当前用户流程
 

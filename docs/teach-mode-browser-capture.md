@@ -1,6 +1,6 @@
 # Teach Mode 浏览器录制：沿用登录态，限定教学窗口
 
-更新：2026-10-26。浏览器采集已整合到 `codex/teach-pxlin-dev` 跨平台开发分支；插件仍位于独立 `teach-mode` 仓库。
+更新：2026-10-26。浏览器采集已整合到 `pxlin/dev` 跨平台开发分支；插件仍位于独立 `teach-mode` 仓库。
 当前是未发布的开发候选：Teach Mode 0.4.1、浏览器扩展 1.2.2，内部采集协议 `teachingCapture/v2`。
 新版 Host 要求新版扩展，旧扩展需更新或重新加载。
 

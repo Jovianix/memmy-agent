@@ -4,7 +4,7 @@
   "scope": "Synchronize Windows Teach Mode fixes into shared/macOS source; prepare for subsequent physical Mac acceptance.",
   "host": {
     "repository": "Jovianix/memmy-agent",
-    "branch": "codex/teach-pxlin-dev",
+    "branch": "pxlin/dev",
     "windowsSourceCommit": "1854d2f56c81386cbc7bb80960f5ec21086b329a",
     "mergedBaseline": "216c77d4",
     "nativeStandaloneAndPackagedSourceIdentical": true
@@ -13,7 +13,7 @@
     "repository": "Jovianix/teach-mode",
     "branch": "codex/teach-mode-macos-sync-20261026",
     "version": "0.4.1",
-    "sourceCommit": "12a1442adb7f06b4cd5241500381b9474d9d77a7"
+    "sourceCommit": "11df9450bc1b1c84e3b41ca0b296ac14772439ba"
   },
   "synchronizedFeatures": [
     "Teaching tab departure revokes content immediately and drains the previous document before tab-left; missing close proof remains partial.",
