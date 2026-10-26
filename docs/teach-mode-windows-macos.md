@@ -1,6 +1,6 @@
 # Teach Mode：Windows 流程、代码索引与 macOS 接入
 
-更新：2026-10-21。Host 基于最近 Windows 验证使用的 `codex/teach-pxlin-dev` 工作树，插件在独立 `teach-mode` 仓库；本次 Mac 开发候选为 **0.4.0**。原始 `memmy-agent` 脏工作区与旧版 `memmy-plugins` 原型保留。
+更新：2026-10-26。Host 的 `codex/teach-pxlin-dev` 已合并本轮 Windows Teach Mode 修复及 Mac 原生实现；插件在独立 `Jovianix/teach-mode` 仓库的 `codex/teach-mode-macos-sync-20261026`，开发版本 **0.4.1**。这批代码供后续 Mac 实机测试，尚未作为正式版本发布。
 
 ## 当前用户流程
 
@@ -73,7 +73,7 @@ Host 文件相对于本仓库；插件文件相对于独立 `teach-mode` 仓库�
 
 ## macOS 本次补齐
 
-Mac 沿用同一对话、事件会话、技能生成及生命周期链路，最低系统为现有原生运行时要求的 **macOS 14**。插件 0.4.0 声明 `win32` / `darwin`，并要求新增的 `memmy.event-checkpoints/v1`；相同预发布版本号的旧 Host 仍需通过实际能力检查。
+Mac 沿用同一对话、事件会话、技能生成及生命周期链路，最低系统为现有原生运行时要求的 **macOS 14**。插件 0.4.1 声明 `win32` / `darwin`，并要求新增的 `memmy.event-checkpoints/v1`；相同预发布版本号的旧 Host 仍需通过实际能力检查。
 
 | Mac 文件 | 接入内容 |
 | --- | --- |
@@ -85,11 +85,15 @@ Mac 沿用同一对话、事件会话、技能生成及生命周期链路，最�
 | [persisted-checkpoint.ts](../App/memmy-agent/src/tools/computer-history/mac/persisted-checkpoint.ts) | 写入无用户内容的控制记录并 fsync，返回确切字节位置，后续事件不能扩大该位置 |
 | [recorder-checkpoints.ts](../App/memmy-agent/src/tools/computer-history/mac/recorder-checkpoints.ts) | 请求校验、去重、超时、落盘后回执和失败处理 |
 
+桌面连续采集已补齐到 Mac：受控录制器声明能力后，Host 在原生 barrier 处切换十分钟事件文件；原生进程、输入钩子、采样及健康缺口记录持续保留。每个新文件重新建立自己的完整脱敏 AX 快照和页面上下文，旧文件在交接后保持固定。轮转超时、原生不完整或磁盘失败都不能返回成功，旧录制器未声明能力时沿用重启兼容路径。
+
+源码和打包 History kit 已统一到当前源码行为，包含原生 checkpoint；Mac 的应用/站点观察策略沿用当前主线，浏览器教学另有教学窗口和隐私模式限制。
+
 Mac barrier 确认原生到磁盘的边界，原生不单独宣称已评估整个录制区间。Host 继续结合采集健康判断可用性，超时或缺口保留不完整状态。Windows 旧 Web → Notepad 执行器不在 Mac 初始化或发布旧技能，误调用时返回明确平台提示。
 
 ## Mac 配置与使用
 
-1. 使用包含本次改动的 Mac Host 与插件 0.4.0，核对可信来源、平台、SHA-256 和所需能力。
+1. 使用包含本次改动的 Mac Host 与插件 0.4.1，核对可信来源、平台、SHA-256 和所需能力。
 2. 按 Host 提示，为实际运行的 Memmy 原生应用授权“辅助功能”和必要的“输入监控”。正式版与开发辅助应用各自使用注册的权限身份。
 3. 事件录制使用 `--no-screenshots`，不以视频或屏幕录制授权为开始条件。后续技能若调用截图工具，应满足该工具的权限要求。
 4. 在对话发送 `/teach` 确认待命，再明确要求开始、进行实际操作，然后发“结束录制”或点击状态条结束。
@@ -115,12 +119,20 @@ npm run build
 
 本地 Registry 只提供开发制品读取。单独设置 `MEMMY_PLUGIN_REGISTRY_URL` 不会让任意来源获得原生信任。跨仓夹具显式信任隔离的回环 Registry，不修改日常应用的云服务；线上接入仍按此前暂缓范围处理。
 
-## 验证范围
+## 2026-10-26 交接与验证
+
+拉取两个开发分支后，先按上面的命令重建、安装 Mac 原生辅助应用，再启动 Host 并安装对应插件开发 ZIP。浏览器扩展需更新/重新加载至 **1.2.2**。具体测试步骤及本地回归结果见 [本轮同步记录](verification/teach-mode-macos-sync-2026-10-26.json)。
+
+Mac 实机重点：Chrome/Edge 的标签移出/移回、移出同时停止；桌面连续录制跨一个十分钟整点，核对前后 `nativeSessionId` 一致、旧文件固定、新文件快照完整；停止热键、系统权限拒绝/恢复、技能生成与独立复用。
+
+## 历史验证范围（2026-10-21）
 
 Linux 可验证 TypeScript、插件业务、持久化位置、Host 共享事件服务，以及下载 ZIP 后真实 MCP worker 的安装、Mac 平台模拟、生成、停用/重装。原生 Swift 测试在非 Mac 环境跳过；原生测试和完整 native app 编译已加入 Host Mac CI。
 
 插件 CI 和固定 Host 制品 conformance 均增加 Mac runner。正式发布新增 `MEMMY_MACOS_ACCEPTANCE_REPORT`，检查安装版、宿主 Node、app-agent 身份、TCC 拒绝与恢复、原生边界、真实模型对话、试运行和独立输出证据。
 
-**本轮环境为 Linux/WSL，没有 Mac 桌面及 Swift 工具链。Mac 原生编译、系统授权、真实桌面和模型四步流程尚未在此环境执行。** 本地 ZIP 与 Host kit 是 `dirty:true` 的开发制品，不满足正式发布门槛，也不覆盖旧 0.3.0 包。Mac 验收格式见独立插件仓库的 `docs/macos-teach-mode.md`。
+**本轮环境为 Linux/WSL，没有 Mac 桌面及 Swift 工具链。Mac 原生编译、系统授权、真实桌面和模型四步流程尚未在此环境执行。后续 Mac 实机验收由使用者执行。** 本地 ZIP 与 Host kit 是 `dirty:true` 的开发制品，不满足正式发布门槛，也不覆盖旧 0.3.0 包。Mac 验收格式见独立插件仓库的 `docs/macos-teach-mode.md`。
 
-本轮实际验证：Host 定向回归 151 项通过、16 项平台条件跳过；插件业务 27 项通过；发布契约 4 项通过；真实 ZIP/MCP 跨仓合同 6 项通过。Agent、Backend 和插件类型检查通过。重复运行按测试名称去重，详情与开发包哈希见 [验证摘要](verification/teach-mode-macos-development-2026-10-21.json)。
+本轮实际验证：Host 定向回归 151 项通过、16 项平台条件跳过；插件业务 27 项通过；发布契约 4 项通过；真实 ZIP/MCP 跨仓合同 6 项通过。Agent、Backend 和插件类型检查通过。重复运行按测试名称去重，详情与开发包哈希见 验证摘要（本地归档 `verification/teach-mode-macos-development-2026-10-21.json`）。
+
+历史实机证据保留在验收工作区的本地归档中；本次分支交付源码与同步结果，不包含这些历史截图及原始录制文件。

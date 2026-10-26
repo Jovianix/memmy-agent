@@ -1,0 +1,107 @@
+{
+  "schema": "memmy.teach-mode-macos-sync/v1",
+  "recordedAt": "2026-10-26T05:29:09.235016+00:00",
+  "scope": "Synchronize Windows Teach Mode fixes into shared/macOS source; prepare for subsequent physical Mac acceptance.",
+  "host": {
+    "repository": "Jovianix/memmy-agent",
+    "branch": "codex/teach-pxlin-dev",
+    "windowsSourceCommit": "1854d2f56c81386cbc7bb80960f5ec21086b329a",
+    "mergedBaseline": "216c77d4",
+    "nativeStandaloneAndPackagedSourceIdentical": true
+  },
+  "plugin": {
+    "repository": "Jovianix/teach-mode",
+    "branch": "codex/teach-mode-macos-sync-20261026",
+    "version": "0.4.1",
+    "sourceCommit": "7a5f737a4047496665cc66900a23a592f84b635e"
+  },
+  "synchronizedFeatures": [
+    "Teaching tab departure revokes content immediately and drains the previous document before tab-left; missing close proof remains partial.",
+    "Shared browser/desktop session APIs, plugin lifecycle, preparation timer and compact teaching evidence.",
+    "macOS native enrichment barrier, ordered normalization and fsync-backed exact byte watermark.",
+    "macOS continuous output rotation at the native barrier without restarting capture; bounded failure and overlapping checkpoints/stops.",
+    "Each macOS segment re-establishes a full sanitized AX snapshot/page context; native capture state and coverage gaps remain continuous.",
+    "Packaged macOS History recorder matches the current standalone source, including the upstream application/website observation policy."
+  ],
+  "checks": [
+    {
+      "name": "Agent history/capture/plugin/managed-observation regression",
+      "passed": 628,
+      "failed": 2,
+      "skipped": 16
+    },
+    {
+      "name": "Mac rotation/normalization/controller suites (included in Agent total)",
+      "passed": 57,
+      "failed": 0
+    },
+    {
+      "name": "Browser extension recorder/page/history/packaging",
+      "passed": 156,
+      "failed": 0
+    },
+    {
+      "name": "Conversation recording UI",
+      "passed": 9,
+      "failed": 0
+    },
+    {
+      "name": "Teach Mode plugin tests",
+      "passed": 50,
+      "failed": 0
+    },
+    {
+      "name": "Plugin release validation script",
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "name": "Agent build and full typecheck",
+      "status": "passed"
+    },
+    {
+      "name": "Backend, frontend and plugin typechecks",
+      "status": "passed"
+    },
+    {
+      "name": "Plugin development ZIP build",
+      "status": "passed"
+    }
+  ],
+  "preExistingFailures": [
+    {
+      "test": "uses the Windows icon reader for Windows History application IDs",
+      "impact": "Windows icon display; unrelated to macOS capture/teaching.",
+      "baselineReproducedBeforeThisSync": true
+    },
+    {
+      "test": "writes no summary for a window with only lifecycle/checkpoint records (marker=true)",
+      "impact": "A control-only segment can produce an empty History summary; capture remains available.",
+      "baselineReproducedBeforeThisSync": true
+    }
+  ],
+  "physicalMacAcceptance": {
+    "status": "pending_user_test",
+    "notExecutedHere": [
+      "Swift native app compilation",
+      "TCC permissions and recovery",
+      "Real Chrome/Edge teaching window lifecycle",
+      "Real continuous desktop capture across a ten-minute boundary",
+      "Model-generated skill and independent replay validation"
+    ]
+  },
+  "macHandoff": {
+    "required": [
+      "macOS 14 or later",
+      "Node 22 for development",
+      "Rebuild/install the native Mac app from this Host branch",
+      "Reload the bundled browser extension 1.2.2",
+      "Build/install plugin 0.4.1 from the listed plugin branch"
+    ],
+    "steps": [
+      "Start a browser-only teaching session; move a tab out and back, then stop immediately after departure. Check range exclusion, coverage and frozen fragment.",
+      "Start desktop capture just before a ten-minute clock boundary and continue typing/clicking across it. Confirm one nativeSessionId, both segment markers, frozen old file and a full AX snapshot/page context in the new file.",
+      "Check stop hotkey/API stop, denied/recovered permissions, background History intent, skill generation and independent execution."
+    ]
+  }
+}

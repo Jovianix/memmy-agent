@@ -44,7 +44,7 @@ jobs:
           swift build --package-path App/native-computer-use
       - name: macOS normalization and durable boundary pipeline
         working-directory: App/memmy-agent
-        run: npx vitest run tests/tools/computer-history/mac/record-human-history-checkpoints.test.ts
+        run: npx vitest run tests/tools/computer-history/mac/record-human-history-checkpoints.test.ts tests/tools/computer-history/mac/computer-history-transitions.test.ts tests/tools/computer-history/mac/recorder-health-forwarding.test.ts
       - name: Teaching window capture and extension connection identity
         working-directory: App/memmy-agent
         run: npx vitest run tests/tools/computer-history/browser-event-capture.test.ts tests/core/agent-runtime/tools/external-browser-bridge.test.ts

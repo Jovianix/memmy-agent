@@ -23,6 +23,7 @@ vi.mock("node:child_process", async (original) => ({
 }));
 import { ComputerHistoryDemoService } from "../../../../src/tools/computer-history/mac/computer-history-api.js";
 import { collectorGate } from "../../../../src/tools/computer-history/core/collector-gate.js";
+import { CONTINUOUS_RECORDER_CAPABILITY } from "../../../../src/tools/computer-history/core/recorder-rotation.js";
 
 let root: string;
 let service: ComputerHistoryDemoService;
@@ -48,6 +49,53 @@ afterEach(async () => {
 });
 
 describe("recorder transition ordering", () => {
+  it("uses the Mac recorder capability to rotate without restarting and retries an overlapping checkpoint", async () => {
+    vi.setSystemTime(new Date("2026-09-13T00:09:59Z"));
+    const subscription = await service.acquireEventCapture(), child = state.children[0]!;
+    child.stdout.write(CONTINUOUS_RECORDER_CAPABILITY + "\n");
+    const pending = subscription.checkpoint({ from: "2026-09-13T00:09:59.000Z" });
+    const first = JSON.parse(child.stdin.read().toString());
+    await vi.advanceTimersByTimeAsync(1000);
+    const rotate = JSON.parse(child.stdin.read().toString());
+    expect(rotate).toMatchObject({ kind: "rotate", eventsFile: expect.stringContaining("2026-09-13T00-10-00Z") });
+    child.stdout.write(`[recorder-checkpoint] ${JSON.stringify({ id: first.id, complete: true, rangeEvaluated: true })}\n`);
+    child.stdout.write(`[recorder-rotation] ${JSON.stringify({ id: rotate.id, complete: true })}\n`);
+    await vi.advanceTimersByTimeAsync(0);
+    const retried = JSON.parse(child.stdin.read().toString());
+    expect(retried).toMatchObject({ kind: "checkpoint", from: first.from, through: first.through });
+    expect(retried.id).not.toBe(first.id);
+    child.stdout.write(`[recorder-checkpoint] ${JSON.stringify({ id: retried.id, complete: true, rangeEvaluated: true })}\n`);
+    expect(await pending).toMatchObject({ running: true, complete: true, boundaryConfirmed: true });
+    expect(state.children).toHaveLength(1); expect(child.signals).toEqual([]);
+    expect(service.snapshot().observation.segmentId).toBe("2026-09-13T00-10-00Z");
+  });
+  it("honors the Mac stop hotkey in the new file even when the original bucket already had a long prefix", async () => {
+    vi.setSystemTime(new Date("2026-09-13T00:09:59Z"));
+    const original = path.join(root, "recordings", "segments", "2026-09-13T00-00-00Z", "events.jsonl");
+    fs.mkdirSync(path.dirname(original), { recursive: true });
+    fs.writeFileSync(original, " ".repeat(4096) + "\n");
+    service.startObservation(); const child = state.children[0]!;
+    child.stdout.write(CONTINUOUS_RECORDER_CAPABILITY + "\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    const command = JSON.parse(child.stdin.read().toString());
+    child.stdout.write(`[recorder-rotation] ${JSON.stringify({ id: command.id, complete: true })}\n`);
+    await vi.advanceTimersByTimeAsync(0);
+    writeStop("stop_hotkey"); child.exit();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(service.snapshot().observation).toMatchObject({ state: "stopped", error: null });
+    expect(state.children).toHaveLength(1); expect(child.signals).toEqual([]);
+  });
+  it.each(["timeout", "negative-ack"])("fails a Mac handoff on %s without spawning a second collector", async failure => {
+    vi.setSystemTime(new Date("2026-09-13T00:09:59Z"));
+    service.startObservation(); const child = state.children[0]!;
+    child.stdout.write(CONTINUOUS_RECORDER_CAPABILITY + "\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    const command = JSON.parse(child.stdin.read().toString());
+    if (failure === "negative-ack") child.stdout.write(`[recorder-rotation] ${JSON.stringify({ id: command.id, complete: false })}\n`);
+    await vi.advanceTimersByTimeAsync(failure === "timeout" ? 12000 : 0);
+    expect(service.snapshot().observation.state).toBe("failed");
+    expect(state.children).toHaveLength(1); expect(child.signals).toContain("SIGTERM");
+  });
   async function continuousDriver(rotate = vi.fn(async () => {})) {
     await service.shutdown();
     const driver = {

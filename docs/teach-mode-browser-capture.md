@@ -1,6 +1,6 @@
 # Teach Mode 浏览器录制：沿用登录态，限定教学窗口
 
-更新：2026-10-26。浏览器采集已整合到 Windows 修复工作树；插件仍位于独立 `teach-mode` 仓库。
+更新：2026-10-26。浏览器采集已整合到 `codex/teach-pxlin-dev` 跨平台开发分支；插件仍位于独立 `teach-mode` 仓库。
 当前是未发布的开发候选：Teach Mode 0.4.1、浏览器扩展 1.2.2，内部采集协议 `teachingCapture/v2`。
 新版 Host 要求新版扩展，旧扩展需更新或重新加载。
 
@@ -104,7 +104,7 @@ node_modules/.bin/esbuild App/memmy-agent/tests/fixtures/teaching-browser-live.t
 最后一个参数用于真实点击该测试资料浏览器中的“取消调试”按钮；扩展自行调用 `debugger.detach()` 不能代替用户撤销验收。此复合入口的撤销步骤目前只提供 Windows 控制器。
 验收脚本仅为测试资料开启调试管道并装载测试扩展，结束时关闭本次测试浏览器；生产不以此方式接管日常资料。
 
-最终结果、证据哈希、截图及平台限制见 [验证记录](verification/teach-mode-browser-capture-2026-10-21.json)。
+最终结果、证据哈希、截图及平台限制见 验证记录（本地归档 `verification/teach-mode-browser-capture-2026-10-21.json`）。
 macOS 原生桌面、浏览器权限和实际系统行为仍需在 Mac 上运行同一入口验证。
 
 ### v2 完整性验收入口
@@ -136,17 +136,19 @@ node .tmp/teaching-browser-integrity-live.mjs \
 移回教学窗口必须等待旧绑定释放，再重新安装采集器。停止录制也等待正在离开的文档；关闭证明或序号缺失仍保留 `partial`。
 `drag` 实机用例同时要求范围排除、输入匹配、`available` 和完整覆盖，不能只依据窗口外输入被排除就判全程完整。
 
-Windows 十分钟分段在原生检查点切换输出文件，沿用原生进程、输入钩子、可访问性观察器、增量快照基线和缺口历史。
-切换后的增量帧仍重建为完整的已脱敏快照；不会因更换文件清空此前的查询失败或缺口。暂停、用户停止和异常退出继续使用原有终止机制。
+Windows 与 Mac 的十分钟分段均在原生检查点切换输出文件，沿用原生进程、输入钩子、可访问性观察器、增量快照基线和缺口历史。
+Windows 切换后的原生增量帧仍重建为完整的已脱敏快照；Mac 保留原生观察器，在新文件重新建立完整脱敏快照和页面上下文。不会因更换文件清空此前的查询失败或缺口。暂停、用户停止和异常退出继续使用原有终止机制。
 
-本次 v2 的 Memmy 对话流程、源码哈希、自动测试和最终实机结果见 [修复验收记录](verification/edge-integrity-fix-2026-10-22/verification.json) 与同目录 PDF。
+本次 v2 的 Memmy 对话流程、源码哈希、自动测试和最终实机结果见 修复验收记录（本地归档 `verification/edge-integrity-fix-2026-10-22/verification.json`） 与同目录 PDF。
 
 2026-10-21 的 v1 自动验证共 **173 项通过**；当日 Windows Chrome 155 与 Edge 155 的实机受控输入用例各产生 **19 条 available 事件**，
 覆盖日常窗口排除、敏感字段排除、标签页移出/移入、跨页、弹窗、超过 15 秒的录制、停止后快照不变及调试断开撤销。
 源码、契约、Backend、前端、Shell 和插件的类型检查通过。两处既有测试类型错误已修复，包含所有 Agent 测试的全量类型检查通过；相关两份测试文件的 **69 项回归测试全部通过**，详见验证记录。
 
-网页截图：[Chrome 录制中](verification/teach-browser-2026-10-21/chrome-recording.png)、
-[Chrome 停止后](verification/teach-browser-2026-10-21/chrome-stopped.png)、
-[Edge 录制中](verification/teach-browser-2026-10-21/edge-recording.png)、
-[Edge 停止后](verification/teach-browser-2026-10-21/edge-stopped.png)。
+网页截图：Chrome 录制中（本地归档 `verification/teach-browser-2026-10-21/chrome-recording.png`）、
+Chrome 停止后（本地归档 `verification/teach-browser-2026-10-21/chrome-stopped.png`）、
+Edge 录制中（本地归档 `verification/teach-browser-2026-10-21/edge-recording.png`）、
+Edge 停止后（本地归档 `verification/teach-browser-2026-10-21/edge-stopped.png`）。
 停止后的图片由验收脚本单独截图，用于核对标识撤销，不属于录制事件流。
+
+历史实机证据保留在验收工作区的本地归档中；本次分支交付源码与同步结果，不包含这些历史截图及原始录制文件。

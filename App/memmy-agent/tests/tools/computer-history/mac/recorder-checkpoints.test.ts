@@ -5,6 +5,35 @@ import { recorderCheckpoints } from "../../../../src/tools/computer-history/mac/
 const id = "c892ee91-1d7c-4b43-b149-97284fe3caff";
 
 describe("recorder native-to-disk checkpoint", () => {
+  it("rotates only at its native barrier and waits for the durable handoff before acknowledging", async () => {
+    const input = new PassThrough(), write = vi.fn(), requestNative = vi.fn();
+    let finish!: () => void;
+    const rotate = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const persist = vi.fn(async () => {});
+    const queue = recorderCheckpoints({ input, write, requestNative, persist, rotate });
+    const command = { kind: "rotate", id, eventsFile: "/private/tmp/教学/next/events.jsonl", title: "下一段" };
+    try {
+      input.write(JSON.stringify(command) + "\n");
+      expect(requestNative).toHaveBeenCalledExactlyOnceWith(id);
+      const marker = { kind: "session.checkpoint", id, complete: true, issues: ["ax_snapshot_failed"] };
+      queue.acknowledge(marker); queue.acknowledge(marker);
+      expect(rotate).toHaveBeenCalledExactlyOnceWith(command, marker, expect.any(String));
+      expect(write).not.toHaveBeenCalled(); expect(persist).not.toHaveBeenCalled();
+      finish(); await delay(0);
+      expect(write).toHaveBeenCalledExactlyOnceWith('[recorder-rotation] ' + JSON.stringify({ id, complete: true }));
+    } finally { queue.close(); input.destroy(); }
+  });
+  it.each(["timeout", "native-incomplete", "disk-failure"])("does not certify an output rotation after %s", async failure => {
+    const input = new PassThrough(), write = vi.fn(), rotate = vi.fn(async () => { throw new Error("disk full"); });
+    const queue = recorderCheckpoints({ input, write, requestNative: () => {}, persist: async () => {}, rotate, timeoutMs: 5 });
+    try {
+      input.write(JSON.stringify({ kind: "rotate", id, eventsFile: "/tmp/next/events.jsonl", title: "next" }) + "\n");
+      if (failure !== "timeout") queue.acknowledge({ kind: "session.checkpoint", id, complete: failure !== "native-incomplete" });
+      await delay(15);
+      expect(write).toHaveBeenCalledExactlyOnceWith('[recorder-rotation] ' + JSON.stringify({ id, complete: false }));
+      expect(rotate).toHaveBeenCalledTimes(failure === "disk-failure" ? 1 : 0);
+    } finally { queue.close(); input.destroy(); }
+  });
   it("forwards a bounded interval and preserves its native completeness scope after fsync", async () => {
     const input = new PassThrough(), write = vi.fn(), requestNative = vi.fn();
     const range = { from: "2026-10-21T00:00:00.000Z", through: "2026-10-21T00:00:01.000Z" };

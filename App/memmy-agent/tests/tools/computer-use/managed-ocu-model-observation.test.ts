@@ -12,7 +12,7 @@ function fixture(platform: NodeJS.Platform) {
     return { content: [{ type: 'text', text: `${note}Current state ${revision}` }],
       _meta: { memmyComputerUse: { targetWindowID: 52, pid: 20, observationID: current } } };
   };
-  const callTool = vi.fn(async (name: string, args: Record<string, unknown>) => {
+  const callTool = vi.fn(async (name: string, args: Record<string, unknown>): Promise<unknown> => {
     if (name === 'get_app_state') return fresh();
     if (args.observation_id !== current) return fresh('State changed. The action was NOT dispatched. ');
     dispatched.push(String(args.observation_id));

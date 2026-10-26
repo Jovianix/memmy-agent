@@ -12,7 +12,7 @@ Bing 的极短自动跳转页只有收到已绑定 Port 的“零次受支持操
 Memmy Dev 对话中的安装、录制、提取技能、执行第 2–5 条、停用及卸载均已尝试并留存证据。
 Edge 新会话为 28 条 available，Chrome 为 29 条 available；四条输出均与当次网页核对。
 Chrome 回放首次未落盘，补充定位和输出路径后继续完成，不计为零干预回放。
-完整结果与限制见 [验收记录](verification/edge-integrity-fix-2026-10-22/verification.json) 和同目录 PDF；旧 partial 录制保持原状。
+完整结果与限制见 验收记录（本地归档 `verification/edge-integrity-fix-2026-10-22/verification.json`） 和同目录 PDF；旧 partial 录制保持原状。
 
 建议沿用现有扩展与 Host 通道，增加逐文档的事件交接协议，并把“本次停止是否确认”与“历史采集是否有缺口”分别记录。先完成状态与诊断修正，再实现页面交接，最后用原业务流程验收。
 
@@ -31,7 +31,7 @@ Chrome 回放首次未落盘，补充定位和输出路径后继续完成，不�
 
 原始 Edge 业务录制的 29 条事件、哈希、范围隔离和笔记保存均通过核对，但缺少逐请求诊断，因此不能断言原始那次在哪个页面触发，也不能据已有事件数宣称没有遗漏。
 
-证据：[定位结果](verification/edge-integrity-2026-10-22/diagnosis.json)、[Edge 诊断日志](verification/edge-integrity-2026-10-22/edge-navigation-1792639269704/extension-trace.json)、[原业务验证](verification/windows-teach-publications-2026-10-22/verification.json)。
+证据：定位结果（本地归档 `verification/edge-integrity-2026-10-22/diagnosis.json`）、Edge 诊断日志（本地归档 `verification/edge-integrity-2026-10-22/edge-navigation-1792639269704/extension-trace.json`）、原业务验证（本地归档 `verification/windows-teach-publications-2026-10-22/verification.json`）。
 
 ## 2. 完整性的判定规则
 
@@ -152,3 +152,5 @@ Windows Chrome、Edge 各执行至少 10 轮、每轮 100 次受控导航，覆�
 Mac 使用同一套浏览器代码，但仍需在 Mac 实机验证 Chrome、Edge 的文档切换、缓存恢复、停止和隔离；在完成前标为未验收。
 
 本审核稿拟采用的主要决策是：保留现有浏览器通道；引入逐文档交接；真实缺口继续保留；历史覆盖与当前边界分别呈现；修复后以原始完整业务流程作为最终验收。
+
+历史实机证据保留在验收工作区的本地归档中；本次分支交付源码与同步结果，不包含这些历史截图及原始录制文件。

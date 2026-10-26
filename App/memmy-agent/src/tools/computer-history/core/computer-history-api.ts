@@ -1,6 +1,7 @@
 import type { EventCaptureSubscription, CaptureCheckpoint, CaptureRange } from "./event-capture-source.js";
 import { CaptureCoverageGaps } from "./coverage-gaps.js";
 import { persistedCheckpoint, type PersistedCheckpoint } from "./recorder-checkpoint.js";
+import { CONTINUOUS_RECORDER_CAPABILITY, rotateRecorderOutput } from "./recorder-rotation.js";
 import type { HistoryPlatformDriver, HistoryPermissions, HistoryPermission } from "./platform-driver.js";
 import { collectorGate, CollectorBusyError } from "./collector-gate.js";
 import { historyPermissionsReady } from "./platform-driver.js";
@@ -199,6 +200,7 @@ interface SegmentState {
   historyFile: string;
   output: string;
   stoppedByUser: boolean;
+  recorderStartedAtByte?: number;
 }
 
 interface RecorderFence {
@@ -623,6 +625,7 @@ export class ComputerHistoryDemoService {
   private readonly liveSummaryIntervalMs: number;
   private segment: SegmentState | null = null;
   private readonly recorderSegments = new WeakMap<ChildProcessWithoutNullStreams, SegmentState>();
+  private readonly continuousRecorderChildren = new WeakSet<ChildProcessWithoutNullStreams>();
   private observationState: ObservationState = "stopped";
   private observationStartedAt: string | null = null;
   private observationError: string | null = null;
@@ -1742,7 +1745,7 @@ export class ComputerHistoryDemoService {
   private spawnRecorder(segment: SegmentState): void {
     const recorder = this.recorderScript;
     if (!this.platformDriver && !fs.existsSync(recorder)) throw new ComputerHistoryApiError(503, "recorder script is unavailable");
-    const startedAtByte = fs.existsSync(segment.eventsFile) ? fs.statSync(segment.eventsFile).size : 0;
+    segment.recorderStartedAtByte = fs.existsSync(segment.eventsFile) ? fs.statSync(segment.eventsFile).size : 0;
     segment.stoppedByUser = false;
     segment.output = "";
     const child = this.platformDriver ? this.platformDriver.launch({ title: `Computer History ${segment.id}`,
@@ -1795,7 +1798,8 @@ export class ComputerHistoryDemoService {
         if (piece.endsWith("\n")) {
           if (!discardHealthLine) {
             const line = healthBuffer.trimEnd();
-            if (line.startsWith(RECORDER_HEALTH_PREFIX)) this.ingestRecorderHealthLine(line, finalEventOnly);
+            if (line === CONTINUOUS_RECORDER_CAPABILITY) this.continuousRecorderChildren.add(child);
+            else if (line.startsWith(RECORDER_HEALTH_PREFIX)) this.ingestRecorderHealthLine(line, finalEventOnly);
             else append(Buffer.from(healthBuffer));
           }
           healthBuffer = "";
@@ -1823,7 +1827,7 @@ export class ComputerHistoryDemoService {
         });
         return;
       }
-      const stopReason = recorderUserStopReason(segment.eventsFile, startedAtByte);
+      const stopReason = recorderUserStopReason(segment.eventsFile, segment.recorderStartedAtByte ?? 0);
       const reason = code === 0 ? stopReason : null;
       // Preserve an explicit stop even when an overlapping pause/rotation has
       // already detached this child. Its own SIGTERM produces user_interrupt,
@@ -2468,11 +2472,14 @@ export class ComputerHistoryDemoService {
     const previous = this.segment;
     if (!previous || this.recorderTransition || this.shuttingDown) return;
     void this.trackRecorderTransition(async () => {
-      if (this.platformDriver?.rotate && previous.child) {
+      if (previous.child && (this.platformDriver?.rotate || this.continuousRecorderChildren.has(previous.child))) {
         const child = previous.child;
         const next = this.openSegment();
-        await this.platformDriver.rotate(child, { title: `Computer History ${next.id}`, eventsFile: next.eventsFile,
-          observationSettingsFile: this.observationSettings.filePath, weChatConsentFile: this.weChatConsent.filePath });
+        next.recorderStartedAtByte = fs.existsSync(next.eventsFile) ? fs.statSync(next.eventsFile).size : 0;
+        const launch = { title: `Computer History ${next.id}`, eventsFile: next.eventsFile,
+          observationSettingsFile: this.observationSettings.filePath, weChatConsentFile: this.weChatConsent.filePath };
+        if (this.platformDriver?.rotate) await this.platformDriver.rotate(child, launch);
+        else await rotateRecorderOutput(child, { title: launch.title, eventsFile: launch.eventsFile });
         previous.child = null; next.child = child;
         this.recorderSegments.set(child, next); this.segment = next;
         void this.finalizeSegment(previous);
