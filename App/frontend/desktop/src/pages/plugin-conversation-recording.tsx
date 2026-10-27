@@ -9,7 +9,7 @@ import { Button } from "../components/button.js";
 export function PluginConversationRecording({ client, config, plugins, conversationId: currentConversationId, onPrompt }: {
   client?: PluginsClient; config?: RuntimeConfig; plugins: InstalledPlugin[]; conversationId: string | null; onPrompt: (text: string) => void;
 }) {
-  const { language } = useTranslation(), cn = language === "zh-CN";
+  const { t } = useTranslation();
   const conversationId = currentConversationId?.replace(/^websocket:/, "") ?? null;
   const [sessions, setSessions] = useState<Array<{ plugin: InstalledPlugin; session: EventCaptureSession; presentation?: PluginConversationPresentation }>>([]);
   const [error, setError] = useState<string | null>(null), [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
@@ -60,7 +60,7 @@ export function PluginConversationRecording({ client, config, plugins, conversat
     try {
       if (action === "disable") {
         await client.disable(selected.plugin.id);
-        setNotice(cn ? "插件已停用，录制已终止；片段和技能已保留。" : "Plugin disabled. Recording ended; fragments and skills were retained.");
+        setNotice(t("plugins.recording.disabledNotice"));
         setSessions([]); window.dispatchEvent(new Event("memmy:plugins-changed"));
       } else {
         const response = await client.invoke(selected.plugin.id, selected.plugin.manifest.conversation!.recordingCapabilityId,
@@ -78,43 +78,42 @@ export function PluginConversationRecording({ client, config, plugins, conversat
   const { session, presentation } = selected, recording = session.state === "recording";
   const elapsed = session.state === "starting" ? 0 : Math.max(0, Math.floor(((session.endedAt ? Date.parse(session.endedAt) : endingAt ?? now) - Date.parse(session.startedAt)) / 1_000));
   const duration = `${elapsed >= 3600 ? `${String(Math.floor(elapsed / 3600)).padStart(2, "0")}:` : ""}${String(Math.floor(elapsed / 60) % 60).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
-  const availability = cn ? { pending: "待核对", available: "可用", empty: "无可用事件", partial: "部分可用", unavailable: "不可用" }[session.availability] : session.availability;
-  const label = error ? cn ? "状态待核对" : "Status unavailable" : busy ? cn ? "正在结束录制" : "Ending recording" : recording ? cn ? "录制中" : "Recording" :
-    session.state === "ready" ? cn ? "录制已结束" : "Recording ended" : session.state === "cancelled" ? cn ? "录制已取消" : "Recording cancelled" :
-    session.state === "finalizing" ? cn ? "正在结束录制" : "Ending recording" : session.state === "starting" ? session.browserCapture
-      ? cn ? "正在准备教学窗口" : "Preparing teaching window" : cn ? "正在启动录制" : "Starting recording" : cn ? "录制失败" : "Recording failed";
-  return <section aria-label={cn ? "对话录制" : "Conversation recording"} data-recording-session={session.id}
+  const availability = t(`plugins.recording.availability.${session.availability}`);
+  const label = error ? t("plugins.recording.statusUnavailable") : busy ? t("plugins.recording.ending") : recording ? t("plugins.recording.active") :
+    session.state === "ready" ? t("plugins.recording.ended") : session.state === "cancelled" ? t("plugins.recording.cancelled") :
+    session.state === "finalizing" ? t("plugins.recording.ending") : session.state === "starting" ? session.browserCapture
+      ? t("plugins.recording.preparingWindow") : t("plugins.recording.starting") : t("plugins.recording.failed");
+  return <section aria-label={t("plugins.recording.label")} data-recording-session={session.id}
     className={ongoing ? `recording-bar recording-bar--activity${recording && !busy && !error ? " recording-bar--live" : ""}` : "mx-4 my-2 rounded-card border border-border-stone/40 bg-background-paper p-3 text-sm"} aria-live="polite">
     {ongoing ? <>
       <span className="recording-bar__icon" aria-hidden="true">{busy || session.state === "starting" || session.state === "finalizing" ? <LoaderCircle size={18} className="animate-spin" /> : <Video size={18} />}</span>
       <strong className="recording-bar__title"><span className="recording-bar__indicator" aria-hidden="true" />{label}</strong>
-      <time className="recording-bar__clock" role="timer" aria-label={cn ? "录制时长" : "Recording elapsed time"} aria-live="off" dateTime={`PT${elapsed}S`}>{duration}</time>
+      <time className="recording-bar__clock" role="timer" aria-label={t("plugins.recording.elapsed")} aria-live="off" dateTime={`PT${elapsed}S`}>{duration}</time>
       <span className="recording-bar__goal" title={session.goal}>{selected.plugin.manifest.name} · {session.goal}</span>
       <div className="recording-bar__actions">
-        <button type="button" className="recording-bar__button" disabled={busy || !recording} onClick={() => void control("stop")}><Square size={12} aria-hidden="true" />{cn ? "结束录制" : "End recording"}</button>
-        <button type="button" className="recording-bar__button" disabled={busy || session.state === "finalizing"} onClick={() => void control("cancel")}><X size={13} aria-hidden="true" />{cn ? "取消" : "Cancel"}</button>
-        <button type="button" className="recording-bar__button" disabled={busy} onClick={() => void control("disable")}>{cn ? "停用插件" : "Disable plugin"}</button>
+        <button type="button" className="recording-bar__button" disabled={busy || !recording} onClick={() => void control("stop")}><Square size={12} aria-hidden="true" />{t("plugins.recording.stop")}</button>
+        <button type="button" className="recording-bar__button" disabled={busy || session.state === "finalizing"} onClick={() => void control("cancel")}><X size={13} aria-hidden="true" />{t("plugins.recording.cancel")}</button>
+        <button type="button" className="recording-bar__button" disabled={busy} onClick={() => void control("disable")}>{t("plugins.recording.disable")}</button>
       </div>
-      {session.availability === "partial" && <p className="recording-bar__note recording-bar__note--warning">{cn ? "采集部分可用，结束后请核对录制片段。" : "Capture coverage is partial. Review the fragment after recording."}</p>}
-      {session.limitations.includes("browser_capture_popup_unconfirmed") && <p className="recording-bar__note recording-bar__note--warning">{cn
-        ? "有弹窗尚未确认来源，未纳入录制；请在教学窗口中继续操作。" : "A popup's source could not be confirmed and it was excluded. Continue in the teaching window."}</p>}
+      {session.availability === "partial" && <p className="recording-bar__note recording-bar__note--warning">{t("plugins.recording.partialNotice")}</p>}
+      {session.limitations.includes("browser_capture_popup_unconfirmed") && <p className="recording-bar__note recording-bar__note--warning">{t("plugins.recording.popupUnconfirmed")}</p>}
       {session.browserCapture && <p className="recording-bar__note">{session.state === "starting"
-        ? cn ? "正在绑定新教学窗口，尚未开始录制。" : "Binding a new teaching window. Recording has not started."
-        : cn ? "仅记录教学窗口及其弹窗；沿用日常登录态，原有窗口不纳入。" : "Only the teaching window and its popups are recorded. Existing sign-in is retained; everyday windows are excluded."}</p>}
+        ? t("plugins.recording.bindingWindow")
+        : t("plugins.recording.windowScope")}</p>}
     </> : <div className="flex flex-wrap items-center gap-3"><strong>{label}</strong><time aria-live="off">{duration}</time><span>{session.goal}</span>
-      <Button size="sm" variant="ghost" disabled={busy} onClick={() => void control("disable")}>{cn ? "停用插件" : "Disable plugin"}</Button>
+      <Button size="sm" variant="ghost" disabled={busy} onClick={() => void control("disable")}>{t("plugins.recording.disable")}</Button>
     </div>}
-    {!recording && <p className="mt-2">{session.eventCount} {cn ? "条事件" : "events"}{session.applications.length ? ` · ${session.applications.join(", ")}` : ""} · {availability}</p>}
+    {!recording && <p className="mt-2">{session.eventCount} {t("plugins.recording.events")}{session.applications.length ? ` · ${session.applications.join(", ")}` : ""} · {availability}</p>}
     {session.state === "ready" && session.captureIntegrity && <p className="mt-2" role="status">{!session.captureIntegrity.snapshotSaved
-      ? cn ? "录制片段保存未完成。" : "The recording snapshot could not be saved."
+      ? t("plugins.recording.snapshotFailed")
       : !session.captureIntegrity.boundaryConfirmed
-        ? cn ? "已保留已收到的事件，结束确认未完成。" : "Received events were saved; the end boundary could not be confirmed."
+        ? t("plugins.recording.boundaryUnconfirmed")
         : !session.captureIntegrity.coverageComplete
-          ? cn ? "录制已结束并保存，部分网页操作未能确认完整；生成技能前请核对片段。" : "Recording ended and was saved with coverage gaps. Review the fragment before creating a skill."
-          : cn ? "录制已结束并保存。" : "Recording ended and was saved."}</p>}
+          ? t("plugins.recording.savedWithGaps")
+          : t("plugins.recording.saved")}</p>}
     {presentation && <div className="mt-2 flex flex-wrap items-center gap-3"><span>{presentation.message}</span>
       {presentation.actions.map(action => <Button key={action.id} size="sm" disabled={busy} onClick={() => onPrompt(action.prompt)}>{action.label}</Button>)}</div>}
     {session.error && <p role="alert" className={ongoing ? "recording-bar__note recording-bar__note--warning" : undefined}>{session.error}</p>}{error && <p role="alert" className={ongoing ? "recording-bar__note recording-bar__note--warning" : undefined}>{error}</p>}
-    {session.limitations.length > 0 && !recording && <details className="mt-2"><summary>{cn ? "采集范围与限制" : "Capture scope and limitations"}</summary>{session.limitations.map((text, i) => <p key={i}>{text}</p>)}</details>}
+    {session.limitations.length > 0 && !recording && <details className="mt-2"><summary>{t("plugins.recording.limitations")}</summary>{session.limitations.map((text, i) => <p key={i}>{text}</p>)}</details>}
   </section>;
 }

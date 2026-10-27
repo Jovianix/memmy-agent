@@ -27,7 +27,13 @@ describe("standalone scan HTTP responsiveness", () => {
   ] as const)("serves health and cancellation during $phase of $shape history", async ({ phase, shape }) => {
     const root = tempRoot();
     let requestDuringScan!: () => Promise<void>;
-    let check!: Promise<void>;
+    let resolveCheck!: () => void;
+    let rejectCheck!: (error: unknown) => void;
+    const check = new Promise<void>((resolve, reject) => {
+      resolveCheck = resolve;
+      rejectCheck = reject;
+    });
+    void check.catch(() => undefined);
     let closeObserved = false;
     const originalOpen = scanStore.openMemoryAgentSourceScanStore;
     vi.spyOn(scanStore, "openMemoryAgentSourceScanStore").mockImplementation(async (...args) => {
@@ -38,11 +44,7 @@ describe("standalone scan HTTP responsiveness", () => {
         saveMeta(meta);
         if (meta.phase === phase && !requested) {
           requested = true;
-          check = new Promise<void>((resolve, reject) => {
-            setTimeout(() => { void requestDuringScan().then(resolve, reject); }, 0);
-          });
-          // Attach a handler while the scan continues to avoid an unhandled rejection.
-          void check.catch(() => undefined);
+          setTimeout(() => { void requestDuringScan().then(resolveCheck, rejectCheck); }, 0);
         }
       };
       const close = store.close;
@@ -85,7 +87,8 @@ describe("standalone scan HTTP responsiveness", () => {
     };
     try {
       const { jobId } = await executor.startScan({ sourceId: "codex", mode: "full" });
-      await vi.waitFor(() => expect(check).toBeDefined());
+      // Await the actual phase-triggered HTTP check. Reaching ingest includes
+      // staging 8,000 messages and is not itself the responsiveness assertion.
       await check;
       await executor.dispose();
       expect(completeSourceTurn.mock.calls.length).toBeLessThan(TURN_COUNT);
@@ -94,6 +97,7 @@ describe("standalone scan HTTP responsiveness", () => {
       expect(closeObserved).toBe(true);
       expect(existsSync(join(root, "scans", `${jobId}.sqlite`))).toBe(false);
     } finally {
+      await executor.dispose();
       await closeMemoryHttpServer(server);
     }
   });

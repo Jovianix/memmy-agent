@@ -3184,22 +3184,6 @@ export function HomePage() {
     // An Agent-routed command stays on the normal message path. The explicit
     // Skill prompt lets the Agent invoke the capability in its own tool turn.
     if (pluginInvocation?.contribution.agentSkillId) {
-      if (pluginInvocation.plugin.manifest.conversation) return false;
-      if (pluginInvocation.contribution.capabilityId && clients && pendingAttachments.length === 0) {
-        const { plugin, contribution, arguments: commandArguments } = pluginInvocation;
-        const conversationId = state.agent.currentChatId ?? state.agent.currentSessionKey ?? chatScopeKey;
-        void clients.plugins.invoke(plugin.id, contribution.capabilityId, {
-          conversationId,
-          input: { command: contribution.command, arguments: commandArguments, context: { ...(draftTarget.kind === "project" ? { projectId: draftTarget.projectId } : {}), references: contextChips } },
-          origin: "user"
-        }).catch((error) => {
-          dispatch(agentActions.operationFailed("chat", createAgentOperationError({
-            source: "send",
-            message: pluginInvocationError(error),
-            scopeKey: chatScopeKey
-          })));
-        });
-      }
       return false;
     }
     if (pluginInvocation && pendingAttachments.length > 0) return false;

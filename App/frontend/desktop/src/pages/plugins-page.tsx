@@ -4,8 +4,8 @@ import { AppFrame } from "./app-frame.js";
 import { PluginStoreSection } from "./plugin-store-section.js";
 
 export function PluginsPage() {
-  const { clients } = useApiClients(), { language } = useTranslation();
-  return <AppFrame title={language === "zh-CN" ? "插件" : "Plugins"}>
+  const { clients } = useApiClients(), { t } = useTranslation();
+  return <AppFrame title={t("nav.plugins")}>
     <div className="app-frame-page-content p-6"><PluginStoreSection client={clients?.plugins} /></div>
   </AppFrame>;
 }
