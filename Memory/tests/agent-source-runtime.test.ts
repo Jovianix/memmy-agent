@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { setImmediate as yieldToIO } from "node:timers/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -14,7 +15,6 @@ import type { SkillTarget } from "../src/agent-source/integration/types.js";
 import type { MemoryService } from "../src/service/memory-service.js";
 
 const roots: string[] = [];
-const realSetTimeout = globalThis.setTimeout;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -409,9 +409,8 @@ describe("standalone Agent source executor", () => {
   });
 
   it("owns startup and recurring scans in the Memory process", async () => {
-    // Only control the scheduler. Scans use real I/O and setImmediate to yield
-    // under load; faking that yield can strand an otherwise healthy scan.
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // Keep deadline control separate from adapter/filesystem I/O and scan checkpoints.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const root = tempRoot();
     const configPath = join(root, "config.yaml");
     writeFileSync(configPath, [
@@ -423,6 +422,13 @@ describe("standalone Agent source executor", () => {
       ""
     ].join("\n"));
     let sequence = 0;
+    const io = [0, 1].map(() => {
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const ready = new Promise<void>((resolve) => { release = resolve; });
+      return { started, ready, entered: () => entered(), release: () => release() };
+    });
     const adapter: SourceAdapter = {
       descriptor: {
         sourceId: "fixture-agent",
@@ -433,6 +439,9 @@ describe("standalone Agent source executor", () => {
       detect: async () => true,
       async *scan() {
         sequence += 1;
+        const pending = io[sequence - 1];
+        pending?.entered();
+        await pending?.ready;
         yield {
           messageId: `user-${sequence}`,
           sourceId: "fixture-agent",
@@ -470,23 +479,55 @@ describe("standalone Agent source executor", () => {
       scheduleWorker
     });
 
+    let pendingCompletion: Promise<void> | undefined;
+    let sentinel: number | ReturnType<typeof setTimeout> | undefined;
     try {
+      const beforeStartup = executor.scanStatus().jobId;
       executor.startAutomation();
       await vi.advanceTimersByTimeAsync(9);
+      expect(sequence).toBe(0);
+      expect(executor.scanStatus().jobId).toBe(beforeStartup);
       expect(addMemory).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1);
-      await waitForFakeTimerScan(executor);
+      await io[0]!.started;
+      const deadlineElapsed = vi.fn();
+      sentinel = setTimeout(deadlineElapsed, 1);
+      pendingCompletion = waitForAutomaticScanCompletion(executor, beforeStartup);
+      void pendingCompletion.catch(() => {});
+      await yieldToIO();
+      await yieldToIO();
+      expect(deadlineElapsed).not.toHaveBeenCalled();
+      expect(addMemory).not.toHaveBeenCalled();
+      clearTimeout(sentinel);
+      sentinel = undefined;
+      io[0]!.release();
+      await pendingCompletion;
+      pendingCompletion = undefined;
       expect(addMemory).toHaveBeenCalledTimes(1);
       expect(enqueuePendingImportSummaries).toHaveBeenLastCalledWith(1_000, ["memory-1"]);
       expect(scheduleWorker).toHaveBeenCalledTimes(1);
 
-      await vi.advanceTimersByTimeAsync(100);
-      await waitForFakeTimerScan(executor);
+      const beforeRecurring = executor.scanStatus().jobId;
+      await vi.advanceTimersByTimeAsync(99);
+      expect(sequence).toBe(1);
+      expect(executor.scanStatus().jobId).toBe(beforeRecurring);
+      expect(addMemory).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await io[1]!.started;
+      expect(addMemory).toHaveBeenCalledTimes(1);
+      pendingCompletion = waitForAutomaticScanCompletion(executor, beforeRecurring);
+      void pendingCompletion.catch(() => {});
+      io[1]!.release();
+      await pendingCompletion;
+      pendingCompletion = undefined;
       expect(addMemory).toHaveBeenCalledTimes(2);
       expect(enqueuePendingImportSummaries).toHaveBeenLastCalledWith(1_000, ["memory-2"]);
       expect(scheduleWorker).toHaveBeenCalledTimes(2);
     } finally {
+      if (sentinel !== undefined) clearTimeout(sentinel);
+      for (const pending of io) pending.release();
+      await pendingCompletion?.catch(() => {});
       await executor.dispose();
     }
   });
@@ -899,17 +940,18 @@ function fixtureMessage(
   } as const;
 }
 
-async function waitForFakeTimerScan(executor: ReturnType<typeof createAgentSourceExecutor>): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (!executor.scanStatus().running) {
-      expect(executor.scanStatus().error).toBeNull();
+async function waitForAutomaticScanCompletion(
+  executor: ReturnType<typeof createAgentSourceExecutor>,
+  previousJobId: string | null
+): Promise<void> {
+  for (;;) {
+    const status = executor.scanStatus();
+    if (status.jobId !== previousJobId && status.completedAt !== null && !status.running) {
+      expect(status.error).toBeNull();
       return;
     }
-    // The scan persists real files. Wait for I/O without advancing the virtual
-    // clock into the next scheduled scan before the current one has finished.
-    await new Promise<void>(resolve => realSetTimeout(resolve, 10));
+    await yieldToIO();
   }
-  throw new Error("automatic scan did not complete");
 }
 
 function tempRoot(): string {

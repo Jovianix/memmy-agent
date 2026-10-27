@@ -14,6 +14,7 @@ import {
 } from "../../providers/model-input-capabilities.js";
 import type { ActualModelContext } from "@memmy/local-api-contracts";
 import { CONTEXT_SAFETY_BUFFER_TOKENS } from "../../token-budget.js";
+import { MessageTool } from "./tools/message.js";
 import { ToolRegistry } from "./tools/registry.js";
 import type { FileMutationOutcome, ToolExecutionContext } from "./tools/base.js";
 import { withToolExecutionRequestContext } from "./tools/context.js";
@@ -1167,6 +1168,7 @@ export class AgentRunner {
         abortSignal: spec.abortSignal ?? null,
         toolName: call.name,
         callId: call.id ?? null,
+        uiToolCallId: getOrCreateUiToolCallId(call),
         sessionKey: spec.sessionKey ?? null,
         modelPreset: spec.actualModelContext?.presetId ?? null,
         stopTurn: (message) => { stopTurn ??= message; },
@@ -1217,6 +1219,8 @@ export class AgentRunner {
         );
       }
       const result = this.normalizeToolResult(spec, call.id, call.name, raw);
+      const messageTool = spec.tools?.get?.("message");
+      if (messageTool instanceof MessageTool) messageTool.observePluginToolResult(call.name, raw);
       if (stopTurn) event.status = "error";
       await spec.hook?.afterToolCall(new AgentHookContext({ spec, toolCalls: [call], toolResults: [result], toolEvents: [event] }), call, result);
       return { call, result, event, error, ...(stopTurn ? { stopTurn } : {}) };
@@ -1982,14 +1986,14 @@ export class AgentRunner {
         hookContinuationExhausted = true;
         break;
       }
-      const planContinuation = spec.finalResponseContinuation?.({ finalContent: clean as string, messages });
+      const deliveryContinuation = spec.finalResponseContinuation?.({ finalContent: clean as string, messages });
       if (streamsHookContent) {
-        await hook.onStreamEnd(context, { resuming: Boolean(planContinuation) });
+        await hook.onStreamEnd(context, { resuming: Boolean(deliveryContinuation) });
       }
 
       messages.push(assistant ?? buildAssistantMessage(clean));
-      if (planContinuation) {
-        messages.push({ role: "system", content: planContinuation });
+      if (deliveryContinuation) {
+        messages.push({ role: "system", content: deliveryContinuation });
         await hook.afterIteration(context);
         continue;
       }

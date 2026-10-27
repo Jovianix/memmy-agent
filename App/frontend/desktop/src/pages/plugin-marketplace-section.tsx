@@ -9,6 +9,7 @@ import { Tooltip } from "../components/tooltip.js";
 import { useTranslation } from "../i18n/use-translation.js";
 import { Memmy } from "../components/mascot/memmy.js";
 import { PluginDetailPreview } from "./plugin-detail-preview.js";
+import { isNewerPluginVersion } from "./plugin-version.js";
 
 export interface MarketplacePlugin {
   id: string;
@@ -37,6 +38,7 @@ export interface PluginMarketplaceSectionProps {
   /** Temporarily block lifecycle mutations while keeping refresh available. */
   actionsDisabled?: boolean;
   onInstall(plugin: MarketplacePlugin): void;
+  onUpdate(plugin: MarketplacePlugin): void;
   onUninstall(plugin: MarketplacePlugin): void;
   onEnable(plugin: MarketplacePlugin): void;
   onAddToChat(plugin: MarketplacePlugin): void;
@@ -68,7 +70,7 @@ export function addPluginCommandToDraft(command: string, draft: string): string 
   return `${command}  ${existing}`;
 }
 
-type PrimaryAction = "install" | "enable" | "configure" | "sign-in" | "unavailable" | null;
+type PrimaryAction = "install" | "update" | "enable" | "configure" | "sign-in" | "unavailable" | null;
 
 /** A plugin needs sign-in when it declares login (or an official model, which is account-owned) and the user is signed out. */
 function pluginNeedsSignIn(plugin: MarketplacePlugin, signedIn: boolean): boolean {
@@ -91,6 +93,7 @@ export function PluginMarketplaceSection(props: PluginMarketplaceSectionProps) {
     && `${plugin.name}\n${plugin.description}`.toLocaleLowerCase().includes(normalizedQuery)
   ));
   const detail = props.plugins.find((plugin) => plugin.id === detailId);
+  const detailNote = detail ? detailModelNote(detail, t) : null;
   const confirmedPlugin = props.plugins.find((plugin) => plugin.id === uninstallId);
   const busy = Boolean(props.busyId) || Boolean(props.loading);
   const actionsDisabled = busy || Boolean(props.actionsDisabled);
@@ -127,6 +130,11 @@ export function PluginMarketplaceSection(props: PluginMarketplaceSectionProps) {
   function performPrimary(plugin: MarketplacePlugin) {
     if (busy) return;
     switch (primaryAction(plugin, signedIn, props.officialModelReady)) {
+      case "update":
+        if (actionsDisabled) return;
+        setDetailId(null);
+        props.onUpdate(plugin);
+        break;
       case "install":
         if (actionsDisabled) return;
         setDetailId(null);
@@ -154,6 +162,7 @@ export function PluginMarketplaceSection(props: PluginMarketplaceSectionProps) {
     if (!action) return null;
     const working = props.busyId === plugin.id || isTransitioning(plugin);
     const label = action === "unavailable" ? plugin.eligibility?.reason ? t("plugins.ui.accessUnavailable") : t("plugins.ui.comingSoon")
+      : action === "update" ? t("plugins.ui.updateToVersion", { version: plugin.version! })
       : action === "install" ? t("settings.computerUse.extensionInstall")
       : action === "configure" ? t("plugins.ui.setUpOfficialModel")
       : action === "sign-in" ? t("plugins.ui.signIn")
@@ -162,7 +171,7 @@ export function PluginMarketplaceSection(props: PluginMarketplaceSectionProps) {
     const bypassesActionsDisabled = action === "configure" || action === "sign-in";
     return (
       <button type="button" className="w-full rounded-xl bg-action-sky text-white text-sm font-normal py-2.5 hover:bg-action-sky-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-        aria-label={action === "install" ? t("plugins.ui.install", { name: plugin.name }) : action === "enable" ? t("plugins.ui.retryInstalling", { name: plugin.name }) : undefined}
+        aria-label={action === "update" ? t("plugins.ui.update", { name: plugin.name }) : action === "install" ? t("plugins.ui.install", { name: plugin.name }) : action === "enable" ? t("plugins.ui.retryInstalling", { name: plugin.name }) : undefined}
         disabled={busy || working || action === "unavailable" || (!bypassesActionsDisabled && actionsDisabled)} onClick={() => performPrimary(plugin)}>
         {working ? <Loader2 size={13} className="mr-1.5 animate-spin" aria-hidden="true" /> : null}
         {working ? t("settings.computerUse.extensionPreparing") : label}
@@ -254,6 +263,9 @@ export function PluginMarketplaceSection(props: PluginMarketplaceSectionProps) {
                   disabled={actionsDisabled || !plugin.installable} onClick={() => performPrimary(plugin)}>
                   {plugin.installable ? <Plus size={18} aria-hidden="true" /> : t("plugins.ui.comingSoon")}
                 </button>
+              ) : primaryAction(plugin, signedIn, props.officialModelReady) === "update" ? (
+                <button type="button" className="plugin-marketplace-icon-button" aria-label={t("plugins.ui.update", { name: plugin.name })}
+                  title={t("plugins.ui.updateToVersion", { version: plugin.version! })} disabled={actionsDisabled} onClick={() => performPrimary(plugin)}><RefreshCw size={16} /></button>
               ) : plugin.installed.state === "active" ? (
                 <span className="plugin-marketplace-installed-slot">
                   <span className="plugin-marketplace-installed-check" role="img" aria-label={t("memory.cliInstalled")}>
@@ -307,7 +319,10 @@ export function PluginMarketplaceSection(props: PluginMarketplaceSectionProps) {
           backdropClassName="plugin-marketplace-detail-backdrop"
           closeLabel={t("common.close")} closeContent={<X size={16} aria-hidden="true" />} onClose={() => setDetailId(null)}
           footer={<div className="plugin-marketplace-detail-footer">
-            <span className="plugin-marketplace-detail-status">{status(detail)}{detail.version || detail.installed?.version ? ` · v${detail.version ?? detail.installed?.version}` : ""}</span>
+            <span className="plugin-marketplace-detail-status">
+              {status(detail)}{detail.installed ? ` · v${detail.installed.version}` : ""}
+              {detail.version ? `${detail.installed ? " ｜ " : " · "}${t("plugins.ui.latestVersion", { version: detail.version })}` : ""}
+            </span>
             <div className="plugin-marketplace-detail-actions">
               {detail.installed ? <button type="button" className="w-full rounded-xl border border-stone-200 bg-white text-stone-700 text-sm font-normal py-2.5 hover:bg-stone-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed" disabled={actionsDisabled} onClick={() => requestUninstall(detail)}>{t("settings.plugins.uninstall")}</button> : null}
               {renderPrimary(detail) ?? (detail.installed?.state === "active"
@@ -316,11 +331,13 @@ export function PluginMarketplaceSection(props: PluginMarketplaceSectionProps) {
             </div>
           </div>}>
           <div className="plugin-marketplace-detail-content">
+            {props.actionErrorPluginId === detail.id && props.actionError ? <p role="alert" className="plugin-marketplace-detail-error">{props.actionError}</p> : null}
+            {props.error ? <p role="alert" className="plugin-marketplace-detail-error">{props.error}</p> : null}
             <PluginDetailPreview category={detail.category} name={detail.name} />
             <p className="plugin-marketplace-detail-description">
-              {capabilityDescription(detail.category, t)}{detail.requiresOfficialModel ? ` ${t("plugins.ui.memmyOfficialModelsAreRecommendedForThisPlugin")}` : ""}
+              {capabilityDescription(detail.category, t)}{detail.id !== "literature-review" && detail.requiresOfficialModel ? ` ${t("plugins.ui.memmyOfficialModelsAreRecommendedForThisPlugin")}` : ""}
             </p>
-            {detail.requiresLogin ? <p className="plugin-marketplace-detail-note">{t("plugins.ui.signInRequired")}{detail.requiresOfficialModel ? t("plugins.ui.memmyOfficialModelsRecommended") : ""}</p> : null}
+            {detailNote ? <p className="plugin-marketplace-detail-note">{detailNote}</p> : null}
             {!detail.installed && !detail.installable && !detail.requiresLogin ? <p className="plugin-marketplace-detail-note">{t("plugins.ui.anInstallableReleaseIsNotAvailableYet")}</p> : null}
             {detail.installed?.state === "failed" ? <p className="plugin-marketplace-detail-error">{t("plugins.ui.installationCouldNotCompleteRetryInstallationOrContact")}</p> : null}
           </div>
@@ -344,6 +361,12 @@ export function PluginMarketplaceSection(props: PluginMarketplaceSectionProps) {
   );
 }
 
+function detailModelNote(plugin: MarketplacePlugin, t: ReturnType<typeof useTranslation>["t"]): string | null {
+  if (!plugin.requiresLogin) return null;
+  if (plugin.id === "literature-review") return t("plugins.ui.literatureReviewModelNote");
+  return `${t("plugins.ui.signInRequired")}${plugin.requiresOfficialModel ? t("plugins.ui.memmyOfficialModelsRecommended") : ""}`;
+}
+
 function isTransitioning(plugin: MarketplacePlugin): boolean {
   return plugin.installed?.state === "enabling" || plugin.installed?.state === "disabling";
 }
@@ -355,6 +378,7 @@ function primaryAction(plugin: MarketplacePlugin, signedIn: boolean, officialMod
     if (!plugin.installable) return "unavailable";
     return pluginNeedsSignIn(plugin, signedIn) ? "sign-in" : "install";
   }
+  if (plugin.installable && isNewerPluginVersion(plugin.version, plugin.installed.version)) return "update";
   if (plugin.installed.state !== "active") return "enable";
   if (pluginNeedsSignIn(plugin, signedIn)) return "sign-in";
   void officialModelReady;

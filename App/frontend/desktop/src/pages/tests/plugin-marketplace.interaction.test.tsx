@@ -42,6 +42,7 @@ describe("live marketplace controller", () => {
 
   function createClients() {
     return {
+      account: { getSession: vi.fn(async () => undefined) },
       plugins: {
         list: vi.fn(async () => [...records]),
         catalog: vi.fn(async () => [{ manifest: { ...pending.manifest, name: "文献综述", version: "0.5.18",
@@ -83,6 +84,29 @@ describe("live marketplace controller", () => {
   function addToChatButton() {
     return container.querySelector('article[aria-label="文献综述"] [aria-label="将文献综述加入对话"]');
   }
+
+  it("shows installed plugins when the remote catalog is empty", async () => {
+    records = [{ ...pending, state: "active" }, legal];
+    clients.plugins.catalog.mockResolvedValueOnce([]);
+    await render();
+    expect(container.textContent).toContain("已安装 (2)");
+    expect(container.querySelector('article[aria-label="文献综述"]')).not.toBeNull();
+    expect(container.querySelector('article[aria-label="用工合规诊断"]')).not.toBeNull();
+    expect(addToChatButton()).not.toBeNull();
+  });
+
+  it("loads local plugins while account refresh and remote catalog are unavailable", async () => {
+    records = [legal];
+    clients.account.getSession.mockImplementationOnce(() => new Promise<undefined>(() => undefined));
+    await render();
+    expect(container.textContent).toContain("已安装 (1)");
+    expect(container.querySelector('article[aria-label="用工合规诊断"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("正在加载插件");
+    clients.plugins.catalog.mockRejectedValueOnce(new Error("catalog unavailable"));
+    await click("刷新");
+    expect(container.textContent).toContain("远程插件目录暂不可用");
+    expect(container.querySelector('article[aria-label="用工合规诊断"]')).not.toBeNull();
+  });
 
   it("makes the catalog usable while the model configuration request is still pending", async () => {
     let resolveModel!: (value: Awaited<ReturnType<typeof clients.config.getModelConfig>>) => void;

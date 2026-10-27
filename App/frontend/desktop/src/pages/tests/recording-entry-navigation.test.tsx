@@ -113,7 +113,7 @@ describe("independent interview recording entries", () => {
     // mid-width are what made the wave read as bars of uneven thickness, and a
     // fractional bar width lets each one round to a different device pixel.
     // Read from the stylesheet — the test environment does not apply it.
-    const css = readFileSync(resolve(here, "../../styles.css"), "utf8");
+    const css = readFileSync(resolve(here, "../conversation-features.css"), "utf8");
     const barRule = /\.recording-waveform__bar \{[^}]*width: ([0-9.]+)px/.exec(css);
     const rowRule = /\.recording-waveform \{[^}]*gap: ([0-9.]+)px/.exec(css);
     expect(barRule).not.toBeNull();
@@ -183,7 +183,8 @@ describe("independent interview recording entries", () => {
     await click('.recording-entry-card .recording-bar__button--primary');
     await click('.recording-entry-card .recording-bar__button--primary');
     await act(async () => current.session.back());
-    await click('.recording-page__rename-trigger');
+    await click('.recording-page__more-trigger');
+    await click('.recording-page__more-menu button:has(.lucide-pencil)');
     const field = container.querySelector<HTMLInputElement>('.recording-page__rename input')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, "企业现场访谈");

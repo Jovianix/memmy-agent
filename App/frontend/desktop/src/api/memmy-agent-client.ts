@@ -183,6 +183,10 @@ const AgentTaskPlanStateSchema = z.object({
   updated_at: z.string().nullable()
 }).strict();
 
+export function isAgentTaskPlanState(value: unknown): value is AgentTaskPlanState {
+  return AgentTaskPlanStateSchema.safeParse(value).success;
+}
+
 export function isAgentGoalStatus(value: unknown): value is AgentGoalStatus {
   return value === "active"
     || value === "paused"
@@ -194,10 +198,6 @@ export function isAgentGoalStatus(value: unknown): value is AgentGoalStatus {
 
 export function isAgentGoalState(value: unknown): value is AgentGoalState {
   return AgentGoalStateSchema.safeParse(value).success;
-}
-
-export function isAgentTaskPlanState(value: unknown): value is AgentTaskPlanState {
-  return AgentTaskPlanStateSchema.safeParse(value).success;
 }
 
 export const DEFAULT_MEMMY_AGENT_WEBUI_BASE_URL = "http://127.0.0.1:18980";
@@ -455,6 +455,7 @@ const WebuiThreadSchema = z.object({
   sessionKey: z.string(),
   last_turn_id: z.string().min(1).optional(),
   last_turn_closed: z.boolean().optional(),
+  last_turn_interrupted: z.boolean().optional(),
   last_turn_goal_id: z.string().uuid().optional(),
   last_turn_goal_outcome: z.union([
     z.literal("active"),
@@ -504,6 +505,8 @@ const ResolvedArtifactSchema = z.object({
   media_url: z.string().optional(),
   relative_path: z.string().optional()
 });
+
+const ResolvedRecordingSchema = z.object({ media_url: z.string() });
 
 const RevealArtifactResponseSchema = z.object({
   ok: z.literal(true),
@@ -667,9 +670,9 @@ export type UploadAgentMediaInput = {
   target?: "recordings";
 };
 
-export type MemmyAgentMediaInput = UploadedAgentMedia;
+export type MemmyAgentMediaInput = UploadedAgentMedia | (MemmyAgentMediaAttachment & { path: string; kind: MemmyAgentMediaKind; name: string });
 
-export type MemmyAgentMediaKind = "image" | "video" | "file";
+export type MemmyAgentMediaKind = "image" | "video" | "audio" | "file";
 export type MemmyAgentUiLanguage = "zh-CN" | "en-US";
 
 export type MemmyAgentMediaAttachment = {
@@ -704,6 +707,7 @@ export type WebuiQueuedMessage = {
   queue_surface?: "chat_composer" | null;
   turn_admission?: "steer";
   turn_id?: string;
+  user_event_on_consume?: boolean;
 };
 
 export type MemmyAgentMessageSubmissionResult = {
@@ -736,6 +740,7 @@ export type MemmyAgentSendMessageInput = {
   modelPreset?: string | null;
   thinkingEnabled?: boolean;
   thinkingLevel?: string | null;
+  interruptPendingTurnId?: string;
 };
 
 export type MemmyAgentQuestionResponseInput = {
@@ -768,6 +773,8 @@ export type MemmyAgentModelError = {
 
 export type MemmyAgentWsEvent = {
   event: string;
+  phase?: string;
+  tool_name?: string;
   replayed?: boolean;
   connection_generation?: number;
   chat_id?: string;
@@ -940,9 +947,11 @@ export interface MemmyAgentClient {
   renameSession(sessionKey: string, title: string): Promise<MemmyAgentSessionSummary>;
   deleteSession(sessionKey: string): Promise<boolean>;
   resolveArtifact(path: string, sessionKey: string): Promise<ResolvedAgentArtifact>;
+  resolveRecording(path: string): Promise<string>;
   revealArtifact(path: string, sessionKey: string): Promise<void>;
   openArtifact(path: string, sessionKey: string): Promise<void>;
   uploadAgentMedia(attachments: UploadAgentMediaInput[]): Promise<UploadedAgentMedia[]>;
+  deleteRecordingFiles(paths: string[]): Promise<void>;
   uploadAgentImages(images: UploadAgentImageInput[]): Promise<UploadedAgentImage[]>;
   connectWebSocket(onEvent?: (event: MemmyAgentWsEvent) => void): Promise<MemmyAgentWebSocketConnection>;
   sessionKeyToChatId(sessionKey: string): string;
@@ -977,6 +986,7 @@ export interface MemmyAgentWebSocketConnection {
     expectedGeneration: number,
     timeoutMs?: number
   ): Promise<MemmyAgentQueueRemovalResult>;
+  reorderQueuedMessages(chatId: string, orderedIds: string[], expectedRevision: number, expectedGeneration: number): void;
   steerQueuedMessage(
     chatId: string,
     clientRequestId: string,
@@ -1005,6 +1015,7 @@ export interface MemmyAgentWebSocketConnection {
   requestRunStatusSnapshot(chatId: string, expectedGeneration: number, timeoutMs?: number): Promise<MemmyAgentRunStatusSnapshot>;
   getRunStartedAt(chatId: string): number | null;
   getGoalState(chatId: string): AgentGoalState | undefined;
+  getTaskPlanState(chatId: string): AgentTaskPlanState | undefined;
   close(): void;
 }
 
@@ -1053,13 +1064,13 @@ export interface WebSocketLike {
 export class MemmyAgentRequestError extends Error {
   readonly status: number;
   readonly code: string | null;
-  readonly data?: { sidebarState: MemmyAgentSidebarState };
+  readonly data?: { sidebarState?: MemmyAgentSidebarState; worktreePath?: string };
 
   constructor(
     message: string,
     status: number,
     code: string | null = null,
-    data?: { sidebarState: MemmyAgentSidebarState }
+    data?: { sidebarState?: MemmyAgentSidebarState; worktreePath?: string }
   ) {
     super(message);
     this.name = "MemmyAgentRequestError";
@@ -1609,6 +1620,14 @@ class HttpMemmyAgentClient implements MemmyAgentClient {
     });
   }
 
+  async resolveRecording(path: string): Promise<string> {
+    const result = await this.request("/api/webui/recordings/resolve", ResolvedRecordingSchema, {
+      method: "POST",
+      body: { path }
+    });
+    return new URL(result.media_url, this.baseUrl).toString();
+  }
+
   async revealArtifact(path: string, sessionKey: string): Promise<void> {
     await this.request("/api/webui/artifacts/reveal", RevealArtifactResponseSchema, {
       method: "POST",
@@ -1660,6 +1679,13 @@ class HttpMemmyAgentClient implements MemmyAgentClient {
 
     const parsed = UploadedAgentMediaResponseSchema.parse(await response.json());
     return normalizeGatewayMediaUrls(parsed.attachments ?? parsed.images ?? [], this.baseUrl);
+  }
+
+  async deleteRecordingFiles(paths: string[]): Promise<void> {
+    await this.request("/api/webui/recordings/delete", z.object({ ok: z.literal(true) }), {
+      method: "POST",
+      body: { paths }
+    });
   }
 
   async uploadAgentImages(images: UploadAgentImageInput[]): Promise<UploadedAgentImage[]> {
@@ -2104,6 +2130,21 @@ class MemmyAgentWebSocketSession implements MemmyAgentWebSocketConnection {
         reject(asError(error, "Unable to remove queued message"));
       }
     });
+  }
+
+  reorderQueuedMessages(
+    chatId: string,
+    orderedIds: string[],
+    expectedRevision: number,
+    expectedGeneration: number,
+  ): void {
+    this.sendOrdinaryFrame({
+      type: "queue_reorder",
+      chat_id: chatId,
+      request_id: crypto.randomUUID(),
+      ordered_ids: orderedIds,
+      expected_revision: expectedRevision,
+    }, expectedGeneration);
   }
 
   steerQueuedMessage(
@@ -2654,20 +2695,9 @@ class MemmyAgentWebSocketSession implements MemmyAgentWebSocketConnection {
       return;
     }
     if (!this.hasReachedReady) {
-      // A socket that dies during the first connect is still a dropped
-      // connection, and it used to be handled as a one-shot failure: the
-      // initial-ready promise was rejected and the method returned without
-      // scheduling anything, so the transport stayed down until some outer
-      // caller happened to retry. Reporting it the same way as a post-ready
-      // drop and falling through to the reconnect below means a gateway that
-      // is slow to come up recovers on its own.
       this.lastOrdinarySendChatId = null;
       this.rejectInitialReady(new Error("Agent gateway closed before ready"));
-      this.emitEvent({
-        event: "connection_attempt_failed",
-        detail: "Agent gateway closed before ready",
-        connection_generation: generation
-      });
+      return;
     }
     if (event?.code === 1009) {
       this.emitEvent({
@@ -2764,6 +2794,7 @@ class MemmyAgentWebSocketSession implements MemmyAgentWebSocketConnection {
       ...(input.modelPreset !== undefined ? { model_preset: input.modelPreset } : {}),
       ...(input.thinkingEnabled !== undefined ? { thinking_enabled: input.thinkingEnabled } : {}),
       ...(input.thinkingLevel ? { thinking_level: input.thinkingLevel } : {}),
+      ...(input.interruptPendingTurnId ? { interrupt_pending_turn_id: input.interruptPendingTurnId } : {}),
       ...(input.media?.length ? { media_paths: input.media.map((item) => item.path) } : {})
     }, expectedGeneration);
     this.knownChats.add(input.chatId);
@@ -3480,7 +3511,7 @@ async function errorMessage(response: Response): Promise<string> {
 async function parseRequestError(response: Response): Promise<{
   message: string;
   code: string | null;
-  data?: { sidebarState: MemmyAgentSidebarState };
+  data?: { sidebarState?: MemmyAgentSidebarState; worktreePath?: string };
 }> {
   try {
     const body = await response.json();
@@ -3497,6 +3528,9 @@ async function parseRequestError(response: Response): Promise<{
         if (sidebarState.success) {
           return { message, code, data: { sidebarState: sidebarState.data } };
         }
+      }
+      if (code === "workspace_branch_in_use" && typeof record.worktreePath === "string") {
+        return { message, code, data: { worktreePath: record.worktreePath } };
       }
       return { message, code };
     }

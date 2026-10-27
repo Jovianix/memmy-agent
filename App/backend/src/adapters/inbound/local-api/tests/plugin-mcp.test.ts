@@ -1,9 +1,11 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { InstalledPlugin } from "@memmy/local-api-contracts";
 import { createProgressBus } from "../../../../services/progress-bus.js";
-import { buildPluginMcpServer, capabilityToolName, type PluginMcpService } from "../routes/plugin-mcp.js";
+import { buildPluginMcpServer, capabilityToolName, registerPluginMcpRoutes, type PluginMcpService } from "../routes/plugin-mcp.js";
 
 const connections: Array<{ client: Client; server: ReturnType<typeof buildPluginMcpServer> }> = [];
 
@@ -68,6 +70,155 @@ async function connect(
 }
 
 describe("plugin MCP bridge", () => {
+  it.each([true, false])("refreshes lifecycle tools only after their HTTP result, session=%s", async (session) => {
+    let state: InstalledPlugin["state"] = "active";
+    let lifecycleResponseFinished = false;
+    let responseFinishedBeforeRefresh = false;
+    const conversationPlugin = (): InstalledPlugin => ({ ...plugin, state, manifest: { ...plugin.manifest,
+      conversation: { recordingCapabilityId: "run", recordingSkillId: "teach-mode" } } });
+    const { service } = createPlugins();
+    service.list = () => [conversationPlugin()];
+    service.disable = vi.fn(async () => { state = "disabled"; return conversationPlugin(); });
+    service.enable = vi.fn(async () => { state = "active"; return conversationPlugin(); });
+    const app = Fastify();
+    app.addHook("preHandler", async (request, reply) => {
+      const body = request.body as { params?: { name?: string } } | undefined;
+      if (body?.params?.name === "plugin_manage") reply.raw.once("finish", () => { lifecycleResponseFinished = true; });
+    });
+    const refreshTools = vi.fn(async () => { responseFinishedBeforeRefresh = lifecycleResponseFinished; });
+    registerPluginMcpRoutes(app, { plugins: service, progressBus: createProgressBus(), mcpToken: "test-secret", refreshTools });
+    const url = await app.listen({ host: "127.0.0.1", port: 0 });
+    const transport = new StreamableHTTPClientTransport(new URL("/mcp/plugins", url), {
+      requestInit: { headers: { "x-memmy-mcp-token": "test-secret" } }
+    });
+    const client = new Client({ name: "lifecycle-test", version: "1" });
+    try {
+      if (session) await client.connect(transport);
+      for (const action of ["disable", "enable"] as const) {
+        lifecycleResponseFinished = false;
+        responseFinishedBeforeRefresh = false;
+        refreshTools.mockClear();
+        const params = { name: "plugin_manage", arguments: { plugin_id: plugin.id, action } };
+        if (session) {
+          await expect(client.callTool(params)).resolves.toMatchObject({
+            structuredContent: { state: action === "disable" ? "disabled" : "active", retainedUserData: true }
+          });
+        } else {
+          const response = await fetch(new URL("/mcp/plugins", url), { method: "POST",
+            headers: { "x-memmy-mcp-token": "test-secret", "content-type": "application/json", accept: "application/json, text/event-stream" },
+            body: JSON.stringify({ jsonrpc: "2.0", id: action, method: "tools/call", params }) });
+          expect(response.status).toBe(200);
+          const body = await response.text();
+          expect(body).toContain('"retainedUserData":true');
+          expect(body).not.toContain('"isError":true');
+        }
+        await vi.waitFor(() => expect(refreshTools).toHaveBeenCalledTimes(1));
+        expect(responseFinishedBeforeRefresh).toBe(true);
+      }
+      expect(service.disable).toHaveBeenCalledExactlyOnceWith(plugin.id);
+      expect(service.enable).toHaveBeenCalledExactlyOnceWith(plugin.id);
+      if (session) await expect(client.listTools()).resolves.toMatchObject({ tools: expect.any(Array) });
+    } finally {
+      if (session) await transport.terminateSession();
+      await client.close();
+      await app.close();
+    }
+  });
+
+  it("forwards tool and turn provenance for migrated process records", async () => {
+    const events: unknown[] = [];
+    const { service } = createPlugins();
+    const client = await connect(service, (event) => events.push(event));
+    const tools = await client.listTools();
+    await client.callTool({ name: tools.tools[0]!.name, arguments: { topic: "Questions" },
+      _meta: { "memmy.dev/session-key": "websocket:c1", "memmy.dev/tool-call-id": "tool-42", "memmy.dev/turn-id": "turn-7" } });
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) expect(event).toMatchObject({
+      conversationId: "websocket:c1", agentToolCallId: "tool-42", turnId: "turn-7"
+    });
+  });
+
+  it("returns plugin-produced file inventory without replacing the result", async () => {
+    const service: PluginMcpService = {
+      list: () => [plugin],
+      invoke: async function* () {
+        yield { type: "artifact" as const, artifact: { id: "report", name: "report.docx",
+          mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          uri: "/preview", path: "/workspace/report.docx", role: "deliverable" as const } };
+        yield { type: "result" as const, output: { nextStep: "done", sessionId: "s1" } };
+      },
+      cancel: vi.fn(async () => undefined)
+    };
+    const client = await connect(service);
+    const result = await client.callTool({ name: capabilityToolName(plugin.id, "run"), arguments: {} });
+    expect(result.structuredContent).toMatchObject({
+      publishedFiles: [{ name: "report.docx", path: "/workspace/report.docx" }],
+      nextStep: "done"
+    });
+  });
+  it("closes live HTTP MCP sessions before shutting down the Host", async () => {
+    const { service } = createPlugins();
+    const app = Fastify();
+    registerPluginMcpRoutes(app, { plugins: service, progressBus: createProgressBus(), mcpToken: "test-secret" });
+    const url = await app.listen({ host: "127.0.0.1", port: 0 });
+    const transport = new StreamableHTTPClientTransport(new URL("/mcp/plugins", url), {
+      requestInit: { headers: { "x-memmy-mcp-token": "test-secret" } }
+    });
+    const client = new Client({ name: "shutdown-test", version: "1" });
+    try {
+      await client.connect(transport);
+      await expect(client.listTools()).resolves.toMatchObject({ tools: expect.any(Array) });
+      await app.close();
+    } finally {
+      await client.close();
+      await app.close();
+    }
+  });
+
+  it("routes HTTP cancellation to the owning request without cancelling another client's matching request ID", async () => {
+    const calls: string[] = [];
+    const releases = new Map<string, () => void>();
+    const plugins: PluginMcpService = {
+      list: () => [plugin],
+      invoke: async function* (call) {
+        calls.push(call.callId);
+        await new Promise<void>(resolve => { releases.set(call.callId, resolve); });
+        yield { type: "result", output: { done: true } };
+      },
+      cancel: vi.fn(async (_pluginId, callId) => { releases.get(callId)?.(); })
+    };
+    const app = Fastify();
+    registerPluginMcpRoutes(app, { plugins, progressBus: createProgressBus(), mcpToken: "test-secret" });
+    const url = await app.listen({ host: "127.0.0.1", port: 0 });
+    const transports = [0, 1].map(() => new StreamableHTTPClientTransport(new URL("/mcp/plugins", url), {
+      requestInit: { headers: { "x-memmy-mcp-token": "test-secret" } }
+    }));
+    const clients = [0, 1].map(() => new Client({ name: "cancellation-test", version: "1" }));
+    try {
+      await Promise.all(clients.map((client, i) => client.connect(transports[i]!)));
+      expect(transports[0]!.sessionId).toBeTruthy();
+      expect(transports[0]!.sessionId).not.toBe(transports[1]!.sessionId);
+      const abort = new AbortController();
+      const first = clients[0]!.callTool({ name: capabilityToolName(plugin.id, "run"), arguments: { topic: "first" } }, undefined, { signal: abort.signal });
+      const rejected = expect(first).rejects.toBeDefined();
+      await vi.waitFor(() => expect(calls).toHaveLength(1));
+      let secondFinished = false;
+      const second = clients[1]!.callTool({ name: capabilityToolName(plugin.id, "run"), arguments: { topic: "second" } }).then(result => { secondFinished = true; return result; });
+      await vi.waitFor(() => expect(calls).toHaveLength(2));
+      abort.abort();
+      await rejected;
+      await vi.waitFor(() => expect(plugins.cancel).toHaveBeenCalledExactlyOnceWith(plugin.id, calls[0]));
+      expect(secondFinished).toBe(false);
+      releases.get(calls[1]!)!();
+      await expect(second).resolves.toMatchObject({ structuredContent: { done: true } });
+    } finally {
+      for (const release of releases.values()) release();
+      await Promise.all(transports.map(transport => transport.terminateSession()));
+      await Promise.all(clients.map(client => client.close()));
+      await app.close();
+    }
+  });
+
   it("keeps similarly prefixed capability names readable after the Agent MCP prefix is added", () => {
     const updateSelection = capabilityToolName("literature-review", "review_update_paper_selection");
     const resolveMetadata = capabilityToolName("literature-review", "review_resolve_metadata");
