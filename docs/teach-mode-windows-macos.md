@@ -1,6 +1,6 @@
 # Teach Mode：Windows 流程、代码索引与 macOS 接入
 
-更新：2026-10-26。Host 的 `pxlin/dev` 已合并本轮 Windows Teach Mode 修复及 Mac 原生实现；插件在独立 `Jovianix/teach-mode` 仓库的 `main`，开发版本 **0.4.1**。这批代码供后续 Mac 实机测试，尚未作为正式版本发布。
+更新：2026-10-27。Host 的 `pxlin/dev` 已合并本轮 Windows Teach Mode 修复及 Mac 原生实现；插件在独立 `Jovianix/teach-mode` 仓库的 `main`，开发版本 **0.4.1**。这批代码供后续 Mac 实机测试，尚未作为正式版本发布。
 
 ## 当前用户流程
 
@@ -70,6 +70,14 @@ Host 文件相对于本仓库；插件文件相对于独立 `teach-mode` 仓库�
 后续 C++ FIFO checkpoint、缺口记录、持久化确认与区间修复见 [原生 checkpoint 专项](teach-mode-native-checkpoint-2026-10-21.md)。`available` 表示按采集策略观测的片段边界可确认，不代表每个应用或网页步骤都有证据；应用/网站授权、排除规则与缺失步骤仍需检查或由用户澄清。
 
 同一应用实例内共享一个 Computer History 采集器。另一个 Memmy 实例仍可能占用 Windows 桌面会话的原生锁，需要在占用实例中处理。
+
+## 2026-10-27 官方分支合并复测
+
+`pxlin/dev` 已通过 `c04392b0` 合并官方 `MemTensor/memmy-agent:1.2.7`（`0ad11348`），没有冲突。官方分支的文件树与共同祖先一致，因此本次合并只补齐提交关系，未改变源码；实际 package 版本仍为 **1.2.4**。
+
+Windows 上继续使用 **qwen3.8-max-0902**，重新演示许志钦 Publications 第 1 条、生成 `copy-publications-v127-1027`，生成结束后新建任务和独立 Chrome 窗口，再调用该 skill 复制第 2—5 条。四条通过实际网页输入、一次保存及本地读取完成，作者、标题、年份、链接与跨分类顺序的独立核验均通过；示范文件与新 skill 未被执行阶段修改。
+
+本轮采集为 **partial**：30 个事件，保留 `browser_capture_boundary_unconfirmed`，执行成功不改变录制完整性。构建、类型检查及 Host 能力检查通过；定向回归 **457 项通过、2 项既有 History 测试失败**（Windows 图标读取和仅控制记录的空摘要），没有将它们计为通过。实机复测沿用已安装的插件 0.4.1 与 Windows 原生二进制，插件源码另行通过构建及测试，Mac 实机验收仍待进行。哈希、具体断言与环境修正见 [合并复测记录](verification/teach-mode-v127-2026-10-27.json)。
 
 ## macOS 本次补齐
 
