@@ -72,7 +72,12 @@ export function createBrowserCaptureProvider(transport: BrowserCaptureTransport,
         : "browser_capture_extension_required: memmy://settings/browser-extension");
       if (!profile.supported) throw new Error("browser_capture_extension_outdated: reload the Memmy extension at memmy://settings/browser-extension");
       const policy = settings(request.name), appId = bundle(request.name);
-      if (!evaluateObservation(policy, { bundleId: appId }).observe) throw new Error("browser_capture_application_excluded");
+      // There is no page URL before the teaching window is created. Only reject
+      // application exclusions here; each page event still uses the full policy below.
+      const applicationDecision = evaluateObservation(policy, { bundleId: appId });
+      if (!applicationDecision.observe && applicationDecision.reason !== "url_not_allowed") {
+        throw new Error("browser_capture_application_excluded");
+      }
       fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
       const file = path.join(directory, "browser-source.jsonl"), fd = fs.openSync(file, "wx", 0o600);
       const proofFile = path.join(directory, "capture-proof.jsonl");

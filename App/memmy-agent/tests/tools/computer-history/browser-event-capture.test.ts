@@ -8,7 +8,7 @@ import { DEFAULT_OBSERVATION_SETTINGS } from "../../../src/tools/computer-histor
 
 const cleanups: Array<() => Promise<unknown> | unknown> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-function fixture() {
+function fixture(platform: NodeJS.Platform = "win32") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "browser-teach-source-")); cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
   let time = Date.now(), sequence = 0, listener: (message: Record<string, unknown>) => void = () => undefined;
   let subscribed = true, complete = true, coverage = true;
@@ -30,14 +30,14 @@ function fixture() {
       return { protocolVersion: 2, boundaryConfirmed: complete, coverageComplete: coverage, complete: complete && coverage, lastSequence: sequence };
     },
   };
-  const provider = createBrowserCaptureProvider(transport, { settingsFile: path.join(root, "settings.json"), platform: "win32", now: () => time });
+  const provider = createBrowserCaptureProvider(transport, { settingsFile: path.join(root, "settings.json"), platform, now: () => time });
   const desktop = { acquireEventCapture: vi.fn(async () => { throw Error("Desktop capture must not run during browser teaching"); }) };
   const service = new PluginEventSessions({ dataRoot: path.join(root, "data"), source: desktop, browser: provider, now: () => time });
   cleanups.push(() => service.close());
   function emit(value: Record<string, unknown>) { if (subscribed) listener({ sequence: ++sequence, ...value }); }
-  const document = (tabId = 8, windowId = 20, documentId = "doc-a") => {
+  const document = (tabId = 8, windowId = 20, documentId = "doc-a", url = "https://example.test/search") => {
     if (!docs.has(documentId)) docs.set(documentId, {tabId, windowId, sequence: 0});
-    emit({ kind: "document", tabId, windowId, documentId, url: "https://example.test/search", incognito: false });
+    emit({ kind: "document", tabId, windowId, documentId, url, incognito: false });
   };
   const event = (details: Record<string, unknown> = { label: "Search", text: "research topic" }, extra: Record<string, unknown> = {}) => {
     const doc = docs.get(String(extra.documentId ?? "doc-a"));
@@ -52,6 +52,37 @@ function fixture() {
     preparing: (fn: () => Promise<unknown>) => { onPrepare = fn; }, stopping: (fn: () => void) => { onStop = fn; } };
 }
 describe("teaching-window browser source", () => {
+  it.each(["darwin", "win32"] as const)("starts with a URL allowlist on %s while retaining per-page exclusions", async platform => {
+    const f = fixture(platform), policy = structuredClone(DEFAULT_OBSERVATION_SETTINGS);
+    policy.observation.defaultApplicationBehavior = "do_not_observe";
+    policy.observation.defaultURLBehavior = "do_not_observe";
+    policy.observation.rules = [
+      { scope: "app", bundleID: platform === "darwin" ? "com.google.Chrome" : "win32.chrome", behavior: "observe" },
+      { scope: "url", urlDomain: "example.test", behavior: "observe" },
+      { scope: "url", urlDomain: "private.example.test", behavior: "do_not_observe" },
+    ];
+    fs.writeFileSync(path.join(f.root, "settings.json"), JSON.stringify(policy));
+    const session = await f.start(); f.document(); f.event({ text: "allowed-publication" });
+    f.document(9, 20, "private", "https://private.example.test/");
+    f.event({ text: "excluded-site-secret" }, { tabId: 9, documentId: "private", url: "https://private.example.test/" });
+    f.document(10, 20, "other", "https://other.test/");
+    f.event({ text: "outside-allowlist-secret" }, { tabId: 10, documentId: "other", url: "https://other.test/" });
+    const result = await f.service.stop("teach-mode", "chat-a", session.id);
+    expect(result).toMatchObject({ state: "ready", eventCount: 1, availability: "partial" });
+    const source = fs.readFileSync(path.join(f.root, "data", "teach-mode", "event-sessions", session.id, "browser-source.jsonl"), "utf8");
+    expect(source).toContain("allowed-publication");
+    expect(source).not.toMatch(/excluded-site-secret|outside-allowlist-secret/);
+    expect(f.calls.find(call => call.action === "prepare")?.input?.settings).toEqual(policy);
+    expect(f.desktop.acquireEventCapture).not.toHaveBeenCalled();
+  });
+  it.each(["darwin", "win32"] as const)("still rejects an excluded browser before opening a window on %s", async platform => {
+    const f = fixture(platform), policy = structuredClone(DEFAULT_OBSERVATION_SETTINGS);
+    policy.observation.defaultURLBehavior = "do_not_observe";
+    policy.observation.rules = [{ scope: "app", bundleID: platform === "darwin" ? "com.google.Chrome" : "win32.chrome", behavior: "do_not_observe" }];
+    fs.writeFileSync(path.join(f.root, "settings.json"), JSON.stringify(policy));
+    await expect(f.start()).rejects.toThrow("application_excluded");
+    expect(f.calls).toHaveLength(0);
+  });
   it("separates historical coverage from a confirmed and saved stop", async () => {
     const f = fixture(), session = await f.start(); f.document(); f.event(); f.setCoverageGap();
     const result = await f.service.stop("teach-mode", "chat-a", session.id);
