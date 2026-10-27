@@ -1,4 +1,5 @@
-import { WorkflowQuestionCard } from "./review-preparation-history.js";
+import { PluginToolActivity, isPluginToolFailure, useHasCompletedPluginInteraction, usePluginCapabilityLabel } from "./plugin-tool-activity.js";
+import { AgentTaskPlanBar } from "./agent-task-plan-bar.js";
 /**
  * Agent chat message rendering.
  *
@@ -6,7 +7,7 @@ import { WorkflowQuestionCard } from "./review-preparation-history.js";
  * component keeps activity grouped and renders the complete trace list returned
  * by live WebSocket events and /webui-thread history.
  */
-import { Fragment, memo, useEffect, useMemo, useRef, useState, type CSSProperties, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type ReactNode, type SVGProps } from "react";
+import { Fragment, memo, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type ReactNode, type SVGProps } from "react";
 import { createPortal } from "react-dom";
 import {
   AlertCircle,
@@ -21,6 +22,7 @@ import {
   Globe,
   Image as ImageIcon,
   ListTree,
+  MessageCircleQuestionMark,
   Notebook,
   Pencil,
   Search,
@@ -51,6 +53,7 @@ import { WINDOW_CONTROLS_OVERLAY_SAFE_TOP_STYLE } from "../theme/window-controls
 import type { AgentChatMediaAttachment, AgentChatMessage, AgentCompactionStatus, AgentRetryWaitStatus } from "../state/agent-chat-slice.js";
 import type { RecallEvidenceOutput, RecallHit } from "@memmy/local-api-contracts";
 import type { MemoryRuntimeClient } from "../api/memory-runtime-client.js";
+import type { AgentTaskPlanState } from "../api/memmy-agent-client.js";
 import {
   activityPreviewFileFromEdit,
   activityPreviewFileFromToolEvent,
@@ -71,6 +74,8 @@ import {
   shouldSuppressRetryWaitStatus,
 } from "./agent-model-error.js";
 import {
+  AgentQuestionCard,
+  AgentQuestionActiveRequestContext,
   normalizeAgentQuestionResponse,
   readAgentQuestionCard,
   readAgentQuestionResponse,
@@ -92,7 +97,8 @@ interface AgentThreadMessagesProps {
   chatScopeKey: string;
   historyVersion?: number;
   isSending?: boolean;
-  waitingForPluginInteraction?: boolean;
+  taskPlan?: AgentTaskPlanState | null;
+  pluginInteractionStatus?: { label: string; agentToolCallId: string | null; awaiting: boolean } | null;
   sanitizePlatformApiErrors?: boolean;
   memoryRuntimeClient?: Pick<MemoryRuntimeClient, "recallEvidence" | "deleteMemory"> | null;
   onAnswerQuestion?: (card: AgentQuestionCardPayload, response: AgentQuestionResponse) => Promise<boolean> | boolean;
@@ -149,10 +155,18 @@ type ClipboardItemConstructor = {
 };
 
 export const AgentThreadMessages = memo(function AgentThreadMessages(props: AgentThreadMessagesProps) {
+  const activeQuestionId = useContext(AgentQuestionActiveRequestContext);
   const units = useMemo(
     () => buildAgentDisplayUnits(props.messages, { chatScopeKey: props.chatScopeKey, retryWaitStatus: props.retryWaitStatus ?? null }),
     [props.chatScopeKey, props.messages, props.retryWaitStatus]
   );
+  const taskPlanAnchor = props.taskPlan?.plan_id ? taskPlanActivityIndex(units, props.taskPlan) : -1;
+  const hasCompletedInteractionTool = Boolean(props.pluginInteractionStatus?.agentToolCallId && props.messages.some((message) =>
+    (message.toolEvents ?? []).some((event) => (event.phase === "end" || event.phase === "error")
+      && event.ui_tool_call_id === props.pluginInteractionStatus?.agentToolCallId)));
+  const processInteraction = hasCompletedInteractionTool ? null : props.pluginInteractionStatus;
+  const interactionAnchor = processInteraction ? units.reduce((last, unit, index) =>
+    unit.type === "activity" && unit.isCurrentTurnActivity ? index : last, -1) : -1;
   const finalAssistantAnswerIndices = useMemo(() => findFinalAssistantAnswerUnitIndices(units, { isSending: props.isSending }), [props.isSending, units]);
   const recallEvidenceAnchors = useMemo(
     () => findRecallEvidenceUserAnchors(units, { isSending: props.isSending }),
@@ -233,13 +247,18 @@ export const AgentThreadMessages = memo(function AgentThreadMessages(props: Agen
         if (unit.type === "activity") {
           const isAutoOpenRunning = activityRunningByKey[unit.activityKey] === true;
           const manualOpen = manualOpenByActivityKey[unit.activityKey];
-          const open = isAutoOpenRunning ? manualOpen ?? true : manualOpen ?? unit.stoppedByUser;
+          const open = (processInteraction && index === interactionAnchor)
+            || unit.messages.some((message) => Boolean(activeQuestionId && readAgentQuestionCard(message.agentUi)?.requestId === activeQuestionId))
+            || (isAutoOpenRunning ? manualOpen ?? true : manualOpen ?? unit.stoppedByUser);
           return (
             <Fragment key={unit.activityKey}>
               <AgentActivityCluster
+                onAnswerQuestion={props.onAnswerQuestion}
                 activityKey={unit.activityKey}
                 bodyId={unit.bodyId}
                 messages={unit.messages}
+                taskPlan={index === taskPlanAnchor ? props.taskPlan : null}
+                pluginInteractionStatus={index === interactionAnchor ? processInteraction : null}
                 isRunning={isAutoOpenRunning}
                 stoppedByUser={unit.stoppedByUser}
                 open={open}
@@ -280,8 +299,10 @@ export const AgentThreadMessages = memo(function AgentThreadMessages(props: Agen
           </Fragment>
         );
       })}
+      {processInteraction && interactionAnchor < 0 ? <ProcessInteractionStatusLine status={processInteraction} /> : null}
+      {props.taskPlan?.plan_id && taskPlanAnchor < 0 ? <AgentTaskPlanBar plan={props.taskPlan} runActive={props.isSending} /> : null}
       {shouldShowThinkingPlaceholder(props.messages, props.isSending) && (
-        props.waitingForPluginInteraction ? <PluginInteractionWaitingPlaceholder /> : <ThinkingPlaceholder />
+        <ThinkingPlaceholder />
       )}
     </>
   );
@@ -297,8 +318,11 @@ function areAgentThreadMessagesPropsEqual(previous: AgentThreadMessagesProps, ne
     && previous.onOpenActivityFile === next.onOpenActivityFile
     && previous.chatScopeKey === next.chatScopeKey
     && previous.historyVersion === next.historyVersion
-    && previous.waitingForPluginInteraction === next.waitingForPluginInteraction
     && previous.isSending === next.isSending
+    && previous.taskPlan === next.taskPlan
+    && previous.pluginInteractionStatus?.label === next.pluginInteractionStatus?.label
+    && previous.pluginInteractionStatus?.agentToolCallId === next.pluginInteractionStatus?.agentToolCallId
+    && previous.pluginInteractionStatus?.awaiting === next.pluginInteractionStatus?.awaiting
     && previous.retryWaitStatus === next.retryWaitStatus
     && previous.sanitizePlatformApiErrors === next.sanitizePlatformApiErrors
     && previous.memoryRuntimeClient === next.memoryRuntimeClient
@@ -586,10 +610,9 @@ const SingleMessage = memo(function SingleMessage(props: SingleMessageProps) {
 
   if (message.role === "user") {
     if (readAgentQuestionResponse(message.content)) return null;
-    const visibleContent = visibleAgentQuestionResponseContent(message.content);
-    const hasContent = visibleContent.trim().length > 0;
+    const hasContent = message.content.trim().length > 0;
     const timestamp = messageTimestamp(message.createdAt);
-    const copyAction = <MessageBubbleCopyButton text={visibleContent} align="right" timestamp={timestamp} />;
+    const copyAction = <MessageBubbleCopyButton text={message.content} align="right" timestamp={timestamp} />;
     return (
       <div className="agent-user-turn flex min-w-0 justify-end" data-agent-message-id={message.id || undefined}>
         <div className="agent-user-turn__stack flex min-w-0 flex-col items-end gap-2 w-full">
@@ -602,7 +625,7 @@ const SingleMessage = memo(function SingleMessage(props: SingleMessageProps) {
                 className="agent-chat-bubble agent-chat-bubble--user max-w-full min-w-0 overflow-hidden whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
                 data-agent-search-root=""
               >
-                {visibleContent}
+                {message.content}
               </div>
               {props.recallEvidenceTurnId && props.memoryRuntimeClient ? (
                 <TurnRecallEvidence
@@ -660,7 +683,7 @@ const SingleMessage = memo(function SingleMessage(props: SingleMessageProps) {
     return (
       <div className="flex min-w-0 justify-start">
         <div className="min-w-0 w-full">
-          <WorkflowQuestionCard
+          <AgentQuestionCard
             card={questionCard}
             response={props.questionResponse}
             onSubmit={props.onAnswerQuestion
@@ -1399,11 +1422,6 @@ function CodexCheckIcon(props: SVGProps<SVGSVGElement>) {
       />
     </svg>
   );
-}
-
-function PluginInteractionWaitingPlaceholder() {
-  const { t } = useTranslation();
-  return <p role="status" className="text-sm text-text-ink/55">{t("plugin.ui.waitingForResponse")}</p>;
 }
 
 function ThinkingPlaceholder() {
@@ -2351,9 +2369,12 @@ async function fetchAttachmentBytes(url: string): Promise<{ data: Uint8Array; mi
 }
 
 function AgentActivityCluster(props: {
+  onAnswerQuestion?: AgentThreadMessagesProps["onAnswerQuestion"];
   activityKey: string;
   bodyId: string;
   messages: AgentChatMessage[];
+  taskPlan?: AgentTaskPlanState | null;
+  pluginInteractionStatus?: AgentThreadMessagesProps["pluginInteractionStatus"];
   isRunning: boolean;
   stoppedByUser: boolean;
   open: boolean;
@@ -2363,7 +2384,10 @@ function AgentActivityCluster(props: {
   onOpenActivityFile?: (file: ActivityPreviewFile) => void;
 }) {
   const { t } = useTranslation();
-  const segments = useMemo(() => buildActivitySegments(props.messages, t), [props.messages, t]);
+  const segments = useMemo(() => {
+    const ordinary = buildActivitySegments(props.messages, t);
+    return props.taskPlan?.plan_id ? embedTaskPlanInSegments(ordinary, props.taskPlan, t) : ordinary;
+  }, [props.messages, props.taskPlan, t]);
   const headerLabel = activityHeaderLabel(props.messages, props.isRunning, props.stoppedByUser, t);
   const Chevron = props.open ? ChevronDown : ChevronRight;
 
@@ -2394,15 +2418,18 @@ function AgentActivityCluster(props: {
             {segments.map((segment, index) => (
               <ActivitySegmentBlock
                 key={segment.key}
+                onAnswerQuestion={props.onAnswerQuestion}
                 segment={segment}
                 t={t}
                 isLive={props.isRunning && index === segments.length - 1}
+                runActive={props.isRunning}
                 isOnlySegment={segments.length === 1}
                 artifactClient={props.artifactClient}
                 onPreviewFile={props.onPreviewFile}
                 onOpenActivityFile={props.onOpenActivityFile}
               />
             ))}
+            {props.pluginInteractionStatus ? <ProcessInteractionStatusLine status={props.pluginInteractionStatus} /> : null}
           </div>
         )}
       </div>
@@ -2410,16 +2437,36 @@ function AgentActivityCluster(props: {
   );
 }
 
+function ProcessInteractionStatusLine(props: { status: NonNullable<AgentThreadMessagesProps["pluginInteractionStatus"]> }) {
+  return <div className="agent-question-answer agent-question-answer--review"
+    role="status" data-waiting-input-anchor={props.status.awaiting ? "plugin" : undefined}>
+    <MessageCircleQuestionMark size={14} aria-hidden="true" />
+    <span className="agent-question-answer--review__label">{props.status.label}</span>
+  </div>;
+}
+
 function ActivitySegmentBlock(props: {
+  onAnswerQuestion?: AgentThreadMessagesProps["onAnswerQuestion"];
   segment: ActivitySegment;
   t: Translate;
   isLive?: boolean;
+  runActive?: boolean;
   isOnlySegment?: boolean;
   artifactClient?: AgentArtifactClient | null;
   onPreviewFile?: InAppFilePreviewHandler;
   onOpenActivityFile?: (file: ActivityPreviewFile) => void;
 }) {
   const { segment } = props;
+  if (segment.type === "taskPlan") {
+    return <AgentTaskPlanBar plan={segment.plan} embeddedInProcess runActive={props.runActive === true} />;
+  }
+  if (segment.type === "question") {
+    const card = readAgentQuestionCard(segment.message.agentUi)!;
+    return <AgentQuestionCard card={card} processView
+      response={normalizeAgentQuestionResponse(segment.message.questionResponse)}
+      interrupted={segment.message.questionInterrupted || segment.message.stoppedByUser || normalizeAgentQuestionResponse(segment.message.questionResponse)?.cancelled}
+      onSubmit={props.onAnswerQuestion ? (answer) => props.onAnswerQuestion!(card, answer) : undefined} />;
+  }
   if (segment.type === "thought") {
     return <ThoughtSegmentBlock text={segment.text} isLive={props.isLive === true} isOnlySegment={props.isOnlySegment === true} t={props.t} />;
   }
@@ -2454,6 +2501,9 @@ function ThoughtSegmentBlock(props: { text: string; isLive: boolean; isOnlySegme
             : <ChevronRight size={12} aria-hidden="true" className="agent-narration-block__chevron" />}
         </button>
       ) : null}
+      {!props.isOnlySegment && props.isLive && open ? (
+        <p className="agent-activity-segment__live-thought-label">{props.t("agent.activity.thinking")}</p>
+      ) : null}
       {open ? (
         <div className="agent-activity-segment__body">
           <ReasoningMarkdown text={props.text} />
@@ -2472,15 +2522,6 @@ function ThoughtSegmentBlock(props: { text: string; isLive: boolean; isOnlySegme
  */
 function useFollowAlongOpen(isLive: boolean): { open: boolean; onToggle: (next: boolean) => void } {
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
-  const wasLiveRef = useRef(isLive);
-
-  useEffect(() => {
-    if (wasLiveRef.current && !isLive) {
-      setManualOpen(null);
-    }
-    wasLiveRef.current = isLive;
-  }, [isLive]);
-
   return {
     open: manualOpen ?? isLive,
     onToggle: (next: boolean) => setManualOpen(next)
@@ -2544,6 +2585,7 @@ function narrationPreviewLine(text: string): string {
 
 function ToolGroupSegmentBlock(props: { segment: ActivityToolGroupSegment; t: Translate; isLive: boolean; onOpenActivityFile?: (file: ActivityPreviewFile) => void }) {
   const { segment } = props;
+
   const { open, onToggle } = useFollowAlongOpen(props.isLive);
   const content = (
     <div className="agent-activity-segment__items">
@@ -2597,6 +2639,7 @@ function ToolGroupSegmentBlock(props: { segment: ActivityToolGroupSegment; t: Tr
  */
 function ToolGroupSegmentLabel(props: { segment: ActivityToolGroupSegment }) {
   const { segment } = props;
+
   return (
       <p className="agent-activity-segment__label">
         <span>{segment.label}</span>
@@ -2749,7 +2792,15 @@ function ActivityFileControl(props: {
 }
 
 function TraceLine(props: { item: ActivityToolStepItem; t: Translate; onOpenActivityFile?: (file: ActivityPreviewFile) => void }) {
-  void props.t;
+  const toolCallId = props.item.event.ui_tool_call_id ?? props.item.event.call_id;
+  const hasInteractionRow = useHasCompletedPluginInteraction(toolCallId);
+  return <>{!hasInteractionRow || isPluginToolFailure(props.item.event) ? <BaselineTraceLine {...props} /> : null}
+    <PluginToolActivity toolCallId={toolCallId} /></>;
+}
+function BaselineTraceLine(props: { item: ActivityToolStepItem; t: Translate; onOpenActivityFile?: (file: ActivityPreviewFile) => void }) {
+  const pluginLabel = usePluginCapabilityLabel(props.item.event);
+  const question = toolEventName(props.item.event) === "ask_question";
+  const actionLabel = question ? props.t("home.question.asked") : pluginLabel;
   const category = props.item.category;
   const Icon = TRACE_CATEGORY_ICONS[category] ?? Wand2;
   const file = props.onOpenActivityFile
@@ -2760,8 +2811,9 @@ function TraceLine(props: { item: ActivityToolStepItem; t: Translate; onOpenActi
       <Icon size={13} aria-hidden="true" className="agent-activity-timeline-item__icon" />
       <div className="agent-activity-timeline-item__body">
         <p className="agent-activity-timeline-item__line">
-          {props.item.verb ? <span className="agent-activity-timeline-item__verb">{props.item.verb}</span> : null}
-          {props.item.detail ? (
+          {actionLabel ? <span className="agent-activity-timeline-item__verb">{actionLabel}{isPluginToolFailure(props.item.event) ? ` · ${props.t("plugin.ui.task.failed")}` : ""}</span>
+            : props.item.verb ? <span className="agent-activity-timeline-item__verb">{isPluginToolFailure(props.item.event) ? props.t("plugin.ui.task.failed") : props.item.verb}</span> : null}
+          {!actionLabel && props.item.detail ? (
             <ActivityFileControl file={file} className="agent-activity-timeline-item__detail" onOpen={props.onOpenActivityFile}>
               {props.item.detail}
             </ActivityFileControl>
@@ -2890,7 +2942,75 @@ interface ActivityToolGroupSegment {
   items: ActivityRenderItem[];
 }
 
-type ActivitySegment = ActivityThoughtSegment | ActivityNarrationSegment | ActivityToolGroupSegment;
+type ActivitySegment = ActivityThoughtSegment | ActivityNarrationSegment | ActivityToolGroupSegment
+  | { type: "question"; key: string; message: AgentChatMessage }
+  | { type: "taskPlan"; key: string; plan: AgentTaskPlanState };
+
+function isTaskPlanToolEvent(event: AgentToolProgressEvent): boolean {
+  return toolEventName(event) === "create_task_plan" || toolEventName(event) === "update_task_plan";
+}
+
+/** A plan stays at its creation step while updates change that card in place. */
+function taskPlanActivityIndex(units: AgentDisplayUnit[], plan: AgentTaskPlanState): number {
+  let anchor = -1;
+  for (let index = 0; index < units.length; index += 1) {
+    const unit = units[index];
+    if (unit?.type !== "activity") continue;
+    if (unit.messages.some((message) => (message.toolEvents ?? []).some((event) => {
+      if (toolEventName(event) !== "create_task_plan") return false;
+      let args: unknown = event.arguments ?? event.function?.arguments;
+      if (typeof args === "string") { try { args = JSON.parse(args); } catch { return false; } }
+      return args != null && typeof args === "object" && !Array.isArray(args)
+        && (args as { title?: unknown }).title === plan.title;
+    }))) anchor = index;
+  }
+  if (anchor >= 0) return anchor;
+  if (plan.status !== "active" && plan.status !== "blocked") return -1;
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const unit = units[index];
+    if (unit?.type === "activity" && unit.stoppedByUser) return index;
+  }
+  return -1;
+}
+
+export function shouldEmbedTaskPlanInProcess(
+  messages: AgentChatMessage[], chatScopeKey: string, plan: AgentTaskPlanState | null, isRunning: boolean
+): boolean {
+  if (!plan?.plan_id) return false;
+  const units = buildAgentDisplayUnits(messages, { chatScopeKey });
+  return taskPlanActivityIndex(units, plan) >= 0;
+}
+
+function embedTaskPlanInSegments(segments: ActivitySegment[], plan: AgentTaskPlanState, t: Translate): ActivitySegment[] {
+  const result: ActivitySegment[] = [];
+  let inserted = false;
+  for (const segment of segments) {
+    if (segment.type !== "toolGroup") { result.push(segment); continue; }
+    let ordinary: ActivityRenderItem[] = [];
+    let part = 0;
+    const flush = () => {
+      if (!ordinary.length) return;
+      const label = toolGroupLabel(ordinary, t);
+      result.push({ ...segment, key: `${segment.key}:part:${part++}`, items: ordinary,
+        label: label.text, added: label.added, deleted: label.deleted });
+      ordinary = [];
+    };
+    for (const item of segment.items) {
+      if (item.type !== "toolStep" || !isTaskPlanToolEvent(item.event)) { ordinary.push(item); continue; }
+      flush();
+      if (!inserted && toolEventName(item.event) === "create_task_plan") {
+        const label = toolGroupLabel([item], t);
+        result.push({ ...segment, key: `${segment.key}:create`, items: [item],
+          label: label.text, added: label.added, deleted: label.deleted });
+        result.push({ type: "taskPlan", key: `plan:${plan.plan_id}`, plan });
+        inserted = true;
+      }
+    }
+    flush();
+  }
+  if (!inserted) result.push({ type: "taskPlan", key: `plan:${plan.plan_id}`, plan });
+  return result;
+}
 
 /**
  * Walk activity messages in chronological (arrival) order and emit alternating
@@ -2902,10 +3022,15 @@ type ActivitySegment = ActivityThoughtSegment | ActivityNarrationSegment | Activ
  */
 function buildActivitySegments(messages: AgentChatMessage[], t: Translate): ActivitySegment[] {
   const segments: ActivitySegment[] = [];
+  const hasQuestion = messages.some((message) => Boolean(readAgentQuestionCard(message.agentUi)));
   messages.forEach((message, messageIndex) => {
     const messageKey = message.id || `message-${messageIndex}`;
     if (message.reasoning) {
       segments.push({ type: "thought", key: `${messageKey}:thought`, text: message.reasoning });
+    }
+    if (readAgentQuestionCard(message.agentUi)) {
+      segments.push({ type: "question", key: `${messageKey}:question`, message });
+      return;
     }
     if (message.kind === "narration") {
       if (message.content.trim()) {
@@ -2913,7 +3038,8 @@ function buildActivitySegments(messages: AgentChatMessage[], t: Translate): Acti
       }
       return;
     }
-    const toolItems = traceRenderItemsForMessage(message, messageKey);
+    const toolItems = traceRenderItemsForMessage(message, messageKey).filter((item) => !(hasQuestion
+      && item.type === "toolStep" && toolEventName(item.event) === "ask_question"));
     const fileEditItems: ActivityFileEditItem[] = (message.fileEdits ?? []).map((edit, index) => ({
       type: "fileEdit",
       edit,
@@ -3268,6 +3394,7 @@ function traceLinesForActivity(message: AgentChatMessage): string[] {
 }
 
 function isAgentActivityMessage(message: AgentChatMessage): boolean {
+  if (readAgentQuestionCard(message.agentUi)) return true;
   // The whole loop process — thoughts, tools, and mid-turn drafts (narration)
   // — belongs to ONE per-run "Worked for" cluster, exactly like Cursor: while
   // the turn runs it reads chronologically in place, and when the turn ends

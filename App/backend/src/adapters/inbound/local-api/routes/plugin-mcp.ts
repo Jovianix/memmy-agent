@@ -1,11 +1,13 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { SkillRefSchema, type PluginSkillContentService } from "../../../../services/plugin-skill-content-service.js";
 /** MCP bridge exposing active plugin capabilities to Memmy Agent. */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { CapabilityCall, CapabilityEvent, InstalledPlugin, JsonSchema } from "@memmy/local-api-contracts";
+import type { CapabilityCall, CapabilityEvent, InstalledPlugin, JsonSchema, PluginArtifactRef } from "@memmy/local-api-contracts";
 import type { PluginService } from "../../../../services/plugin-service.js";
 import type { ProgressBus } from "../../../../services/progress-bus.js";
 import { capabilityToolName } from "../../../../services/plugin-tool-name.js";
@@ -15,7 +17,7 @@ const MCP_TOKEN_HEADER = "x-memmy-mcp-token";
 const MCP_ROUTE_PATH = "/mcp/plugins";
 const PLUGIN_MCP_KEEPALIVE_MS = 30_000;
 
-export type PluginMcpService = Pick<PluginService, "list" | "invoke" | "cancel"> & Partial<Pick<PluginService, "enable" | "disable">>;
+export type PluginMcpService = Pick<PluginService, "list" | "invoke" | "cancel"> & Partial<Pick<PluginService, "enable" | "disable" | "openArtifact">>;
 
 export interface RegisterPluginMcpRoutesOptions {
   plugins: PluginMcpService;
@@ -121,7 +123,28 @@ export function buildPluginMcpServer(
       ...(modelPreset ? { modelPreset } : {}),
       input
     };
-    const cancel = () => void plugins.cancel(tool.plugin.id, callId).catch(() => undefined);
+    const provenance = {
+      ...(metaString(extra._meta, "memmy.dev/tool-call-id") ? { agentToolCallId: metaString(extra._meta, "memmy.dev/tool-call-id")! } : {}),
+      ...(metaString(extra._meta, "memmy.dev/turn-id") ? { turnId: metaString(extra._meta, "memmy.dev/turn-id")! } : {}),
+    };
+    let terminal = false;
+    let retired = false;
+    let publishedEvent = false;
+    const publishedFiles: Array<{ name: string; path: string; mediaType: string }> = [];
+    const retire = (cancelled: boolean) => {
+      if (terminal || retired) return;
+      retired = true;
+      if (!publishedEvent) return;
+      progressBus.emit("plugin.capability_event", {
+        pluginId: tool.plugin.id, capabilityId: tool.capability.id, callId, conversationId, origin: "agent", ...provenance,
+        event: { type: "error", code: cancelled ? "plugin_call_cancelled" : "plugin_runtime_error",
+          message: cancelled ? "Plugin call was cancelled" : "Plugin call ended unexpectedly", retryable: false },
+      });
+    };
+    const cancel = () => {
+      retire(true);
+      void plugins.cancel(tool.plugin.id, callId).catch(() => undefined);
+    };
     const progressToken = extra._meta?.progressToken;
     let progressSequence = 0;
     const sendTransportProgress = (message: string, current?: number, total?: number) => {
@@ -142,8 +165,11 @@ export function buildPluginMcpServer(
     }, keepaliveIntervalMs);
     keepalive.unref?.();
     extra.signal.addEventListener("abort", cancel, { once: true });
+    const artifacts: PluginArtifactRef[] = [];
     try {
       for await (const event of plugins.invoke(call)) {
+        if (extra.signal.aborted) break;
+        publishedEvent = true;
         progressBus.emit("plugin.capability_event", {
           pluginId: tool.plugin.id,
           capabilityId: tool.capability.id,
@@ -153,15 +179,47 @@ export function buildPluginMcpServer(
           // are part of a turn and closing one has to answer rather than
           // silently leave the turn waiting.
           origin: "agent",
+          ...provenance,
           event
         });
+        if (event.type === "artifact" && event.artifact.role !== "setup" && event.artifact.path) {
+          const file = { name: event.artifact.name, path: event.artifact.path, mediaType: event.artifact.mediaType };
+          if (!publishedFiles.some((item) => item.path === file.path)) publishedFiles.push(file);
+        }
         await sendTransportProgress(
           event.type === "progress" ? event.message ?? "Plugin progress" : `Plugin ${event.type}`,
           event.type === "progress" ? event.current : undefined,
           event.type === "progress" ? event.total : undefined
         );
-        if (event.type === "result") return toolResult(event.output);
-        if (event.type === "error") return toolError(`${event.code}: ${event.message}`);
+        if (event.type === "artifact") artifacts.push(event.artifact);
+        if (event.type === "result") {
+          terminal = true;
+          const visible = modelVisiblePluginResult(event.output, publishedFiles);
+          const output = artifacts.length
+            ? visible && typeof visible === "object" && !Array.isArray(visible)
+              ? { ...visible as Record<string, unknown>, artifacts } : { output: visible, artifacts }
+            : visible;
+          const result = toolResult(output);
+          // QA pages must reach the model as pixels, not merely a download URL.
+          // Resolve only Host-issued artifact tokens; never fetch plugin URLs.
+          const images: Array<{ type: "image"; mimeType: string; data: string }> = [];
+          let imageBytes = 0;
+          if (plugins.openArtifact) for (const artifact of artifacts) {
+            if (artifact.role !== "setup" || artifact.mediaType !== "image/png") continue;
+            const token = artifact.uri.match(/^\/api\/v1\/plugins\/[^/]+\/artifacts\/([a-f0-9-]+)\/preview$/)?.[1];
+            if (!token) continue;
+            const hosted = await plugins.openArtifact(tool.plugin.id, token);
+            const info = await stat(hosted.path);
+            if (info.size > 8 * 1024 * 1024 - imageBytes || images.length >= 4) return toolError("Too many QA images in one call; request one page at a time");
+            const bytes = await readFile(hosted.path);
+            if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return toolError("QA artifact is not a valid PNG image");
+            imageBytes += bytes.byteLength;
+            if (images.length >= 4 || imageBytes > 8 * 1024 * 1024) return toolError("Too many QA images in one call; request one page at a time");
+            images.push({ type: "image", mimeType: "image/png", data: bytes.toString("base64") });
+          }
+          return { ...result, content: [...result.content, ...images] };
+        }
+        if (event.type === "error") { terminal = true; return toolError(`${event.code}: ${event.message}`); }
       }
       return toolError("Plugin ended without a terminal event");
     } catch (error) {
@@ -169,36 +227,96 @@ export function buildPluginMcpServer(
     } finally {
       clearInterval(keepalive);
       extra.signal.removeEventListener("abort", cancel);
+      retire(extra.signal.aborted);
     }
   });
 
   return server;
 }
 
+/** Preserve the plugin result while exposing its produced files to the main Agent. */
+function modelVisiblePluginResult(
+  output: unknown,
+  publishedFiles: Array<{ name: string; path: string; mediaType: string }>
+): unknown {
+  if (!publishedFiles.length) return output;
+  const value: Record<string, unknown> = output && typeof output === "object" && !Array.isArray(output)
+    ? { ...output as Record<string, unknown> }
+    : { output };
+  return { ...value, publishedFiles };
+}
+
 export function registerPluginMcpRoutes(app: FastifyInstance, options: RegisterPluginMcpRoutesOptions): void {
+  const refreshContext = new AsyncLocalStorage<{ requested: boolean }>();
+  const requestToolRefresh = async () => {
+    const current = refreshContext.getStore();
+    if (current) current.requested = true;
+  };
+  // SDK cancellation is a separate HTTP notification. It must reach the same
+  // Server that owns the in-flight tools/call, rather than a fresh stateless
+  // Server whose request-controller map is empty.
+  const sessions = new Map<string, { server: Server; transport: StreamableHTTPServerTransport; active: number; lastUsed: number }>();
+  const cleanup = setInterval(() => {
+    for (const [id, session] of sessions) {
+      if (session.active === 0 && Date.now() - session.lastUsed > 30 * 60_000) {
+        sessions.delete(id);
+        void session.server.close();
+      }
+    }
+  }, 60_000);
+  cleanup.unref();
+  app.addHook("preClose", async () => {
+    clearInterval(cleanup);
+    await Promise.all([...sessions.values()].map(session => session.server.close()));
+    sessions.clear();
+  });
   const handler = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (singleHeader(request.headers[MCP_TOKEN_HEADER]) !== options.mcpToken) {
       await reply.code(401).send({ error: "unauthorized" });
       return;
     }
 
-    let refreshRequested = false;
-    const server = buildPluginMcpServer(options.plugins, options.progressBus, PLUGIN_MCP_KEEPALIVE_MS, options.skillContent, async () => { refreshRequested = true; });
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    reply.hijack();
+    const refresh = { requested: false };
     // Reloading the Agent's MCP connections while this tool is awaiting its own
     // result can close that very connection. Finish the response first.
     reply.raw.once("finish", () => {
-      if (refreshRequested && options.refreshTools) setImmediate(() => {
+      if (refresh.requested && options.refreshTools) setImmediate(() => {
         void options.refreshTools!().catch(error => console.warn("Plugin tool refresh failed", error));
       });
     });
+    const sessionId = singleHeader(request.headers["mcp-session-id"]);
+    if (sessionId && !sessions.has(sessionId)) {
+      await reply.code(404).send({ error: "MCP session not found" });
+      return;
+    }
+    let session = sessionId ? sessions.get(sessionId) : undefined;
+    if (!session && request.method === "POST" && isInitializeRequest(request.body)) {
+      const id = randomUUID();
+      const server = buildPluginMcpServer(options.plugins, options.progressBus, PLUGIN_MCP_KEEPALIVE_MS, options.skillContent, requestToolRefresh);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id });
+      session = { server, transport, active: 0, lastUsed: Date.now() };
+      transport.onclose = () => { sessions.delete(id); };
+      await server.connect(transport);
+      sessions.set(id, session);
+    }
+    if (session) {
+      const current = session;
+      current.active += 1;
+      reply.hijack();
+      reply.raw.once("close", () => { current.active -= 1; current.lastUsed = Date.now(); });
+      await refreshContext.run(refresh, () => current.transport.handleRequest(request.raw, reply.raw, request.body));
+      return;
+    }
+    // Preserve one-shot raw callers that do not initialize an MCP session.
+    const server = buildPluginMcpServer(options.plugins, options.progressBus, PLUGIN_MCP_KEEPALIVE_MS, options.skillContent, requestToolRefresh);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    reply.hijack();
     reply.raw.on("close", () => {
       void transport.close();
       void server.close();
     });
     await server.connect(transport);
-    await transport.handleRequest(request.raw, reply.raw, request.body);
+    await refreshContext.run(refresh, () => transport.handleRequest(request.raw, reply.raw, request.body));
   };
 
   app.post(MCP_ROUTE_PATH, handler);

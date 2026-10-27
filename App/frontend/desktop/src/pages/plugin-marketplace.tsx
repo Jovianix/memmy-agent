@@ -12,6 +12,7 @@ import {
   type MarketplacePlugin
 } from "./plugin-marketplace-section.js";
 import { writeSettingsTabHash } from "./settings-nav.js";
+import { isNewerPluginVersion } from "./plugin-version.js";
 
 /** Live marketplace: installed state is always read back from the plugin host. */
 export function PluginMarketplace() {
@@ -23,6 +24,7 @@ export function PluginMarketplace() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionErrorPluginId, setActionErrorPluginId] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -49,14 +51,23 @@ export function PluginMarketplace() {
       setOfficialModelReady(undefined);
       setModelError(t("plugins.ui.couldNotReadModelSettingsRefreshToCheck"));
     });
+    // Installation state belongs to the local Host. Load it independently so a
+    // slow or unavailable remote registry cannot empty the user's plugin list.
+    void (async () => {
+      try {
+        await clients.account?.getSession?.();
+        const entries = await clients.plugins.catalog?.();
+        if (generation.current !== current) return;
+        if (entries) setCatalog(entries);
+        setCatalogError(null);
+      } catch {
+        if (generation.current === current) setCatalogError(t("plugins.ui.catalogUnavailable"));
+      }
+    })();
     try {
-      await clients.account?.getSession?.();
-      const entries = await clients.plugins.catalog?.();
-      if (generation.current === current && entries) setCatalog(entries);
       const plugins = await clients.plugins.list();
       if (generation.current !== current) return;
       setInstalled(plugins);
-      if (entries) setCatalog(entries);
       setError(null);
     } catch {
       if (generation.current !== current) return;
@@ -99,22 +110,14 @@ export function PluginMarketplace() {
     await clients!.plugins.enable(plugin.id);
   }
 
-  const plugins: MarketplacePlugin[] = catalog ? catalog.map((entry) => ({
-    id: entry.manifest.id, name: entry.manifest.name, eligibility: entry.eligibility,
-    description: entry.manifest.capabilities[0]?.description ?? "",
-    category: pluginCategory(entry.manifest.id), version: entry.manifest.version,
-    requiresLogin: entry.eligibility.reason === "login_required" || entry.manifest.rules?.requiresLogin,
-    requiresOfficialModel: entry.manifest.rules?.recommendsOfficialModel,
-    installable: entry.eligibility.canInstall,
-    installed: installed.find((plugin) => plugin.id === entry.manifest.id)
-  })) : [];
+  const plugins = marketplacePlugins(catalog, installed);
 
   return <>
     {modelError && <p role="alert" className="mb-4 text-sm text-text-ink/60">{modelError}</p>}
     <PluginMarketplaceSection
     plugins={plugins}
     loading={loading}
-    error={error}
+    error={error ?? catalogError}
     actionError={actionError}
     actionErrorPluginId={actionErrorPluginId}
     busyId={busyId}
@@ -127,6 +130,16 @@ export function PluginMarketplace() {
       void mutate(plugin, async () => {
         const installedPlugin = await clients!.plugins.install(plugin.id, plugin.version);
         await activateOfficialPlugin(installedPlugin);
+      });
+    }}
+    onUpdate={(plugin) => {
+      if (!plugin.installable || !plugin.installed || !plugin.version || !isNewerPluginVersion(plugin.version, plugin.installed.version)) return;
+      void mutate(plugin, async () => {
+        const updated = await clients!.plugins.update(plugin.id, plugin.version!);
+        if (updated.state === "pending_approval") {
+          await clients!.plugins.approvePermissions(updated.id, updated.manifest.permissions);
+          if (plugin.installed?.state === "active") await clients!.plugins.enable(updated.id);
+        }
       });
     }}
     onEnable={(plugin) => {
@@ -153,6 +166,38 @@ export function PluginMarketplace() {
     onSignIn={() => dispatch(appActions.navigate("/welcome"))}
     />
   </>;
+}
+
+/** Merge the remote catalog with Host state, including plugins missing from that catalog. */
+export function marketplacePlugins(catalog: PluginCatalogEntry[] | null, installed: InstalledPlugin[]): MarketplacePlugin[] {
+  const installedById = new Map(installed.map((plugin) => [plugin.id, plugin]));
+  const listed = new Set<string>();
+  const plugins = (catalog ?? []).filter((entry) => entry.eligibility.visible).map((entry): MarketplacePlugin => {
+    listed.add(entry.manifest.id);
+    const local = installedById.get(entry.manifest.id);
+    return {
+      id: entry.manifest.id, name: entry.manifest.name, eligibility: entry.eligibility,
+      description: entry.manifest.capabilities[0]?.description ?? "",
+      category: pluginCategory(entry.manifest.id), version: entry.manifest.version,
+      requiresLogin: entry.eligibility.reason === "login_required" || entry.manifest.rules?.requiresLogin,
+      requiresOfficialModel: entry.manifest.rules?.recommendsOfficialModel,
+      installable: entry.eligibility.canInstall,
+      ...(local ? { installed: local } : {})
+    };
+  });
+  for (const local of installed) {
+    if (listed.has(local.id) || local.eligibility?.visible === false) continue;
+    plugins.push({
+      id: local.id, name: local.manifest.name,
+      description: local.manifest.capabilities[0]?.description ?? "",
+      category: pluginCategory(local.id), version: local.version,
+      requiresLogin: local.manifest.rules?.requiresLogin,
+      requiresOfficialModel: local.manifest.rules?.recommendsOfficialModel,
+      // The installed version is usable; a new release needs a registry entry.
+      installable: false, eligibility: local.eligibility, installed: local
+    });
+  }
+  return plugins;
 }
 
 function pluginCategory(pluginId: string): MarketplacePlugin["category"] {

@@ -66,7 +66,7 @@ describe("PluginMarketplaceSection", () => {
     root = createRoot(container);
     props = {
       plugins: [installed(literature), office], officialModelReady: true,
-      onInstall: vi.fn(), onUninstall: vi.fn(), onEnable: vi.fn(), onAddToChat: vi.fn(), onConfigureModel: vi.fn(), onRefresh: vi.fn(), onSignIn: vi.fn()
+      onInstall: vi.fn(), onUpdate: vi.fn(), onUninstall: vi.fn(), onEnable: vi.fn(), onAddToChat: vi.fn(), onConfigureModel: vi.fn(), onRefresh: vi.fn(), onSignIn: vi.fn()
     };
   });
 
@@ -98,6 +98,19 @@ describe("PluginMarketplaceSection", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
+
+  it("offers the catalog version as an explicit update for an installed plugin", async () => {
+    const plugin = { ...installed(literature), version: "1.1.0" };
+    await render({ plugins: [plugin] });
+    await click("更新文献综述");
+    expect(props.onUpdate).toHaveBeenCalledExactlyOnceWith(plugin);
+    expect(props.onInstall).not.toHaveBeenCalled();
+  });
+
+  it("does not offer a downgrade when the catalog is older than the installed version", async () => {
+    await render({ plugins: [{ ...installed(literature), version: "0.9.0" }] });
+    expect(container.querySelector('[aria-label="更新文献综述"]')).toBeNull();
+  });
 
   it("presents task plugins and searches names and descriptions without changing installation counts", async () => {
     await render();
@@ -171,13 +184,13 @@ describe("PluginMarketplaceSection", () => {
     expect(props.onInstall).not.toHaveBeenCalled();
   });
 
-  it("recommends official models without blocking use of custom models", async () => {
+  it("shows literature review model guidance without blocking custom models", async () => {
     await render({ officialModelReady: false });
     const reviewCard = container.querySelector('article[aria-label="文献综述"]')!;
     expect(reviewCard.textContent).not.toContain("需配置模型");
     expect(reviewCard.querySelector('[aria-label="将文献综述加入对话"]')).not.toBeNull();
     await click("查看文献综述详情");
-    expect(document.querySelector("[role=dialog]")?.textContent).toContain("该插件推荐使用 Memmy 官方模型");
+    expect(document.querySelector("[role=dialog]")?.textContent).toContain("只建议使用自行配置且性能较强的模型");
     await click("加入对话", document.querySelector("[role=dialog]")!);
     expect(props.onConfigureModel).not.toHaveBeenCalled();
     expect(props.onAddToChat).toHaveBeenCalledOnce();
@@ -226,7 +239,7 @@ describe("PluginMarketplaceSection", () => {
     const dialog = document.querySelector("[role=dialog]")!;
     expect(dialog.querySelector("figure")).not.toBeNull();
     expect(dialog.querySelector("figure button")).toBeNull();
-    expect(dialog.textContent).toContain("需登录；推荐 Memmy 官方模型");
+    expect(dialog.textContent).toContain("只建议使用自行配置且性能较强的模型");
     expect(dialog.textContent).not.toContain("能力说明");
     expect(dialog.textContent).toContain("根据研究主题检索论文");
     expect(dialog.textContent).toContain("安装未完成");

@@ -104,8 +104,6 @@ import {
   type GoalTurnInboxEntry,
   type WebuiQueueSteerTransferRecord,
 } from "./goal-runtime.js";
-import { TaskPlanRuntime } from "./task-plan-runtime.js";
-import { createTaskPlanContinuation } from "./task-plan-continuation.js";
 import { resolveToolResultMaxChars, SESSION_TOOL_RESULT_MAX_CHARS_BY_NAME } from "./tool-result-budget.js";
 import { AgentProgressHook } from "./progress-hook.js";
 import { createTurnCancellationBoundary, type TurnCancellationBoundary } from "./turn-cancellation-boundary.js";
@@ -113,6 +111,9 @@ import { ToolLoader } from "./tools/loader.js";
 import { RequestContext, ToolContext } from "./tools/context.js";
 import { ExecSessionManager } from "./tools/exec-session.js";
 import { MessageTool, type MessageSendCallback } from "./tools/message.js";
+import { TaskPlanRuntime } from "./task-plan-runtime.js";
+import { createTaskPlanContinuation } from "./task-plan-continuation.js";
+import { createArtifactDeliveryContinuation } from "./artifact-delivery-continuation.js";
 import { FileStateStore } from "./tools/file-state.js";
 import { connectMissingServers, handleRuntimeControl, reloadLock, runtimeLines as mcpRuntimeLines, sessionExtra as mcpSessionExtra } from "./tools/mcp.js";
 import { BrowserSessionManager, type BrowserScope } from "./tools/browser.js";
@@ -583,13 +584,13 @@ export function hasReportedInOutUsage(
 
 class AsyncMutex {
   private locked = false;
-  private waiters: Array<{ priority: number; resume: () => void }> = [];
+  private waiters: Array<{ priority: number; key?: string; resume: () => void }> = [];
 
-  async runExclusive<T>(fn: () => Promise<T>, priority = Date.now()): Promise<T> {
+  async runExclusive<T>(fn: () => Promise<T>, priority = Date.now(), key?: string): Promise<T> {
     if (this.locked) {
       await new Promise<void>((resume) => {
         const index = this.waiters.findIndex((waiter) => waiter.priority > priority);
-        const waiter = { priority, resume };
+        const waiter = { priority, key, resume };
         if (index < 0) this.waiters.push(waiter);
         else this.waiters.splice(index, 0, waiter);
       });
@@ -603,6 +604,15 @@ class AsyncMutex {
       if (next) next.resume();
       else this.locked = false;
     }
+  }
+
+  reorderWaiters(orderedKeys: readonly string[]): void {
+    const rank = new Map(orderedKeys.map((key, index) => [key, index]));
+    const indices = this.waiters.flatMap((waiter, index) =>
+      waiter.key && rank.has(waiter.key) ? [index] : []);
+    const reordered = indices.map((index) => this.waiters[index]!)
+      .sort((left, right) => rank.get(left.key!)! - rank.get(right.key!)!);
+    indices.forEach((index, position) => { this.waiters[index] = reordered[position]!; });
   }
 }
 
@@ -638,6 +648,11 @@ export type QueueSnapshotDescriptor = {
 
 export type RemoveQueuedMessageResult = {
   outcome: "removed" | "already_dequeued" | "missing";
+  revision: number;
+};
+
+export type ReorderQueuedMessageResult = {
+  outcome: "reordered" | "stale" | "unsupported";
   revision: number;
 };
 
@@ -926,10 +941,7 @@ export class AgentLoop {
       scheduleGoalWork: (sessionKey, goal) => this.scheduleGoalWork(sessionKey, goal),
       invalidateGoalWork: (sessionKey) => this.scheduledGoalSessions.delete(sessionKey),
     });
-    this.taskPlanRuntime = new TaskPlanRuntime({
-      sessions: this.sessions,
-      bus: this.bus,
-    });
+    this.taskPlanRuntime = new TaskPlanRuntime({ sessions: this.sessions, bus: this.bus });
     this.projectStore = init.projectStore ?? null;
     this.guiTranscriptMirror = init.guiTranscriptMirror ?? null;
     const terminalControlRoot = this.sessions.root
@@ -2201,6 +2213,45 @@ export class AgentLoop {
 
   async getWebuiQueueSnapshot(sessionKey: string): Promise<QueueSnapshotDescriptor> {
     return this.getQueueSnapshot(sessionKey);
+  }
+
+  async reorderQueuedWebuiMessages(
+    sessionKey: string,
+    orderedIds: readonly string[],
+    expectedRevision: number,
+  ): Promise<ReorderQueuedMessageResult> {
+    return this.queueMutationLockFor(sessionKey).runExclusive(async () => {
+      const revision = this.queueRevision(sessionKey);
+      const slots = (this.turnSlots.get(sessionKey) ?? []).filter((slot) =>
+        slot.state === "queued" && slot.announcedToWebui && isSharedQueueMessage(slot.root));
+      const inbox = this.goalRuntime.inbox(sessionKey).filter((entry) =>
+        entry.turnId === null && this.queueDescriptorFromInboxEntry(sessionKey, entry) !== null);
+      const currentIds = [
+        ...slots.map((slot) => String(slot.root.metadata.client_request_id)),
+        ...inbox.map((entry) => String(entry.metadata.client_request_id)),
+      ];
+      if (revision !== expectedRevision || orderedIds.length < 2
+        || orderedIds.length !== currentIds.length
+        || new Set(orderedIds).size !== orderedIds.length
+        || orderedIds.some((id) => !currentIds.includes(id))) {
+        return { outcome: "stale" as const, revision };
+      }
+      if (slots.length && inbox.length) return { outcome: "unsupported" as const, revision };
+      const originalTimes = [...slots.map((slot) => Date.parse(String(slot.root.metadata.queued_at))),
+        ...inbox.map((entry) => Date.parse(String(entry.metadata.queued_at)))];
+      const first = Math.min(...originalTimes.filter(Number.isFinite));
+      const queuedAtById = new Map(orderedIds.map((id, index) =>
+        [id, new Date(first + index).toISOString()]));
+      if (slots.length) {
+        for (const slot of slots) {
+          slot.root.metadata.queued_at = queuedAtById.get(String(slot.root.metadata.client_request_id))!;
+        }
+        this.lockFor(sessionKey).reorderWaiters(orderedIds);
+      } else {
+        await this.goalRuntime.reorderInboxEntries(sessionKey, orderedIds, queuedAtById);
+      }
+      return { outcome: "reordered" as const, revision: this.advanceQueueRevision(sessionKey) };
+    });
   }
 
   async removeQueuedMessage(
@@ -3791,10 +3842,34 @@ export class AgentLoop {
     const activeContextWindowTokens = modelSelection?.snapshot.contextWindowTokens
       ?? this.contextWindowTokens;
     const activeTools = tools ?? this.tools;
+    const deliveryMessageTool = activeTools.get("message");
+    let heldDeliveryStream = "";
+    const deliveryAwareStream = onStream ? async (delta: string) => {
+      if (deliveryMessageTool instanceof MessageTool && deliveryMessageTool.hasPendingPluginFiles()) {
+        heldDeliveryStream += delta;
+      } else {
+        if (heldDeliveryStream) {
+          await onStream(heldDeliveryStream);
+          heldDeliveryStream = "";
+        }
+        await onStream(delta);
+      }
+    } : null;
+    const deliveryAwareStreamEnd = onStream || onStreamEnd ? async (options: { resuming?: boolean } = {}) => {
+      if (heldDeliveryStream) {
+        if (!options.resuming) await onStream?.(heldDeliveryStream);
+        heldDeliveryStream = "";
+      }
+      await onStreamEnd?.(options);
+    } : null;
+    const deliveryContinuation = createArtifactDeliveryContinuation(() => {
+      const messageTool = activeTools.get("message");
+      return messageTool instanceof MessageTool ? messageTool.turnDeliveredMediaPaths() : [];
+    });
     const checkpointSession = session;
     const checkpoint = checkpointSession ? (payload: Record<string, any>) => this.setRuntimeCheckpoint(checkpointSession, payload) : null;
     const activeSessionKey = session?.key ?? sessionKey ?? null;
-    const loopHook = new AgentProgressHook(onProgress, onStream, onStreamEnd, {
+    const loopHook = new AgentProgressHook(onProgress, deliveryAwareStream, deliveryAwareStreamEnd, {
       channel: channel ?? "cli",
       chatId: chatId ?? "direct",
       messageId: messageId ?? null,
@@ -3815,9 +3890,12 @@ export class AgentLoop {
       },
     });
     const hook = this.extraHooks.length ? new CompositeAgentHook([loopHook, ...this.extraHooks]) : loopHook;
+    const taskPlanContinuation = createTaskPlanContinuation(() => activeSessionKey
+      ? this.taskPlanRuntime.get(activeSessionKey) : null);
     const result = await this.runner.run(
       new AgentRunSpec({
         messages: initialMessages,
+        finalResponseContinuation: (response) => taskPlanContinuation(response) ?? deliveryContinuation(response),
         privateSkillRefs: session?.metadata?.privatePluginSkillRefs,
         onPrivateSkillRefsChanged: session ? (refs) => {
           session.metadata.privatePluginSkillRefs = refs;
@@ -3828,8 +3906,6 @@ export class AgentLoop {
         model: activeModel,
         maxIterations: this.maxIterations,
         maxIterationsFinalPrompt: renderTemplate("agent/max-iterations-final-response.md", { strip: true }),
-        finalResponseContinuation: createTaskPlanContinuation(() => activeSessionKey
-          ? this.taskPlanRuntime.get(activeSessionKey) : null),
         maxTokens: activeProvider?.generation?.maxTokens ?? this.config.agents.defaults.maxTokens,
         temperature: activeProvider?.generation?.temperature ?? this.config.agents.defaults.temperature,
         reasoningEffort: reasoningEffortFromTurnMetadata(metadata, activeModel)
@@ -3844,7 +3920,7 @@ export class AgentLoop {
         contextBlockLimit: this.contextBlockLimit,
         providerRetryMode: this.providerRetryMode,
         progressCallback: onProgress,
-        streamProgressDeltas: Boolean(onStream),
+        streamProgressDeltas: Boolean(deliveryAwareStream),
         retryWaitCallback: onRetryWait,
         checkpointCallback: checkpoint,
         llmTimeoutS: runnerWallLlmTimeoutS(this.sessions, activeSessionKey, {
@@ -5498,7 +5574,7 @@ export class AgentLoop {
           }
           return;
         }
-      }, queuedAt);
+      }, queuedAt, String(initialSlot.root.metadata?.client_request_id ?? ""));
     } finally {
       await this.cleanupOwnedSlots(
         sessionKey,
