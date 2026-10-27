@@ -10,10 +10,12 @@ import crypto from "node:crypto";
 import { collectorGate } from "../core/collector-gate.js";
 import { discoverApplicationCatalog, type CatalogApplication } from "./application-catalog.js";
 import { checkpointId, persistedCheckpoint, recorderRotationRequest, recorderRotationResult } from "../core/recorder-checkpoint.js";
+import { WindowsApplicationIconReader } from "./application-icon.js";
 
 interface ProcessSession { ready: Promise<void>; closed: Promise<void>; rotate(input: RecorderLaunch): Promise<void> }
 export class WindowsPlatformDriver implements HistoryPlatformDriver {
   private readonly sessions = new WeakMap<ChildProcessWithoutNullStreams, ProcessSession>();
+  private readonly icons = new WindowsApplicationIconReader();
   private catalog: { expires: number; entries: CatalogApplication[] } | undefined;
   constructor(readonly store: WindowsSettingsStore, private readonly binary?: string,
     private readonly recorderScript = fileURLToPath(new URL("./record-human-history.js", import.meta.url))) {}
@@ -61,7 +63,7 @@ export class WindowsPlatformDriver implements HistoryPlatformDriver {
   }
   openPermission(): Promise<HistoryPermissions> { return this.readPermissions(); }
   permissionError(): null { return null; }
-  async iconFor(): Promise<null> { return null; }
+  iconFor(bundleId: string): Promise<string | null> { return this.icons.iconFor(bundleId); }
   launch(input: RecorderLaunch): ChildProcessWithoutNullStreams {
     this.prepare();
     const release = collectorGate.acquire("history");

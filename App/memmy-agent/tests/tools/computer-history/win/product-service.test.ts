@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as settings from "../../../../src/tools/computer-history/win/settings.js";
 import { WindowsComputerHistoryService } from "../../../../src/tools/computer-history/win/computer-history-api.js";
 import { WindowsPlatformDriver } from "../../../../src/tools/computer-history/win/platform-driver.js";
+import { ApplicationIconReader } from "../../../../src/tools/computer-history/mac/application-icon.js";
+import { WindowsApplicationIconReader } from "../../../../src/tools/computer-history/win/application-icon.js";
 import { context, executable } from "./fixtures.js";
 
 const roots: string[] = [];
@@ -40,6 +42,21 @@ afterEach(async () => {
 });
 
 describe("Windows managed service", () => {
+  it("uses the Windows icon reader for Windows History application IDs", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.spyOn(os, "release").mockReturnValue("10.0.26100");
+    const windowsIcon = vi.spyOn(WindowsApplicationIconReader.prototype, "iconFor")
+      .mockResolvedValue("data:image/png;base64,AAA");
+    const macIcon = vi.spyOn(ApplicationIconReader.prototype, "iconFor")
+      .mockResolvedValue(null);
+    const { service } = setup();
+
+    await expect(service.applicationIcon("win32.explorer"))
+      .resolves.toBe("data:image/png;base64,AAA");
+    expect(windowsIcon).toHaveBeenCalledWith("win32.explorer");
+    expect(macIcon).not.toHaveBeenCalled();
+  });
+
   it("hands Unicode output paths to the same managed process and validates the rotation acknowledgement", async () => {
     const {root, store} = setup([
       'import fs from "node:fs";import readline from "node:readline";',

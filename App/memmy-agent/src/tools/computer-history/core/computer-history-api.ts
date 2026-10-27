@@ -391,7 +391,7 @@ function rawHasEvidence(text: string): boolean {
       if (!record || typeof record !== "object" || Array.isArray(record)) return false;
       return isCaptureInterruptionRecord(record) || (record.recordType === "human_event"
         && typeof record.eventType === "string" && record.eventType.length > 0
-        && !["recording_started", "recording_stopped"].includes(record.eventType));
+        && !["recording_started", "recording_stopped", "recording_checkpoint"].includes(record.eventType));
     } catch { return false; }
   });
 }
