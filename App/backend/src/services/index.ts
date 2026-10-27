@@ -260,7 +260,7 @@ export function createBackendServices(options: CreateBackendServicesOptions): Ba
   const plugins = createPluginService({
     repository: pluginRepository,
     hasActiveAgentTasks: async signal => {
-      if (!memmyAgentAdminClient.hasActiveTasks) throw new Error("Agent task activity is unavailable; update the runtime and retry");
+      if (!memmyAgentAdminClient.hasActiveTasks) throw new Error("Agent task activity is unavailable; update deferred until the runtime is updated and retry");
       return memmyAgentAdminClient.hasActiveTasks(signal);
     },
     secretStore: options.appStateStore.secretStore,
