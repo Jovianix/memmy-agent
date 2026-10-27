@@ -7,17 +7,17 @@ function fixture() {
   let busy = false;
   const entries = ["teach-mode", "not-installed"].map(id => ({ manifest: { id, version: id === "teach-mode" ? "0.2.0" : "1.0.0" },
     eligibility: { visible: true, canInstall: true, canUse: true, reason: null } }));
-  const manifest: { updateMode?: string; rules?: { autoUpdate: boolean } } = { updateMode: "automatic" };
+  const manifest: { rules?: { autoUpdate: boolean } } = { rules: { autoUpdate: true } };
   const update = vi.fn(async () => ({})), catalog = vi.fn(async () => entries);
   const plugins = { list: () => [{ id: "teach-mode", version: "0.1.0", state: "active", manifest }],
     catalog, isBusy: () => busy, update } as unknown as PluginService;
   return { plugins, update, catalog, manifest, entries, setBusy: (value: boolean) => { busy = value; } };
 }
 describe("automatic plugin updates", () => {
-  it("applies official automatic-update defaults to manifests without rules", async () => {
+  it("keeps manifests without an explicit automatic-update rule on manual updates", async () => {
     const f = fixture(), updates = createPluginUpdateService(f.plugins);
-    delete f.manifest.updateMode;
-    await updates.check(); expect(f.update).toHaveBeenCalledWith("teach-mode", "0.2.0");
+    delete f.manifest.rules;
+    await updates.check(); expect(f.update).not.toHaveBeenCalled();
     await updates.close();
   });
   it("honors official update rules and current account eligibility", async () => {

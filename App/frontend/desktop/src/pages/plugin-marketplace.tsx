@@ -1,3 +1,4 @@
+import { notifyPluginChange } from "../lib/plugin-change-event.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { InstalledPlugin, PluginCatalogEntry } from "@memmy/local-api-contracts";
 import { useApiClients } from "../app/providers.js";
@@ -37,6 +38,21 @@ export function PluginMarketplace() {
     const current = ++generation.current;
     setLoading(true);
     setActionError(null);
+    let installedRead = 0;
+    async function loadInstalled() {
+      const read = ++installedRead;
+      try {
+        const plugins = await clients!.plugins.list();
+        if (generation.current !== current || read !== installedRead) return;
+        setInstalled(plugins);
+        setError(null);
+      } catch {
+        if (generation.current !== current || read !== installedRead) return;
+        setError(t("plugins.ui.couldNotLoadPluginsPleaseTryAgain"));
+      } finally {
+        if (generation.current === current && read === installedRead) setLoading(false);
+      }
+    }
     // Model readiness is supplementary; never hold the catalog behind this request.
     void clients.config.getModelConfig().then((model) => {
       if (generation.current !== current) return;
@@ -56,6 +72,10 @@ export function PluginMarketplace() {
     void (async () => {
       try {
         await clients.account?.getSession?.();
+        if (generation.current !== current) return;
+        // list() includes eligibility from the refreshed account grants. An
+        // installed private plugin can disappear from the remote catalog.
+        void loadInstalled();
         const entries = await clients.plugins.catalog?.();
         if (generation.current !== current) return;
         if (entries) setCatalog(entries);
@@ -64,17 +84,7 @@ export function PluginMarketplace() {
         if (generation.current === current) setCatalogError(t("plugins.ui.catalogUnavailable"));
       }
     })();
-    try {
-      const plugins = await clients.plugins.list();
-      if (generation.current !== current) return;
-      setInstalled(plugins);
-      setError(null);
-    } catch {
-      if (generation.current !== current) return;
-      setError(t("plugins.ui.couldNotLoadPluginsPleaseTryAgain"));
-    } finally {
-      if (generation.current === current) setLoading(false);
-    }
+    await loadInstalled();
   }, [clients, t, state.account.userId]);
 
   useEffect(() => {
@@ -82,6 +92,15 @@ export function PluginMarketplace() {
     const interval = window.setInterval(() => { if (!busy.current) void refresh(); }, 30_000);
     return () => { generation.current += 1; window.clearInterval(interval); };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!clients || !busyId) return;
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      void clients.plugins.list().then(plugins => { if (!disposed) setInstalled(plugins); }, () => undefined);
+    }, 1_000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [clients, busyId]);
 
   async function mutate(plugin: MarketplacePlugin, operation: () => Promise<unknown>) {
     if (!clients || loading || busy.current || error) return;
@@ -99,6 +118,7 @@ export function PluginMarketplace() {
         setActionErrorPluginId(plugin.id);
       }
     } finally {
+      notifyPluginChange();
       setBusyId(null);
       busy.current = false;
     }
@@ -171,9 +191,9 @@ export function PluginMarketplace() {
 /** Merge the remote catalog with Host state, including plugins missing from that catalog. */
 export function marketplacePlugins(catalog: PluginCatalogEntry[] | null, installed: InstalledPlugin[]): MarketplacePlugin[] {
   const installedById = new Map(installed.map((plugin) => [plugin.id, plugin]));
-  const listed = new Set<string>();
-  const plugins = (catalog ?? []).filter((entry) => entry.eligibility.visible).map((entry): MarketplacePlugin => {
-    listed.add(entry.manifest.id);
+  const listed = new Set((catalog ?? []).map((entry) => entry.manifest.id));
+  const plugins = (catalog ?? []).filter((entry) => entry.eligibility.visible
+    && installedById.get(entry.manifest.id)?.eligibility?.visible !== false).map((entry): MarketplacePlugin => {
     const local = installedById.get(entry.manifest.id);
     return {
       id: entry.manifest.id, name: entry.manifest.name, eligibility: entry.eligibility,

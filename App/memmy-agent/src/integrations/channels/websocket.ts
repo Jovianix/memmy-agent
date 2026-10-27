@@ -4,6 +4,7 @@ import { getRecordingSessionService, shutdownRecordingService } from "../../tool
 import { CollectorBusyError } from "../../tools/computer-history/core/collector-gate.js";
 import { invokeNativePluginService, shutdownNativePlugins } from "../../tools/plugin-host/native-services.js";
 import { SkillsLoader } from "../../core/agent-runtime/skills.js";
+import { agentTaskActivity } from "../../core/agent-runtime/task-activity.js";
 import { historySummaryRuntime } from "../../providers/history-summary-runtime.js";
 import crypto from "node:crypto";
 import * as childProcess from "node:child_process";
@@ -152,7 +153,7 @@ type WorkspaceEnvironmentContextResult =
   | { ok: false; response: HttpLikeResponse };
 type RuntimeModelNameResolver = (() => string | null | undefined) | null;
 type RuntimeToolNamesResolver = (() => string[] | null | undefined) | null;
-type WebuiMediaKind = "image" | "video" | "file";
+type WebuiMediaKind = "image" | "video" | "audio" | "file";
 type WebuiArtifactKind = WebuiMediaKind | "directory";
 type WebuiMediaAttachment = {
   kind: WebuiMediaKind;
@@ -572,10 +573,39 @@ export function sniffImageMime(bytes: Uint8Array): string | null {
   return null;
 }
 
+function isAudioOnlyWebm(filePath: string, bytes?: Buffer): boolean {
+  if (path.extname(filePath).toLowerCase() !== ".webm") return false;
+  let header: Buffer;
+  if (bytes) {
+    header = bytes.subarray(0, 4096);
+  } else {
+    try {
+      const fd = fs.openSync(filePath, "r");
+      try {
+        header = Buffer.alloc(4096);
+        header = header.subarray(0, fs.readSync(fd, header, 0, header.length, 0));
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return false;
+    }
+  }
+  const trackHeader = header.toString("latin1");
+  return /A_(?:OPUS|VORBIS)/u.test(trackHeader)
+    && !/V_(?:VP8|VP9|AV1|MPEG4|THEORA)/u.test(trackHeader);
+}
+
+function mediaMimeForPath(filePath: string, bytes?: Buffer): string {
+  if (isAudioOnlyWebm(filePath, bytes)) return "audio/webm";
+  return String(lookupMime(path.basename(filePath)) || "application/octet-stream");
+}
+
 function mediaKindForPath(filePath: string): WebuiMediaKind {
-  const mime = String(lookupMime(path.basename(filePath)) || "");
+  const mime = mediaMimeForPath(filePath);
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
   return "file";
 }
 
@@ -3278,6 +3308,10 @@ export class WebSocketChannel extends BaseChannel {
     if (got === "/api/channels/feishu/login/start") return this.handleChannelAdmin(request, "feishu-login-start");
     channelAdminMatch = got.match(/^\/api\/channels\/feishu\/login\/([^/]+)$/);
     if (channelAdminMatch) return this.handleChannelAdmin(request, "feishu-login-poll", decodeURIComponent(channelAdminMatch[1]));
+    if (got === "/api/runtime/task-activity") {
+      if (!this.checkApiToken(request)) return httpError(401, "Unauthorized");
+      return httpJsonResponse({ busy: agentTaskActivity.busy || Boolean(this.terminalRunControl?.hasActiveRuns()) });
+    }
     if (got === "/api/sessions") return this.handleSessionsList(request);
     if (got === "/api/projects") return this.handleProjectCreate(request);
     if (got === "/api/settings") return this.handleSettings(request);
@@ -4850,7 +4884,6 @@ export class WebSocketChannel extends BaseChannel {
     sessionKey?: string | null,
   ): WebuiMediaAttachment | null {
     const name = path.basename(filePath) || "attachment";
-    const kind = mediaKindForPath(filePath);
     const workspace = sessionKey
       ? this.artifactSessionWorkspace(sessionKey) ?? this.workspacePath
       : this.workspacePath;
@@ -4859,6 +4892,7 @@ export class WebSocketChannel extends BaseChannel {
     const signed = this.signOrStageMediaPath(filePath, workspace);
     const resolvedFilePath = resolved?.path ?? null;
     if (!signed && !resolvedFilePath) return null;
+    const kind = mediaKindForPath(resolvedFilePath ?? signed!.path);
     return {
       kind,
       name: signed?.name ?? name,
@@ -4888,15 +4922,16 @@ export class WebSocketChannel extends BaseChannel {
     const candidate = path.resolve(mediaRoot, normalizeLocalPath(rel));
     if (!pathIsInside(candidate, mediaRoot)) return httpError(404, "not found");
     if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) return httpError(404, "not found");
-    const mime = String(lookupMime(candidate) || "application/octet-stream");
+    const body = fs.readFileSync(candidate);
+    const mime = mediaMimeForPath(candidate, body);
     return {
       status: 200,
       headers: {
-        "content-type": DISPLAY_MEDIA_RESPONSE_MIMES.has(mime) ? mime : "application/octet-stream",
+        "content-type": DISPLAY_MEDIA_RESPONSE_MIMES.has(mime) || mime.startsWith("audio/") ? mime : "application/octet-stream",
         "cache-control": "private, max-age=31536000, immutable",
         "x-content-type-options": "nosniff",
       },
-      body: fs.readFileSync(candidate),
+      body,
     };
   }
 
@@ -5979,15 +6014,16 @@ function boundedNumber(value: any, min: number, max: number, field: string): num
 /** Serves a resolved media file with the headers every media route shares. */
 function mediaFileResponse(filePath: string, cacheControl = "private, max-age=31536000, immutable"): HttpLikeResponse {
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return httpError(404, "not found");
-  const mime = String(lookupMime(filePath) || "application/octet-stream");
+  const body = fs.readFileSync(filePath);
+  const mime = mediaMimeForPath(filePath, body);
   return {
     status: 200,
     headers: {
-      "content-type": DISPLAY_MEDIA_RESPONSE_MIMES.has(mime) ? mime : "application/octet-stream",
+      "content-type": DISPLAY_MEDIA_RESPONSE_MIMES.has(mime) || mime.startsWith("audio/") ? mime : "application/octet-stream",
       "cache-control": cacheControl,
       "x-content-type-options": "nosniff",
     },
-    body: fs.readFileSync(filePath),
+    body,
   };
 }
 

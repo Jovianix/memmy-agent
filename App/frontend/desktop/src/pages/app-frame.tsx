@@ -1,3 +1,4 @@
+import { usePluginUpdateAvailable, PluginUpdateDot } from "./plugin-update-indicator.js";
 import { BookOpen } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -300,6 +301,7 @@ export function resolveSelectedSidebarProjectId(
 export function AppFrame(props: AppFrameProps) {
   const { state, dispatch } = useAppState();
   const { clients } = useOptionalApiClients();
+  const pluginUpdatesAvailable = usePluginUpdateAvailable(clients?.plugins, state.account.userId);
   const { t, language } = useTranslation();
   const update = useOptionalUpdateCoordinator();
   const { track } = useAnalytics();
@@ -1179,6 +1181,7 @@ export function AppFrame(props: AppFrameProps) {
               >
                 <span className="shrink-0">{item.icon}</span>
                 <span className="flex-1 text-left">{label}</span>
+                {item.path === "/tools" && pluginUpdatesAvailable ? <PluginUpdateDot /> : null}
               </button>
             );
 
