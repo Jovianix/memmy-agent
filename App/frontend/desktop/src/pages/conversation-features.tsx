@@ -2,7 +2,7 @@ import { buildPluginCapabilityLabels } from "./plugin-tool-activity.js";
 import { resolveContributionIcon } from "./agent-command-palette.js";
 import { SHARED_ROW_MIN_PANE_WIDTH, SHARED_ROW_PRIMARY_RESERVE } from "./sidebar-resize.js";
 import type { RecordingPanelSession } from "./interview-recording-panel.js";
-import { buildAgentRoutedPluginPrompt, buildLegalDiagnosisContinuation, pressPinnedPluginCommand, pluginInteractionSignature, reconcileHiddenPluginCalls, PinnedPluginCommandBar, selectConversationPinnedCommands, selectPinnedCommandsForLegalWorkflow, selectOpenPinnedCapabilities } from "./plugin-conversation-controls.js";
+import { buildAgentRoutedPluginPrompt, buildLegalDiagnosisContinuation, collectPluginScenarios, pressPinnedPluginCommand, pluginInteractionSignature, reconcileHiddenPluginCalls, PinnedPluginCommandBar, selectConversationPinnedCommands, selectPinnedCommandsForLegalWorkflow, selectOpenPinnedCapabilities } from "./plugin-conversation-controls.js";
 import "./conversation-features.css";
 import { cloneElement, useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ComponentProps } from "react";
 import type { InstalledPlugin, PluginArtifactRef, PluginCommandContribution } from "@memmy/local-api-contracts";
@@ -32,6 +32,13 @@ export function conversationFeaturePanelOverlays(width: number | null | undefine
   return width != null && width > 0 && width < SHARED_ROW_PRIMARY_RESERVE + SHARED_ROW_MIN_PANE_WIDTH;
 }
 
+export function recordingShortcutOpen(compactOpen: boolean,
+  pluginRecording: Pick<RecordingPanelSession, "status"> | null | undefined, pluginRecordingHidden: boolean): boolean {
+  // A completed interview may remain in the right panel, but this shortcut
+  // has already switched back to controlling the independent recording card.
+  return compactOpen || Boolean(pluginRecording && pluginRecording.status !== "done" && !pluginRecordingHidden);
+}
+
 function PersistentPluginRecorder(props: {
   owner: string; host: ReactElement<ComponentProps<typeof PluginCapabilityHost>> | null;
   onSession(owner: string, session: RecordingPanelSession | null): void;
@@ -59,6 +66,7 @@ export function useConversationFeatures(options: {
   const currentUi = useRef(ui);
   currentUi.current = ui;
   const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
+  const scenarios = useMemo(() => collectPluginScenarios(plugins), [plugins]);
   const [error, setError] = useState<{ conversationId: string; message: string } | null>(null);
   const [featurePanelWidth, setFeaturePanelWidth] = useState(560);
   const [preview, setPreview] = useState<PluginArtifactRef | null>(null);
@@ -273,7 +281,7 @@ export function useConversationFeatures(options: {
     ? selectPinnedCommandsForLegalWorkflow(selectConversationPinnedCommands(targets, calls), legalFlowCardOpen)
     : [];
   const shortcuts = <PinnedPluginCommandBar targets={pinnedTargets} disabled={!clients}
-    recordingOpen={recording.compactOpen || Boolean(pluginRecording && !hiddenRecordings.has(recordingOwner))}
+    recordingOpen={recordingShortcutOpen(recording.compactOpen, pluginRecording, hiddenRecordings.has(recordingOwner))}
     active={selectOpenPinnedCapabilities(prepared, ui?.dismissedCallIds, pinnedCapabilities, ui?.hiddenCallIds)}
     onRecordingPress={toggleCompactRecording} onPress={({ plugin, command }) => void invoke(plugin, command)} />;
   const conversationCommand = targets.find(({ plugin, command }) => plugin.manifest.conversation && command.topbar);
@@ -314,7 +322,7 @@ export function useConversationFeatures(options: {
       }
     };
   };
-  return { plugins, conversationShortcut, cards, recorders, shortcuts, recording, openRecording, closeSidePanel, closePluginRecording,
+  return { plugins, conversationShortcut, cards, recorders, shortcuts, scenarios, recording, openRecording, closeSidePanel, closePluginRecording,
     pluginRecordingSession: pluginRecording && !hiddenRecordings.has(recordingOwner) ? pluginRecording : null, capabilityLabels,
     processInteraction,
     capturePendingInputRelease,

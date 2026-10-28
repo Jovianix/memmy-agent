@@ -2909,21 +2909,27 @@
 }
 .pinned-command-chip {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 5px;
-  padding: 6px 11px;
+  min-height: 30px;
+  padding: 5px 10px;
   border: 0;
   border-radius: var(--radius-btn, 8px);
-  background: color-mix(in srgb, var(--color-action-sky) 4%, var(--color-background-paper));
+  background: color-mix(in srgb, var(--color-text-ink) 3%, var(--color-background-paper));
   color: color-mix(in srgb, var(--color-text-ink) 66%, transparent);
   font-size: 12px;
   line-height: 18px;
+  white-space: nowrap;
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
 }
+.pinned-command-chip > svg {
+  flex: none;
+}
 .pinned-command-chip:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-action-sky) 10%, var(--color-background-paper));
-  color: var(--color-action-sky-hover);
+  background: color-mix(in srgb, var(--color-text-ink) 7%, var(--color-background-paper));
+  color: var(--color-text-ink);
 }
 .pinned-command-chip:focus-visible {
   outline: none;
@@ -2936,6 +2942,9 @@
 .pinned-command-chip[data-open="true"] {
   background: color-mix(in srgb, var(--color-action-sky) 14%, var(--color-background-paper));
   color: var(--color-action-sky-hover);
+}
+.pinned-command-chip[data-open="true"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-action-sky) 20%, var(--color-background-paper));
 }
 .agent-conversation-panel[data-waiting-card="true"] .agent-conversation-scroll {
   padding-bottom: calc(var(--agent-question-overlay-height, var(--agent-composer-overlay-height, 120px)) + 8px);
