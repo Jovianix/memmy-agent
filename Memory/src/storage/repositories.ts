@@ -6600,11 +6600,19 @@ function listMetricsForMemory(memory: MemoryRow): MemoryListItem["metrics"] | un
     || numberMetric(memory.info.r_human) !== undefined;
   const reflectionRecorded = Boolean(reflection)
     || typeof trace.reflection_scored_at === "string";
+  // Older plugin imports discarded r_human. Missing historical evidence must not
+  // hide a completed zero. New imports explicitly preserve null for no reward.
+  const legacyImport = recordValue(internal.legacy_import);
+  const historicalReflectedImport = Boolean(reflection)
+    && ["openclaw", "hermes", "dsh"].includes(String(legacyImport.source))
+    && typeof legacyImport.source_id === "string"
+    && trace.r_human === undefined;
+
   return {
     ...(value === undefined ? {} : { value }),
     ...(alpha === undefined ? {} : { alpha }),
     reflectionDone: Boolean(reflection),
-    ...(isTrace && value === 0 && !rewardRecorded ? { valuePending: true } : {}),
+    ...(isTrace && value === 0 && !rewardRecorded && !historicalReflectedImport ? { valuePending: true } : {}),
     ...(isTrace && alpha === 0 && !reflectionRecorded && !rewardRecorded ? { alphaPending: true } : {})
   };
 }

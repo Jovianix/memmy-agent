@@ -1,3 +1,4 @@
+import { legacyScoringPanel } from "../../../../../../../Memory/tests/fixtures/legacy-plugin.js";
 /** Memories sub page tests. */
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -470,6 +471,22 @@ describe("MemoriesSubPage", () => {
     expect(html).toContain('data-icon="chevron-left"');
     expect(html).toContain('data-icon="chevron-right"');
     expect(html).not.toContain("共 43 条");
+  });
+
+  it.each(["openclaw", "hermes", "dsh"] as const)("renders actual %s migration panel scores including historical zeros", async (agent) => {
+    for (const scenario of ["zero", "historical-zero", "pending", "reflection-only", "nonzero", "historical-pending"] as const) {
+      const { panel } = await legacyScoringPanel(agent, scenario);
+      const html = renderMemories({ status: "ready", data: panel, detail: null });
+      if (scenario === "zero" || scenario === "historical-zero") {
+        expect(html).toContain("V 0.00 · α 0.00");
+        expect(html).toContain("反思");
+      } else if (scenario === "nonzero") {
+        expect(html).toContain("V 0.25 · α 0.50");
+      } else {
+        expect(html).not.toContain("memory-card__score");
+        if (scenario === "reflection-only") expect(html).toContain("反思");
+      }
+    }
   });
 
   it("隐藏未评分指标和执行片段并保留真实零分", () => {
