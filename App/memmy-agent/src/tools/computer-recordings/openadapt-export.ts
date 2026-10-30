@@ -89,7 +89,7 @@ export async function exportOpenAdaptFlow(input: {
     afterFrameMeaning: "next verified sampled frame; not a settled-state or business-success assertion",
   });
   let templates: string[] = [];
-  if (requests.length) {
+  if (complete && requests.length) {
     writeJsonAtomic(path.join(destination, "frame-requests.json"), requests);
     await input.extract();
     for (const request of requests) {
@@ -106,7 +106,7 @@ export async function exportOpenAdaptFlow(input: {
   writeJsonAtomic(path.join(destination, "operation-evidence.json"), OperationEvidenceSchema.parse(evidence));
   const archive = new JSZip();
   for (const name of ["meta.json", "events.jsonl", "memmy-source-events.jsonl", "memmy-export-manifest.json", "operation-evidence.json", ...templates]) archive.file(name, fs.createReadStream(path.join(destination, name)));
-  for (const request of requests) {
+  if (complete) for (const request of requests) {
     const name = `frames/${String(request.i).padStart(4, "0")}_${request.phase}.png`;
     archive.file(name, fs.createReadStream(path.join(destination, name)));
   }

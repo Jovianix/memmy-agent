@@ -1933,6 +1933,9 @@ export class RetrievalService {
       ? requestedSemanticLayers.filter((layer) => layer !== "L1")
       : requestedSemanticLayers;
     const searchAt = Date.now();
+    const userMemoryRecallEnabled = this.deps.config.algorithm.enableUserMemoryRecall === true;
+    // Capture uses these candidates to confirm or correct existing User Memory,
+    // even when it must not be returned to an agent.
     const includeUserMemory = !onboardingFirstReportHit && semanticLayers.includes("L1");
     const userMemoryCount = includeUserMemory
       ? this.deps.repos.userMemories.listActive(context.userId).length
@@ -2024,7 +2027,9 @@ export class RetrievalService {
     const agentHits = onboardingFirstReportHit || timeFilter
       ? retrieval.hits
       : filterL1TraceSpanRecallHits(retrieval.hits, memories);
-    const merged = mergeSameTurnRecallHits(agentHits, memories, userMemoryOutput.hits);
+    const merged = mergeSameTurnRecallHits(
+      agentHits, memories, userMemoryRecallEnabled ? userMemoryOutput.hits : []
+    );
     const rerankAt = Date.now();
     const filteredHits = onboardingFirstReportHit
       ? { hits: retrieval.hits, status: ["first_report_handoff:latest_only"] }
@@ -2062,7 +2067,7 @@ export class RetrievalService {
       .map((memory) => memory.id);
     const candidateMemoryIds = uniq([
       ...memories.map((memory) => memory.id),
-      ...userMemoryCandidateIds
+      ...(userMemoryRecallEnabled ? userMemoryCandidateIds : [])
     ]);
     const sourceMemoryIds = contextPacket.sourceMemoryIds;
     const hitIds = new Set(hits.flatMap((hit) => hit.memberMemoryIds ?? [hit.id]));
@@ -2077,7 +2082,7 @@ export class RetrievalService {
           memoryLayer: memory.memoryLayer,
           reason: "rank_threshold" as const
         })),
-      ...userMemoryOutput.memories
+      ...(userMemoryRecallEnabled ? userMemoryOutput.memories : [])
         .filter((memory) => !hitIds.has(memory.id))
         .slice(0, 50)
         .map((memory) => ({
@@ -2147,6 +2152,7 @@ export class RetrievalService {
       },
       status: uniq([
         ...filteredHits.status,
+        ...(!userMemoryRecallEnabled ? ["user_memory_recall:disabled"] : []),
         ...(dynamicCurrentQuery ? ["dynamic_current:refresh_required"] : []),
         ...(stalePolicyIds.size > 0 ? ["policy:revalidation_required"] : []),
         ...(!this.deps.memoryAddEnabled() ? ["memory_add:disabled:no_recall_log"] : [])

@@ -135,6 +135,7 @@ function setupCleanup(platform: string, drain: () => Promise<void>) {
     stopComputerHistoryBeforeExit: stop,
     stopPackagedRendererServer: async () => { calls.push("renderer"); },
     sendAppExitEventBeforeQuit: async () => { calls.push("analytics"); },
+    traceQuitCleanup: async (_stage: string, operation: () => Promise<unknown>) => operation(),
     console: { info: vi.fn(), warn: vi.fn() }
   });
   runInContext(cleanupCode, context);

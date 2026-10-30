@@ -16,6 +16,7 @@ export const HTTP_STATUS_BY_CODE: Readonly<Record<ApiErrorCode, number>> = Objec
   rate_limited: 429,
   internal: 500,
   memory_layer_unavailable: 503,
+  memory_scan_upgrade_required: 503,
   missing_idempotency_key: 400,
   idempotency_body_mismatch: 409,
   scan_not_permitted: 403,

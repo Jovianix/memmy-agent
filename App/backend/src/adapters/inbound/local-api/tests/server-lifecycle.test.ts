@@ -83,10 +83,11 @@ describe("local API shutdown", () => {
       await preClosed;
       finishVerification(allowed);
       [response] = await responded;
-      expect(response.statusCode).toBe(503);
+      expect(response.statusCode).toBe(allowed ? 200 : 401);
       const ended = once(response, "end");
       response.resume();
       await Promise.all([closed, ended]);
+      expect(response.readableEnded).toBe(true);
     } finally {
       finishVerification(false);
       response?.destroy();
