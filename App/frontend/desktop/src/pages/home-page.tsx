@@ -1,8 +1,16 @@
+import { ComposerHighlightedTextarea } from "./composer-highlighted-textarea.js";
+import { useQuestionDockLayout } from "./use-question-dock-layout.js";
+import { PluginCapabilityLabelsContext } from "./plugin-tool-activity.js";
+import { useSharedRowWidth } from "./sidebar-resize.js";
+export * from "./plugin-conversation-controls.js";
+import { useConversationFeatures } from "./conversation-features.js";
+import { applySidebarRecordingAction, sidebarRecordingStatus } from "./recording-entry.js";
+import { pendingAgentQuestion, AgentQuestionCard, AgentQuestionActiveRequestContext } from "./agent-question-card.js";
 /** Home page module. */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type CSSProperties, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type SetStateAction, type UIEvent } from "react";
 import type { RecordingStart } from "@memmy/local-api-contracts";
 import { AgentTaskRecordingOption, TaskRecordingsPanel } from "./memory/task-recordings.js";
-import type { AgentGatewayStartupIssue } from "@memmy/local-api-contracts";
+import { resolveThinkingEnabled, resolveThinkingLevel, type AgentGatewayStartupIssue } from "@memmy/local-api-contracts";
 import { getRuntimeConfig } from "../api/runtime-config.js";
 import { hydrateAgentThreadInBackground, refreshAgentTaskList, useAgentRuntimeBridge, type AgentTaskStateCoordinator } from "../app/agent-runtime-bridge.js";
 import { useApiClients } from "../app/providers.js";
@@ -18,6 +26,7 @@ import {
   type AgentTurnSource,
   type MemmyAgentUiLanguage,
   type MemmyAgentWebSocketConnection,
+  type MemmyAgentMediaInput,
   type UploadAgentMediaInput,
   type UploadedAgentMedia,
   type WebuiSessionTarget
@@ -43,7 +52,7 @@ import { ImChannelTitleIcon, imChannelTitleDisplay } from "../integrations/integ
 import { useTaskBus, type TaskBusAgentMessage } from "../lib/task-bus.js";
 import type { AppAction } from "../state/app-actions.js";
 import { agentActions, appActions, createAgentOperationError } from "../state/app-actions.js";
-import { type AgentChatMessage, type AgentState } from "../state/agent-chat-slice.js";
+import { NEW_TASK_MODEL_SCOPE_KEY, type AgentChatMediaAttachment, type AgentChatMessage, type AgentState, type AgentThinkingState } from "../state/agent-chat-slice.js";
 import { useAppState } from "../state/app-state.js";
 import { isComposingKeyboardEvent } from "../utils/keyboard.js";
 import {
@@ -54,10 +63,11 @@ import {
   type PendingFileAttachment,
   type PendingImage
 } from "../state/agent-composer-state.js";
-import { createModelWorkspace, defaultModelSelectionInput, resolveModelSelection } from "../state/model-workspace.js";
+import { createModelWorkspace, defaultModelSelectionInput, resolveModelSelection, resolveThinkingConfigForModel, type ModelCandidate, type ModelWorkspace } from "../state/model-workspace.js";
 import {
   AgentCommandPalette,
   buildVisibleSlashCommands,
+  defaultSlashCommandIndex,
   filterSlashCommands,
   localizeSlashCommands,
   readRecentSlashCommands,
@@ -70,8 +80,9 @@ import {
 import { AgentAttachmentCard, splitAgentAttachmentName } from "./agent-file-attachment-chip.js";
 import { AgentGoalBar, type AgentGoalControlRequest } from "./agent-goal-bar.js";
 import { AgentQueuedMessageList, queuedComposerEditDecision } from "./agent-queued-message-list.js";
+import { agentOutputSignature, useStalledOutputShimmer } from "./agent-stall-shimmer.js";
 import { AgentThreadMessages, ChatImageLightbox } from "./agent-thread-messages.js";
-import { AgentThreadPanel, useAgentThreadPanel } from "./agent-thread-panel.js";
+import { AgentThreadPanel, PLUGIN_RECORDING_TAB_ID, useAgentThreadPanel } from "./agent-thread-panel.js";
 import { hasPendingBrowserOpen, MEMMY_BROWSER_OPEN_EVENT } from "./browser-panel.js";
 import { threadTabForInAppPreview, threadTabForPath } from "./agent-thread-panel-model.js";
 import { THREAD_SEARCH_SCROLL_OFFSET } from "./agent-thread-search.js";
@@ -96,17 +107,16 @@ import {
   writePendingFirstEncounterTaskLaunch
 } from "./first-encounter-task-launch.js";
 import { HistoryDagPanel, type HistoryDagPanelState } from "./history-dag-panel.js";
+import { HomeStarterActions } from "./home-starter-actions.js";
 import { LlmProviderLogo } from "./llm-provider-logo.js";
 import { Mic, Pause, Plus, Send } from "./memory/memory-prototype-icons.js";
 import { resolveWorkspaceEnvironmentScope, useWorkspaceEnvironment } from "./use-workspace-environment.js";
-import { ArrowDown, Check, ChevronDown, Folder, Plus as LucidePlus, RotateCw, Target, X } from "lucide-react";
+import { ArrowDown, Check, ChevronDown, Folder, PanelRight, Plus as LucidePlus, RotateCw, Target, X } from "lucide-react";
 
 export { agentChatScopeKey, updateComposerDraftForScope };
 export { hydrateAgentThreadInBackground };
 export { isComposingKeyboardEvent } from "../utils/keyboard.js";
 export type { PendingAttachment, PendingAttachmentBase, PendingFileAttachment, PendingImage };
-
-const NEW_TASK_MODEL_SCOPE_KEY = "draft-new-task";
 
 const AGENT_WS_SAFE_FRAME_BYTES = 1024 * 1024;
 const COMPOSER_HEIGHT_EPSILON = 2;
@@ -194,6 +204,7 @@ const TRANSLATABLE_AGENT_ERROR_KEYS = new Set<MessageKey>([
   "home.media.error.sendReadFailed",
   "home.media.error.sendFailed",
   "home.media.error.messageTooBig",
+  "home.asrNotConfigured",
   "home.agent.messageNotRecorded",
   "home.agent.executionInterrupted",
   "home.agent.recoveryTimeout",
@@ -321,6 +332,8 @@ export interface SubmitAgentComposerMessageInput {
   getChatSelectionEpoch?: () => number;
   scopeKey?: string;
   modelPreset?: string | null;
+  thinkingEnabled?: boolean;
+  thinkingLevel?: string | null;
 }
 
 export interface RequestAgentStopInput {
@@ -440,7 +453,7 @@ export function ComposerImageAttachmentChip(props: {
   const extensionLabel = splitAgentAttachmentName(item.fileName, item.encodedMime ? `.${item.encodedMime.slice("image/".length)}` : undefined).extensionLabel;
   const subline = item.status === "error"
     ? t(item.errorKey ?? "home.media.error.sendReadFailed")
-    : `${extensionLabel} · ${formatBytes(item.originalBytes)}`;
+    : item.reusedMedia ? extensionLabel : `${extensionLabel} · ${formatBytes(item.originalBytes)}`;
 
   return (
     <AgentAttachmentCard
@@ -471,7 +484,7 @@ export function ComposerFileAttachmentChip(props: {
       kind="file"
       name={item.fileName}
       mime={item.uploadMime}
-      subline={`${extensionLabel} · ${formatBytes(item.uploadBytes ?? item.originalBytes)}`}
+      subline={item.reusedMedia ? extensionLabel : `${extensionLabel} · ${formatBytes(item.uploadBytes ?? item.originalBytes)}`}
       removable
       removeLabel={props.removeLabel}
       title={item.fileName}
@@ -662,6 +675,20 @@ export function requestNewSessionReset(input: RequestNewSessionResetInput): bool
   return true;
 }
 
+export function thinkingPayloadForSend(
+  workspace: ModelWorkspace,
+  candidate: ModelCandidate | null | undefined,
+  sessionThinking: AgentThinkingState | undefined
+): { thinkingEnabled?: boolean; thinkingLevel?: string | null } {
+  const config = resolveThinkingConfigForModel(workspace, candidate);
+  if (!config) return {};
+  const thinkingEnabled = resolveThinkingEnabled(config, sessionThinking?.enabled);
+  const thinkingLevel = thinkingEnabled
+    ? resolveThinkingLevel(config, sessionThinking?.level)
+    : null;
+  return { thinkingEnabled, thinkingLevel };
+}
+
 export async function submitAgentComposerMessage(input: SubmitAgentComposerMessageInput): Promise<boolean> {
   const text = input.content.trim();
   const trimmedDisplayContent = input.displayContent?.trim();
@@ -724,15 +751,15 @@ export async function submitAgentComposerMessage(input: SubmitAgentComposerMessa
     }
   }
 
-  const uploadInputs = input.pendingAttachments.map((item) => ({
+  const uploadInputs = input.pendingAttachments.filter((item) => !item.reusedMedia).map((item) => ({
     blob: uploadBlobForPendingAttachment(item),
     name: safeAgentAttachmentFilename(item.fileName, uploadClassificationForPendingAttachment(item)),
     kind: item.kind,
     mime: uploadMimeForPendingAttachment(item)
   }));
-  let uploadedAttachments: UploadedAgentMedia[];
+  let uploadedNewAttachments: UploadedAgentMedia[];
   try {
-    uploadedAttachments = uploadInputs.length ? await input.uploadAgentMedia(uploadInputs) : [];
+    uploadedNewAttachments = uploadInputs.length ? await input.uploadAgentMedia(uploadInputs) : [];
   } catch (error) {
     if (createdNewChat && chatId) {
       input.dispatch(agentActions.transientSendFailed(chatId));
@@ -745,6 +772,14 @@ export async function submitAgentComposerMessage(input: SubmitAgentComposerMessa
     input.setComposerMediaError?.(uploadErrorKey);
     return false;
   }
+  let newAttachmentIndex = 0;
+  const uploadedAttachments: MemmyAgentMediaInput[] = input.pendingAttachments.flatMap((item) => {
+    if (item.reusedMedia) {
+      return [{ ...item.reusedMedia, kind: item.reusedMedia.kind ?? item.kind, name: item.reusedMedia.name ?? item.fileName }];
+    }
+    const uploaded = uploadedNewAttachments[newAttachmentIndex++];
+    return uploaded ? [uploaded] : [];
+  });
 
   const payload = {
     type: "message",
@@ -757,6 +792,8 @@ export async function submitAgentComposerMessage(input: SubmitAgentComposerMessa
     ...(capturedTarget ? { target: capturedTarget } : {}),
     ...(input.language ? { language: input.language } : {}),
     ...(confirmedModelPreset !== undefined ? { model_preset: confirmedModelPreset } : {}),
+    ...(input.thinkingEnabled !== undefined ? { thinking_enabled: input.thinkingEnabled } : {}),
+    ...(input.thinkingLevel ? { thinking_level: input.thinkingLevel } : {}),
     ...(uploadedAttachments.length ? { media_paths: uploadedAttachments.map((item) => item.path) } : {})
   };
   if (encodedPayloadBytes(payload) > AGENT_WS_SAFE_FRAME_BYTES) {
@@ -781,6 +818,8 @@ export async function submitAgentComposerMessage(input: SubmitAgentComposerMessa
       ...(capturedTarget ? { target: capturedTarget } : {}),
       ...(input.language ? { language: input.language } : {}),
       ...(confirmedModelPreset !== undefined ? { modelPreset: confirmedModelPreset } : {}),
+      ...(input.thinkingEnabled !== undefined ? { thinkingEnabled: input.thinkingEnabled } : {}),
+      ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
       media: uploadedAttachments
     }, expectedGeneration);
   } catch (error) {
@@ -913,9 +952,11 @@ export function HomePage() {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const workspaceLayoutRef = useRef<HTMLDivElement | null>(null);
+  const [workspaceLayoutRef, workspaceRowWidth] = useSharedRowWidth<HTMLDivElement>();
   const conversationPanelRef = useRef<HTMLElement | null>(null);
+  const conversationContentRef = useRef<HTMLDivElement | null>(null);
   const composerOverlayRef = useRef<HTMLDivElement | null>(null);
+  const [questionDockTarget, setQuestionDockTarget] = useState<HTMLDivElement | null>(null);
   const pendingStatusChatRef = useRef<string | null>(null);
   const pendingLastCompactionChatRef = useRef<string | null>(null);
   const pendingHistoryDagChatRef = useRef<string | null>(null);
@@ -1028,12 +1069,108 @@ export function HomePage() {
     && !currentQueuedMessages.some((item) => item.status === "steering")
   );
   const hasActiveConversation = hasActiveAgentConversation(state.agent.currentChatId, state.agent.messages.length);
+  const isOpeningConversation = Boolean(state.agent.currentChatId && state.agent.isLoadingHistory && !hasActiveConversation);
+  const hasConversationShell = hasActiveConversation || isOpeningConversation;
+  const [blankThreadPanelEnabled, setBlankThreadPanelEnabled] = useState(false);
   const threadPanel = useAgentThreadPanel({
     scopeKey: chatScopeKey,
     containerRef: workspaceLayoutRef,
-    enabled: hasActiveConversation,
+    enabled: hasConversationShell || blankThreadPanelEnabled,
   });
   const [sidePanelMounted, setSidePanelMounted] = useState(false);
+  const [recordingTabVisible, setRecordingTabVisible] = useState(false);
+  const features = useConversationFeatures({
+    scopeKey: chatScopeKey, sharedRowWidth: workspaceRowWidth,
+    agentMessages: state.agent.messages,
+    onDraft: (text) => setCurrentComposerDraft(text),
+    onStageFiles: (files) => attachMediaFilesToScope(chatScopeKey, files),
+    onOpenArtifact: (artifact) => {
+      if (!artifact.path) return false;
+      const tab = threadTabForInAppPreview({ name: artifact.name, path: artifact.path });
+      if (!tab) return false;
+      setSidePanelMounted(true);
+      threadPanel.openTab(tab);
+      return true;
+    },
+    onOpenRecording: () => {
+      setSidePanelMounted(true);
+      threadPanel.openTab({ id: "recording:main", type: "recording", name: t("recording.page.title") });
+    },
+    onSend: (text) => submitAgentComposerMessage({
+      chatId: state.agent.currentChatId, target: state.agent.currentChatId ? null : draftTarget,
+      connection, ensureChatSubscription, content: text, pendingAttachments: [], language,
+      dispatch, track, uploadAgentMedia: (files) => clients!.memmyAgent.uploadAgentMedia(files), clearComposer: () => {},
+      setCreatingChat: setIsCreatingChat, modelPreset: resolvedConversationModel.candidateId ?? undefined,
+      chatSelectionEpoch: state.agent.chatSelectionEpoch, getChatSelectionEpoch: () => chatSelectionEpochRef.current,
+    }),
+  });
+  const pluginRecordingTabScopeRef = useRef<string | null>(null);
+  const pluginRecordingOpen = Boolean(features.pluginRecordingSession);
+  useEffect(() => {
+    if (pluginRecordingOpen) {
+      if (pluginRecordingTabScopeRef.current !== chatScopeKey) {
+        pluginRecordingTabScopeRef.current = chatScopeKey;
+        setSidePanelMounted(true);
+        threadPanel.openTab({ id: PLUGIN_RECORDING_TAB_ID, type: "recording", name: t("recording.page.title") });
+      }
+      return;
+    }
+    if (pluginRecordingTabScopeRef.current === chatScopeKey) threadPanel.closeTab(PLUGIN_RECORDING_TAB_ID);
+    pluginRecordingTabScopeRef.current = null;
+  }, [pluginRecordingOpen, chatScopeKey, threadPanel.openTab, threadPanel.closeTab, t]);
+  const [viewedRecordingId, setViewedRecordingId] = useState<string | null>(null);
+  const currentRecording = features.recording.session.live;
+  const recordingTabActive = !features.sidePanel && recordingTabVisible
+    && threadPanel.tabState.activeId === "recording:main";
+  useEffect(() => {
+    const session = features.recording.session;
+    if (recordingTabActive && session.view === "transcript" && currentRecording
+      && (currentRecording.status === "ready" || currentRecording.status === "failed")
+      && (session.opened?.id ?? currentRecording.id) === currentRecording.id) {
+      setViewedRecordingId(currentRecording.id);
+    }
+  }, [recordingTabActive, features.recording.session.view,
+    features.recording.session.opened?.id, currentRecording?.id, currentRecording?.status]);
+  const handledRecordingRequestRef = useRef(0);
+  const recordingSidebarPhase = sidebarRecordingStatus(features.recording.session);
+  useEffect(() => {
+    dispatch(appActions.recordingStatusChanged(recordingSidebarPhase));
+  }, [dispatch, recordingSidebarPhase]);
+  useEffect(() => () => dispatch(appActions.recordingStatusChanged("idle")), [dispatch]);
+  useEffect(() => {
+    const requestId = state.navigation.recordingRequestId;
+    if (state.navigation.currentPath !== "/main" || requestId <= state.navigation.recordingHandledId
+      || requestId <= handledRecordingRequestRef.current) return;
+    handledRecordingRequestRef.current = requestId;
+    dispatch(appActions.recordingRequestHandled(requestId));
+    if (!features.recordingAuthenticated) {
+      features.signIn();
+      return;
+    }
+    setBlankThreadPanelEnabled(true);
+    features.openRecording();
+    if (state.navigation.recordingRequestAction === "open"
+      && (features.recording.session.live?.status === "ready" || features.recording.session.live?.status === "failed")) {
+      features.recording.session.open(features.recording.session.live);
+    }
+    applySidebarRecordingAction(features.recording.session, state.navigation.recordingRequestAction);
+  }, [state.navigation.currentPath, state.navigation.recordingRequestId, state.navigation.recordingHandledId,
+    state.navigation.recordingRequestAction, dispatch, features.recordingAuthenticated, features.signIn,
+    features.openRecording, features.recording.session]);
+  const pendingNativeCard = state.agent.currentChatId && state.agent.stopInFlightByChatId[state.agent.currentChatId]
+    ? null : pendingAgentQuestion(state.agent.messages, currentActiveTurnId);
+  const pendingCardKey = pendingNativeCard ? `${chatScopeKey}:question:${pendingNativeCard.requestId}`
+    : features.pendingKey ? `${chatScopeKey}:plugin:${features.pendingKey}` : null;
+  useQuestionDockLayout({ panelRef: conversationPanelRef, composerRef: composerOverlayRef,
+    questionDock: questionDockTarget, pendingKey: pendingCardKey, scopeKey: chatScopeKey,
+    followingRef: shouldAutoScrollAgentConversationRef, scrollToLatest: scrollAgentConversationToBottom });
+  const answerQuestion = useCallback(async (_card: unknown, response: import("./agent-question-card.js").AgentQuestionResponse) => {
+    const generation = connection?.getReadyGeneration();
+    if (!connection || !state.agent.currentChatId || generation == null) return false;
+    try { await connection.respondToQuestion(state.agent.currentChatId, response, generation); return true; }
+    catch { return false; }
+  }, [connection, state.agent.currentChatId]);
+
   useEffect(() => {
     if (threadPanel.visible) setSidePanelMounted(true);
   }, [threadPanel.visible]);
@@ -1077,6 +1214,11 @@ export function HomePage() {
       state.agent.runStartedAtByChatId[state.agent.currentChatId] ||
       state.agent.optimisticSendingByChatId[state.agent.currentChatId]
     )
+  );
+  useStalledOutputShimmer(
+    conversationContentRef,
+    (isCurrentAgentRunning || isCurrentGoalActive) && !pendingCardKey,
+    agentOutputSignature(state.agent.messages)
   );
   const currentTaskCompletedUnseen = state.agent.chatWindowFocused && state.agent.chatViewVisible && !state.agent.blankDraftActive
     ? false
@@ -1630,14 +1772,15 @@ export function HomePage() {
   const slashQuery = slashMenuDismissed ? null : slashQueryFromInput(composerInput);
   const localizedSlashCommands = localizeSlashCommands(slashCommands, language, t);
   const slashCommandsWithLocal = [
+    ...features.commandItems,
     lastCompactionSlashCommand,
     ...localizedSlashCommands.filter((command) => command.command !== "/last-compaction")
   ];
-  const visibleSlashCommands = buildVisibleSlashCommands(slashCommandsWithLocal, state.agent.isSending, stopSlashCommand);
+  const visibleSlashCommands = buildVisibleSlashCommands(slashCommandsWithLocal, state.agent.isSending, stopSlashCommand, slashQuery ?? "");
   const modeVisibleSlashCommands = selectedComposerCommand
     ? filterGoalModeSlashCommands(visibleSlashCommands, Boolean(state.agent.currentChatId))
     : visibleSlashCommands;
-  const filteredSlashCommands = slashQuery == null ? [] : filterSlashCommands(modeVisibleSlashCommands, slashQuery, recentSlashCommands);
+  const filteredSlashCommands = slashQuery == null ? [] : filterSlashCommands(modeVisibleSlashCommands, slashQuery, recentSlashCommands, state.agent.modelPresets);
   const slashMenuOpen = filteredSlashCommands.length > 0;
   const displayConnectionStatus = state.agent.recoveryKind === "initial"
     ? "connecting"
@@ -1680,10 +1823,8 @@ export function HomePage() {
   const composerSubmitDisabled = composerPrimaryAction === "stop" ? composerStopDisabled : composerSendDisabled;
 
   useEffect(() => {
-    if (selectedCommandIndex >= filteredSlashCommands.length) {
-      setSelectedCommandIndex(0);
-    }
-  }, [filteredSlashCommands.length, selectedCommandIndex]);
+    setSelectedCommandIndex(defaultSlashCommandIndex(slashQuery, filteredSlashCommands.length));
+  }, [slashQuery, filteredSlashCommands.length]);
 
   useEffect(() => {
     composerDraftsRef.current = composerDrafts;
@@ -1855,9 +1996,9 @@ export function HomePage() {
         clientRequestId,
         connection,
         ensureChatSubscription,
-        content: input,
+        content: features.agentPrompt(input) ?? input,
         taskRecording: taskRecording ?? undefined,
-        displayContent: selectedComposerCommand ? composerInput : undefined,
+        displayContent: features.agentPrompt(input) ? input : selectedComposerCommand ? composerInput : undefined,
         language,
         pendingAttachments,
         uploadAgentMedia: (attachments) => clients!.memmyAgent.uploadAgentMedia(attachments),
@@ -1877,6 +2018,11 @@ export function HomePage() {
         getChatSelectionEpoch: () => chatSelectionEpochRef.current,
         scopeKey: sendScopeKey,
         modelPreset: resolvedConversationModel.candidateId ?? undefined,
+        ...thinkingPayloadForSend(
+          modelWorkspace,
+          resolvedConversationModel.candidate,
+          state.agent.thinkingStateByScope[modelSelectionScopeKey]
+        ),
         onChatResolved: (chatId) => {
           threadPanel.promoteScope(sendScopeKey, chatId);
           dispatch(agentActions.modelSelectionRequestStarted(
@@ -1960,6 +2106,7 @@ export function HomePage() {
     const removed = await removeQueuedMessage(clientRequestId);
     if (!removed) return;
     setCurrentComposerDraft(item.content);
+    setCurrentPendingAttachments(item.media.map((media, index) => queuedMediaToPendingAttachment(media, clientRequestId, index)));
     inputRef.current?.focus();
   }
 
@@ -1985,6 +2132,9 @@ export function HomePage() {
       || item.status !== "queued"
       || queueSteerLocksRef.current.has(chatId)
     ) return;
+    const releasePluginInputs = features.capturePendingInputRelease(turnId);
+    const nativeQuestion = pendingNativeCard;
+    let steeringAccepted = false;
     queueSteerLocksRef.current.add(chatId);
     dispatch(agentActions.queueItemSteerStarted(chatId, clientRequestId));
     try {
@@ -1994,7 +2144,13 @@ export function HomePage() {
         turnId,
         generation
       );
-      if (result.outcome !== "steered") {
+      if (result.outcome === "steered") {
+        steeringAccepted = true;
+        await releasePluginInputs();
+        if (nativeQuestion && !await answerQuestion(nativeQuestion, {
+          requestId: nativeQuestion.requestId, cancelled: true, answers: []
+        })) throw new Error("Could not release the pending question");
+      } else {
         if (result.outcome === "already_dequeued") {
           dispatch(agentActions.queueItemSteerReset(chatId, clientRequestId));
         } else {
@@ -2019,7 +2175,7 @@ export function HomePage() {
         clientRequestId,
         createAgentOperationError({
           source: "queue",
-          message: "home.queue.steerFailed",
+          message: steeringAccepted ? "home.queue.questionReleaseFailed" : "home.queue.steerFailed",
           chatId
         })
       ));
@@ -2083,6 +2239,7 @@ export function HomePage() {
   }
 
   function runExactLocalSlashCommand(command: string): boolean {
+    if (!pendingAttachments.length && features.runCommand(command)) { setCurrentComposerDraft(""); return true; }
     const normalized = command.trim().toLowerCase();
     if (pendingAttachments.length > 0) return false;
     if (normalized === "/last-compaction") {
@@ -2258,7 +2415,6 @@ export function HomePage() {
   function updateComposerInput(value: string) {
     setCurrentComposerDraft(buildComposerCommandDraft(selectedComposerCommand, value));
     setSlashMenuDismissed(false);
-    setSelectedCommandIndex(0);
     if (
       slashQueryFromInput(value) != null &&
       clients?.memmyAgent &&
@@ -2267,6 +2423,19 @@ export function HomePage() {
     ) {
       loadSlashCommands({ resetAttempts: true });
     }
+  }
+
+  function selectHomeStarter(prompt: string) {
+    setSelectedComposerCommandForScope(chatScopeKey, null);
+    setCurrentComposerDraft(prompt);
+    setSlashMenuDismissed(true);
+    window.requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      resizeComposerInput(input);
+      input.focus();
+      input.setSelectionRange(prompt.length, prompt.length);
+    });
   }
 
   /** Removes the selected command token while preserving the typed message. */
@@ -2356,21 +2525,6 @@ export function HomePage() {
     ) {
       dispatch(agentActions.composerScopeCleared(scopeKey));
     }
-  }
-
-  function resetComposerDraftUi(scopeKey = chatScopeKey) {
-    setSelectedComposerCommandForScope(scopeKey, null);
-    for (const item of pendingAttachmentsRef.current[scopeKey] ?? []) {
-      revokePendingAttachment(item);
-    }
-    const nextDrafts = { ...composerDraftsRef.current };
-    const nextPendingAttachments = { ...pendingAttachmentsRef.current };
-    delete nextDrafts[scopeKey];
-    delete nextPendingAttachments[scopeKey];
-    composerDraftsRef.current = nextDrafts;
-    pendingAttachmentsRef.current = nextPendingAttachments;
-    dispatch(agentActions.composerScopeCleared(scopeKey));
-    resetComposerHeight();
   }
 
   function closeLastCompactionPanel() {
@@ -2792,7 +2946,7 @@ export function HomePage() {
           }
         : item));
       return true;
-    } catch (error) {
+    } catch {
       setPendingAttachmentsForScope(scopeKey, (current) => {
         const failed = current.find((item) => item.id === id);
         if (failed) revokePendingAttachment(failed);
@@ -2848,18 +3002,22 @@ export function HomePage() {
   const previewAttachmentInApp = useCallback((file: { name: string; path?: string; url?: string }) => {
     const tab = threadTabForInAppPreview(file);
     if (!tab) return false;
+    features.closeSidePanel();
     threadPanel.openTab(tab);
     return true;
-  }, [threadPanel.openTab]);
+  }, [threadPanel.openTab, features.closeSidePanel]);
   const openActivityFileInPanel = useCallback((file: { path: string; name: string }) => {
+    features.closeSidePanel();
     threadPanel.openTab(threadTabForPath(file.path, file.name));
-  }, [threadPanel.openTab]);
+  }, [threadPanel.openTab, features.closeSidePanel]);
   const threadPanelMotionClass = `thread-panel-motion--${threadPanel.motion}`;
 
   return (
     <AppFrame
       title={t("home.title")}
-      topBar={hasActiveConversation ? (
+      recordingActive={recordingTabActive}
+      recordingViewed={Boolean(currentRecording && viewedRecordingId === currentRecording.id)}
+      topBar={hasConversationShell ? (
         <AgentThreadToolbar
           key={chatScopeKey}
           title={activeConversationTitleDisplay}
@@ -2872,12 +3030,34 @@ export function HomePage() {
           getSearchRoot={getAgentConversationSearchRoot}
         />
       ) : null}
-      topBarBorder={hasActiveConversation}
-      topBarInset={hasActiveConversation ? false : undefined}
-      topBarClassName={hasActiveConversation ? `thread-topbar ${threadPanelMotionClass}` : undefined}
-      topBarStyle={hasActiveConversation ? { right: threadPanel.offset } : undefined}
-      sidePanel={sidePanelMounted ? (
+      topBarEnd={!hasConversationShell && threadPanel.phase !== "open" ? <button type="button"
+        className="thread-toolbar__button" aria-label={t("home.threadPanel.open")}
+        title={t("home.threadPanel.open")}
+        onClick={() => {
+          setSidePanelMounted(true);
+          setBlankThreadPanelEnabled(true);
+          threadPanel.open();
+        }}>
+        <PanelRight size={16} aria-hidden="true" />
+      </button> : null}
+      topBarBorder={hasConversationShell}
+      topBarInset={hasConversationShell ? false : undefined}
+      topBarClassName={`thread-topbar ${threadPanelMotionClass}`}
+      topBarStyle={{ right: features.sidePanelWidth ?? threadPanel.offset }}
+      sidePanel={features.sidePanel ?? (sidePanelMounted ? (
         <AgentThreadPanel
+          recordingSession={features.recording.session}
+          pluginRecordingSession={features.pluginRecordingSession}
+          recordingAuthenticated={features.recordingAuthenticated}
+          recordingRevealRequestId={state.navigation.recordingRequestId}
+          onRecordingVisibleChange={setRecordingTabVisible}
+          onRecordingSignIn={features.signIn}
+          onOpenRecording={features.openRecording}
+          onCloseRecording={features.recording.close}
+          onClosePluginRecording={() => {
+            features.closePluginRecording();
+            threadPanel.closeTab(PLUGIN_RECORDING_TAB_ID);
+          }}
           controller={threadPanel}
           messages={state.agent.messages}
           workspaceRoot={activeTask?.cwd.trim() || workspaceEnvironment.data?.snapshot.cwd || null}
@@ -2890,16 +3070,22 @@ export function HomePage() {
             workspaceRoot: activeTask?.cwd.trim() || null,
           }}
         />
-      ) : null}
-      windowsTitlebarSafe={hasActiveConversation}
+      ) : null)}
+      windowsTitlebarSafe={hasConversationShell}
     >
+      {features.recorders}
       <div
         ref={workspaceLayoutRef}
         className={`agent-workspace-layout ${threadPanelMotionClass}`}
-        style={{ "--thread-panel-offset": `${threadPanel.offset}px` } as CSSProperties}
+        style={{ "--thread-panel-offset": `${features.sidePanelWidth ?? threadPanel.offset}px` } as CSSProperties}
       >
-        {!hasActiveConversation ? (
+        {isOpeningConversation ? (
+          <section className="agent-conversation-panel flex flex-col h-full" aria-busy="true">
+            <span className="sr-only">{t("home.history.loading")}</span>
+          </section>
+        ) : !hasActiveConversation ? (
         <section className="app-frame-page-content home-empty-screen flex flex-col items-center justify-center h-full">
+          <div className="conversation-feature-cards agent-confirmation-dock">{features.cards}</div>
           <div className="text-center mb-8">
             <div className="home-empty-brand-mascot flex justify-center">
               <Memmy pose="think" size={165} className="memmy-bob" />
@@ -2942,8 +3128,9 @@ export function HomePage() {
                     />
                   </div>
                 ) : null}
-                <textarea
-                  ref={inputRef}
+                <ComposerHighlightedTextarea
+                  textareaRef={inputRef}
+                  highlightedCommands={slashCommandsWithLocal.map((command) => command.command)}
                   value={composerInput}
                   placeholder={selectedComposerCommand ? t("home.goal.input") : t("home.input")}
                   rows={3}
@@ -3016,6 +3203,7 @@ export function HomePage() {
                 />
               </div>
             </div>
+            <HomeStarterActions scenarios={features.scenarios} onSelect={selectHomeStarter} />
             <div className="home-empty-status-area">
               {statusText && <p className="text-center text-xs text-text-ink/45 mt-4">{statusText}</p>}
               <p className="text-center text-[11px] text-text-ink/40 mt-4">{t("home.notice")}</p>
@@ -3024,7 +3212,7 @@ export function HomePage() {
           </div>
         </section>
         ) : (
-        <section ref={conversationPanelRef} className="agent-conversation-panel flex flex-col h-full">
+        <section ref={conversationPanelRef} data-waiting-card={pendingCardKey ? "true" : undefined} className="agent-conversation-panel flex flex-col h-full">
           <div
             ref={scrollRef}
             className="app-frame-page-content agent-conversation-scroll flex-1 overflow-y-auto"
@@ -3032,7 +3220,7 @@ export function HomePage() {
             onWheel={markAgentConversationUserScrollIntent}
             onTouchMove={markAgentConversationUserScrollIntent}
           >
-            <div className="agent-conversation-content agent-conversation-column space-y-3">
+            <div ref={conversationContentRef} className="agent-conversation-content agent-conversation-column space-y-3">
               {displayConnectionStatus !== "connected" && (
                 <div className="text-center">
                   <span className="inline-flex text-[11px] px-3 py-1 rounded-tag bg-background-paper text-text-ink/55 border border-border-stone/30">
@@ -3040,8 +3228,11 @@ export function HomePage() {
                   </span>
                 </div>
               )}
+              <AgentQuestionActiveRequestContext.Provider value={pendingNativeCard?.requestId ?? null}>
+              <PluginCapabilityLabelsContext.Provider value={features.capabilityLabels}>
               <AgentThreadMessages
                 key={chatScopeKey}
+                onAnswerQuestion={answerQuestion}
                 chatScopeKey={chatScopeKey}
                 historyVersion={currentHistoryVersion}
                 messages={state.agent.messages}
@@ -3050,12 +3241,17 @@ export function HomePage() {
                 forceMessageActionsForMessageId={firstEncounterRelayAnswerMessageId}
                 retryWaitStatus={state.agent.currentChatId ? state.agent.retryWaitStatusByChatId[state.agent.currentChatId] ?? null : null}
                 isSending={state.agent.isSending}
+                activeTurnId={currentActiveTurnId}
+                taskPlan={state.agent.taskPlanState}
+                pluginInteractionStatus={features.processInteraction}
                 sanitizePlatformApiErrors={sanitizePlatformApiErrors}
                 artifactClient={sessionArtifactClient}
                 onPreviewFile={previewAttachmentInApp}
                 onOpenActivityFile={openActivityFileInPanel}
                 memoryRuntimeClient={clients?.memoryRuntime ?? null}
               />
+              </PluginCapabilityLabelsContext.Provider>
+              </AgentQuestionActiveRequestContext.Provider>
             </div>
           </div>
           {showScrollToBottomFab ? (
@@ -3072,6 +3268,36 @@ export function HomePage() {
           <div ref={composerOverlayRef} className="agent-conversation-composer">
             <div className="agent-conversation-content agent-conversation-content--composer agent-conversation-column">
               <div className="agent-composer-flow">
+                <AgentQueuedMessageList
+                  items={currentQueuedMessages}
+                  label={t("home.queue.label")}
+                  removeLabel={t("home.queue.remove")}
+                  editLabel={t("home.queue.edit")}
+                  steerLabel={t("home.queue.steer")}
+                  canSteer={canSteerCurrentQueue}
+                  attachmentOnlyLabel={(count) => t("home.queue.attachmentOnly", { count })}
+                  sourceLabels={{
+                    gui: t("home.queue.source.gui"),
+                    tui: t("home.queue.source.tui"),
+                    im: (channelName) => t("home.queue.source.im", { channel: channelName }),
+                    unknownIm: t("home.queue.source.imUnknown")
+                  }}
+                  onRemove={(clientRequestId) => void removeQueuedMessage(clientRequestId)}
+                  onEdit={(clientRequestId) => void editQueuedMessage(clientRequestId)}
+                  onSteer={(clientRequestId) => void steerQueuedMessage(clientRequestId)}
+                  onReorder={state.agent.currentChatId && connection?.getReadyGeneration() != null
+                    && state.agent.queueRevisionByChatId[state.agent.currentChatId] !== undefined
+                    ? (orderedIds) => {
+                      const chatId = state.agent.currentChatId!;
+                      const generation = connection.getReadyGeneration();
+                      const revision = state.agent.queueRevisionByChatId[chatId];
+                      if (generation === null || revision === undefined) return;
+                      connection.reorderQueuedMessages(chatId, orderedIds, revision, generation);
+                    }
+                    : undefined}
+                />
+                <div className="conversation-feature-cards agent-confirmation-dock">{features.cards}</div>
+                {features.shortcuts}
                 {slashMenuOpen && (
                   <div className="agent-composer-popover absolute left-0 bottom-full mb-3 z-40" style={{ width: "min(448px, 100%)" }}>
                     <AgentCommandPalette commands={filteredSlashCommands} heading={t("home.commandPalette.commands")} selectedIndex={selectedCommandIndex} onSelect={selectSlashCommand} />
@@ -3117,24 +3343,10 @@ export function HomePage() {
                 <AgentOperationErrorSlot message={agentError} />
                 {state.agent.currentChatId && <TaskRecordingsPanel client={clients?.memmyAgent ?? null} chatId={state.agent.currentChatId} connection={connection} />}
                 <div className="agent-composer-stack">
-                  <AgentQueuedMessageList
-                    items={currentQueuedMessages}
-                    label={t("home.queue.label")}
-                    removeLabel={t("home.queue.remove")}
-                    editLabel={t("home.queue.edit")}
-                    steerLabel={t("home.queue.steer")}
-                    canSteer={canSteerCurrentQueue}
-                    attachmentOnlyLabel={(count) => t("home.queue.attachmentOnly", { count })}
-                    sourceLabels={{
-                      gui: t("home.queue.source.gui"),
-                      tui: t("home.queue.source.tui"),
-                      im: (channelName) => t("home.queue.source.im", { channel: channelName }),
-                      unknownIm: t("home.queue.source.imUnknown")
-                    }}
-                    onRemove={(clientRequestId) => void removeQueuedMessage(clientRequestId)}
-                    onEdit={(clientRequestId) => void editQueuedMessage(clientRequestId)}
-                    onSteer={(clientRequestId) => void steerQueuedMessage(clientRequestId)}
-                  />
+                  <div ref={setQuestionDockTarget} className="agent-question-dock">
+                    {pendingNativeCard ? <AgentQuestionCard key={pendingNativeCard.requestId} card={pendingNativeCard}
+                      onSubmit={(response) => answerQuestion(pendingNativeCard, response)} /> : null}
+                  </div>
                   {state.agent.currentChatId && currentGoal ? (
                     <AgentGoalBar
                       chatId={state.agent.currentChatId}
@@ -3156,8 +3368,9 @@ export function HomePage() {
                       selectedLabel={t("home.media.addPhotoFile")}
                       t={t}
                     />
-                    <textarea
-                      ref={inputRef}
+                    <ComposerHighlightedTextarea
+                      textareaRef={inputRef}
+                      highlightedCommands={slashCommandsWithLocal.map((command) => command.command)}
                       value={composerInput}
                       placeholder={selectedComposerCommand ? t("home.goal.input") : t("home.input")}
                       rows={1}
@@ -3675,6 +3888,9 @@ export function agentErrorText(error: string | null, t: HomeTranslate = defaultH
   if (TRANSLATABLE_AGENT_ERROR_KEYS.has(error as MessageKey)) {
     return t(error as MessageKey);
   }
+  if (isAsrModelNotConfiguredError(error)) {
+    return t("home.asrNotConfigured");
+  }
   const stableCode = error.includes(":") ? error.slice(error.lastIndexOf(":") + 1) : error;
   const mapped = AGENT_OPERATION_ERROR_MESSAGE_KEYS[stableCode];
   if (mapped) return t(mapped);
@@ -3811,13 +4027,22 @@ function browserStorage(): SlashCommandStorageLike | null {
  * @param error An unknown exception.
  * @returns Error text or a MessageKey that can be shown to the user.
  */
-function toReadableAsrError(error: unknown, t: HomeTranslate = defaultHomeTranslate): string {
+export function toReadableAsrError(error: unknown, t: HomeTranslate = defaultHomeTranslate): string {
   if (error instanceof MicrophonePermissionError) {
     return microphonePermissionDeniedMessageKey();
+  }
+  if (isAsrModelNotConfiguredError(error)) {
+    return "home.asrNotConfigured";
   }
   return error instanceof Error && error.message
     ? t("home.asrFailedWithMessage", { message: error.message })
     : t("home.asrFailed");
+}
+
+/** Detects backend ASR configuration errors that should not fall through to the generic operation error. */
+function isAsrModelNotConfiguredError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /ASR (?:model catalog|model|client) is not configured|Assigned ASR model is unavailable|ASR requires account or BYOK mode/i.test(message);
 }
 
 function readableError(error: unknown): string {
@@ -3828,9 +4053,30 @@ function isPendingAttachmentReadyForUpload(item: PendingAttachment): boolean {
   if (item.status !== "ready") {
     return false;
   }
+  if (item.reusedMedia) return Boolean(item.reusedMedia.path);
   return item.kind === "image"
     ? Boolean(item.encodedBlob && item.encodedMime)
     : Boolean(item.uploadBlob && item.uploadMime);
+}
+
+export function queuedMediaToPendingAttachment(
+  media: AgentChatMediaAttachment,
+  clientRequestId: string,
+  index: number,
+): PendingAttachment {
+  if (!media.path) throw new Error("Queued attachment has no reusable path");
+  const fileName = media.name || `attachment-${index + 1}`;
+  const base = {
+    id: `queued-${clientRequestId}-${index}`,
+    sourceKey: `queued:${media.path}`,
+    fileName,
+    status: "ready" as const,
+    originalBytes: 0,
+    reusedMedia: { ...media, path: media.path, name: fileName, kind: media.kind ?? "file" as const },
+  };
+  return media.kind === "image"
+    ? { ...base, kind: "image", previewUrl: media.url ?? "" }
+    : { ...base, kind: "file", extension: fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : "" };
 }
 
 function uploadBlobForPendingAttachment(item: PendingAttachment): Blob {
@@ -4071,6 +4317,7 @@ function createPreviewUrl(file: File): string {
 }
 
 function revokePendingAttachment(item: PendingAttachment): void {
+  if (item.reusedMedia) return;
   if (item.kind === "image" && item.previewUrl && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
     URL.revokeObjectURL(item.previewUrl);
   }
@@ -4107,10 +4354,6 @@ function formatBytes(bytes: number): string {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function isMessageKey(value: string): value is MessageKey {
-  return Object.prototype.hasOwnProperty.call(zhCNMessages, value);
 }
 
 export function hasCompletedAssistantAnswer(messages: AgentChatMessage[]): boolean {

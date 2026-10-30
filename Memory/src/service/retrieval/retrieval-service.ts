@@ -70,6 +70,7 @@ import {
   normalizeRetrievalExtractKeywords
 } from "../turn/turn-normalization.js";
 import { IndexedCandidatePool } from "./indexed-candidate-pool.js";
+import { deduplicateCrossAccountMemoryCandidates } from "./cross-account-candidate-dedup.js";
 import { filterL1TraceSpanRecallHits } from "./l1-trace-span-filter.js";
 
 type InternalMemorySearchRequest = MemorySearchRequest & {
@@ -1931,6 +1932,9 @@ export class RetrievalService {
       ? requestedSemanticLayers.filter((layer) => layer !== "L1")
       : requestedSemanticLayers;
     const searchAt = Date.now();
+    const userMemoryRecallEnabled = this.deps.config.algorithm.enableUserMemoryRecall === true;
+    // Capture uses these candidates to confirm or correct existing User Memory,
+    // even when it must not be returned to an agent.
     const includeUserMemory = !onboardingFirstReportHit && semanticLayers.includes("L1");
     const userMemoryCount = includeUserMemory
       ? this.deps.repos.userMemories.listActive(context.userId).length
@@ -1974,7 +1978,8 @@ export class RetrievalService {
       ? this.retrieveTimeFilteredTraceMemories({
           timeFilter,
           tags: request.tags,
-          limit: retrievalLimit
+          limit: retrievalLimit,
+          preferredUserId: context.userId
         })
       : await this.retrieveSearchMemories({
           userId: context.userId,
@@ -2020,7 +2025,9 @@ export class RetrievalService {
     const agentHits = onboardingFirstReportHit || timeFilter
       ? retrieval.hits
       : filterL1TraceSpanRecallHits(retrieval.hits, memories);
-    const merged = mergeSameTurnRecallHits(agentHits, memories, userMemoryOutput.hits);
+    const merged = mergeSameTurnRecallHits(
+      agentHits, memories, userMemoryRecallEnabled ? userMemoryOutput.hits : []
+    );
     const rerankAt = Date.now();
     const filteredHits = onboardingFirstReportHit
       ? { hits: retrieval.hits, status: ["first_report_handoff:latest_only"] }
@@ -2058,7 +2065,7 @@ export class RetrievalService {
       .map((memory) => memory.id);
     const candidateMemoryIds = uniq([
       ...memories.map((memory) => memory.id),
-      ...userMemoryCandidateIds
+      ...(userMemoryRecallEnabled ? userMemoryCandidateIds : [])
     ]);
     const sourceMemoryIds = contextPacket.sourceMemoryIds;
     const hitIds = new Set(hits.flatMap((hit) => hit.memberMemoryIds ?? [hit.id]));
@@ -2073,7 +2080,7 @@ export class RetrievalService {
           memoryLayer: memory.memoryLayer,
           reason: "rank_threshold" as const
         })),
-      ...userMemoryOutput.memories
+      ...(userMemoryRecallEnabled ? userMemoryOutput.memories : [])
         .filter((memory) => !hitIds.has(memory.id))
         .slice(0, 50)
         .map((memory) => ({
@@ -2143,6 +2150,7 @@ export class RetrievalService {
       },
       status: uniq([
         ...filteredHits.status,
+        ...(!userMemoryRecallEnabled ? ["user_memory_recall:disabled"] : []),
         ...(dynamicCurrentQuery ? ["dynamic_current:refresh_required"] : []),
         ...(stalePolicyIds.size > 0 ? ["policy:revalidation_required"] : []),
         ...(!this.deps.memoryAddEnabled() ? ["memory_add:disabled:no_recall_log"] : [])
@@ -2198,6 +2206,7 @@ export class RetrievalService {
     timeFilter: RetrievalTimeFilter;
     tags?: string[];
     limit: number;
+    preferredUserId: string;
   }): { retrieval: RetrievalResult; memories: MemoryRow[] } {
     const filter: MemoryFilter = {
       memoryLayer: "L1",
@@ -2207,10 +2216,15 @@ export class RetrievalService {
       ...(input.tags?.length ? { tags: input.tags } : {})
     };
     const candidateCount = this.deps.repos.memories.count(filter);
-    const candidates = this.deps.repos.memories
+    const loadedCandidates = this.deps.repos.memories
       .list(filter, candidateCount)
       .filter((memory) => this.isMemoryReadyForRetrieval(memory))
-      .filter((memory) => kindFromMemory(memory) === "observed_activity" || Boolean(traceMetaFromMemory(memory)?.summary.trim()));
+.filter((memory) => kindFromMemory(memory) === "observed_activity" || Boolean(traceMetaFromMemory(memory)?.summary.trim()));
+    const candidates = deduplicateCrossAccountMemoryCandidates({
+      memories: loadedCandidates,
+      repos: this.deps.repos,
+      preferredUserId: input.preferredUserId
+    }).memories;
     const selected = [...candidates]
       .sort(compareTimeFilteredTraceRecency)
       .slice(0, Math.max(0, input.limit))

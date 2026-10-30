@@ -214,6 +214,7 @@ function mapEmbedding(value: Row): Row {
     model: string(value.model),
     apiKey: string(value.apiKey),
     maxInputTokens: finite(value.maxInputTokens) ?? undefined,
+    maxInputBytes: finite(value.maxInputBytes) ?? undefined,
     batchSize: finite(value.batchSize) ?? undefined,
     cache: typeof cache.enabled === "boolean" ? cache.enabled : undefined
   });
@@ -579,6 +580,8 @@ function importTraces(target: Database.Database, legacy: Database.Database, sour
       agentText: string(row.agent_text) ?? "",
       tool_calls: toolCalls,
       reflection: nullableString(row.reflection),
+      // Preserve zero rewards; null distinguishes new imports without reward evidence.
+      r_human: finite(row.r_human),
       alpha: finite(row.alpha) ?? 0,
       value: finite(row.value) ?? 0,
       priority: finite(row.priority) ?? 0,
