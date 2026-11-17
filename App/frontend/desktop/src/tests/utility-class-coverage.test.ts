@@ -20,8 +20,7 @@ const knownMissingBorderColors = new Set([
   "pages/memory-sources-page.tsx: hover:border-status-error/40",
   "pages/memory/analytics-sub-page.tsx: border-status-error/25",
   "pages/memory/logs-sub-page.tsx: border-status-error/25",
-  "pages/memory/overview-sub-page.tsx: border-status-error/25",
-  "pages/plugin-settings-section.tsx: border-border-stone/45"
+  "pages/memory/overview-sub-page.tsx: border-status-error/25"
 ]);
 
 /**
