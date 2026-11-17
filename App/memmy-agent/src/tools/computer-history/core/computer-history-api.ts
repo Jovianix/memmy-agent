@@ -3,7 +3,7 @@ import { CaptureCoverageGaps } from "./coverage-gaps.js";
 import { persistedCheckpoint, type PersistedCheckpoint } from "./recorder-checkpoint.js";
 import { CONTINUOUS_RECORDER_CAPABILITY, rotateRecorderOutput } from "./recorder-rotation.js";
 import type { HistoryPlatformDriver, HistoryPermissions, HistoryPermission } from "./platform-driver.js";
-import { collectorGate, CollectorBusyError } from "./collector-gate.js";
+import { collectorGate } from "./collector-gate.js";
 import { historyPermissionsReady } from "./platform-driver.js";
 import { isMacNativeRuntimeSupported } from "../../computer-use/mac-native-runtime-support.js";
 import {
@@ -2541,7 +2541,6 @@ export class ComputerHistoryDemoService {
     if (this.eventCaptureActive && this.observationState === "running") {
       this.eventCaptureIntent = "running"; this.saveRecordingIntent("running"); return this.snapshot();
     }
-    if (collectorGate.taskActive) throw new CollectorBusyError();
     this.assertNativeRecordingCompatibility();
     if (this.shuttingDown || this.recorderTransition || this.recorderExitDrain || this.observationState === "stopping") {
       throw new ComputerHistoryApiError(409, "Computer History is finishing a recorder transition");
@@ -2597,7 +2596,6 @@ export class ComputerHistoryDemoService {
   /** Missing consent is an onboarding state, before creating any recording. */
   async startObservationWithPermissions(resume = false, forEventSubscription = false): Promise<ComputerHistorySnapshot> {
     if (!forEventSubscription && this.eventCaptureBootstrap) { this.eventCaptureBootstrap = null; this.eventCaptureIntent = "running"; }
-    if (collectorGate.taskActive) throw new CollectorBusyError();
     this.assertNativeRecordingCompatibility();
     const version = ++this.permissionStartVersion;
     this.permissionStarts++;
@@ -2720,7 +2718,6 @@ export class ComputerHistoryDemoService {
     if (this.eventCaptureActive && this.observationState === "running") {
       this.eventCaptureIntent = "running"; this.saveRecordingIntent("running"); return this.snapshot();
     }
-    if (collectorGate.taskActive) throw new CollectorBusyError();
     if (this.observationState !== "paused") {
       throw new ComputerHistoryApiError(409, "Computer History is not paused");
     }

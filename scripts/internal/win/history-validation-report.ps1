@@ -14,7 +14,7 @@ $summary = [ordered]@{ total = $cases.Count; passed = $passed.Count; failed = $f
 $line = "Native History: $($summary.passed) passed, $($summary.failed) failed, $($summary.skipped) skipped (total $($summary.total))."
 Write-Host $line
 if ($env:GITHUB_STEP_SUMMARY) { $line | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }
-foreach ($name in @('unit', 'win.boundaries', 'win.metadata', 'integration.cli_contract', 'task_video.media_integrity')) {
+foreach ($name in @('unit', 'win.boundaries', 'win.metadata', 'integration.cli_contract')) {
   if ($name -notin @($passed | ForEach-Object { $_.name })) { throw "Required native case did not pass: $name" }
 }
 if ($failed.Count -or -not $cases.Count) { throw 'Native History validation failed.' }

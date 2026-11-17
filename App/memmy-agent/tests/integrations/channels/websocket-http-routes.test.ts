@@ -1655,6 +1655,22 @@ describe("WebSocket HTTP route helpers", () => {
     expect(await spa.text()).toContain("nbweb");
   });
 
+  it("keeps retired video APIs unavailable when the SPA is served", async () => {
+    const dist = tmpRoot("memmy-ws-retired-api-");
+    fs.writeFileSync(path.join(dist, "index.html"), "<!doctype html><title>Memmy</title>");
+    const channel = makeChannel({ staticDistPath: dist });
+    for (const route of ["/api/unknown", "/api/computer-recordings", "/api/computer-recordings/start",
+      "/api/computer-recordings/configuration", "/api/computer-recordings/active/stop"]) {
+      for (const method of ["GET", "POST"]) {
+        const response = await channel.dispatchHttp(localConnection, { path: route, method });
+        expect(response?.status).toBe(404);
+      }
+    }
+    expect((await channel.dispatchHttp(localConnection, { path: "/sessions/abc" }))?.status).toBe(200);
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+    expect(childProcessMocks.execFile).not.toHaveBeenCalled();
+  });
+
   it("returns 404 for unknown HTTP API routes", async () => {
     const channel = makeChannel();
     const port = await startChannel(channel);

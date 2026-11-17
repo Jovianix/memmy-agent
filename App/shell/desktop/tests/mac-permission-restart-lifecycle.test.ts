@@ -137,7 +137,6 @@ function setup(options: {
       argv: options.argv ?? ["Memmy", ...(options.relaunchMarker ? ["--memmy-permission-relaunch"] : [])] },
     Date, setTimeout, clearTimeout, queueMicrotask, randomUUID: () => "fixture-quit",
     join: (...parts: string[]) => parts.join("/"), writeQuitDiagnostic: vi.fn(),
-    stopTaskRecordingBeforeExit: vi.fn(async () => undefined),
     stopComputerHistoryBeforeExit: vi.fn(async () => undefined),
     console: { warn: vi.fn(), info: quitTrace },
     loadMenuBarAppearanceNative,

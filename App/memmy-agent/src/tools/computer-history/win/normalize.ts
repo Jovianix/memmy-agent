@@ -4,10 +4,6 @@ import { authorizedRule, pathKey, windowsApplicationId, type NativePolicy } from
 import type { NativeNode, NativeSnapshotEvent } from "./protocol.js";
 import { documentTextIsLabel, isVsCodeEditorBody, isWordDocument, isNotepadDocument } from "./document-regions.js";
 import { sanitizeBrowserUrl } from "../browser-privacy.js";
-import type { RecordingObservation } from "@memmy/local-api-contracts";
-
-const operationRoles = new Set(["Button", "CheckBox", "ComboBox", "Hyperlink", "ListItem", "MenuItem",
-  "RadioButton", "Slider", "Spinner", "TabItem", "TreeItem", "SplitButton"]);
 
 const fields = ["name", "text", "visibleText", "value"] as const;
 const invalid = (): never => { throw new Error("windows_snapshot_invalid"); };
@@ -18,17 +14,6 @@ export class SnapshotNormalizer {
   private identity: string | null = null;
   private frameNodes: Map<string, NativeNode> | null = null;
   reset(): void { this.baseline = null; this.identity = null; this.frameNodes = null; }
-  /** Only validated, non-sensitive control labels/geometry; never field values or document bodies. */
-  operationObservation(): RecordingObservation {
-    const eligible = [...(this.frameNodes?.values() ?? [])].filter((node) => operationRoles.has(node.controlType)
-      && node.password === false && !node.redaction && !node.providerOffscreen && !node.documentStatus);
-    return { source: "windows_uia", truncated: !this.baseline || eligible.length > 256,
-      nodes: eligible.slice(0, 256).map((node) => ({ key: node.key, role: node.controlType, focused: node.focused,
-        ...(node.name ? { name: scrubRecord(node.name).slice(0, 240) } : {}),
-        ...(node.automationId ? { automation_id: scrubRecord(node.automationId).slice(0, 256) } : {}),
-        ...(node.bounds && node.bounds[2] > 0 && node.bounds[3] > 0 ? { bounds: node.bounds } : {}),
-      })) };
-  }
   normalizeEvents(event: NativeSnapshotEvent, policy: NativePolicy, revision: string): HistoryEvent[] {
     const normalized = this.normalize(event, policy, revision);
     if (!normalized || event.snapshot.status !== "ok") return [];

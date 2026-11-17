@@ -72,6 +72,5 @@ describe("Notepad bounded document capture", () => {
     if (partial.snapshot.status !== "ok") throw new Error("invalid fixture");
     partial.snapshot.truncated = true; partial.snapshot.truncation = ["budget_ms"];
     expect(normalizer.normalize(partial, policy, "r")?.accessibility?.truncated).toBe(true);
-    expect(normalizer.operationObservation().truncated).toBe(true);
   });
 });

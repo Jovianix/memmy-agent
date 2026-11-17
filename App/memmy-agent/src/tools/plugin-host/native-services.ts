@@ -1,4 +1,4 @@
-/** Shared event capture. Plugin services cannot start task video recordings. */
+/** Shared History and browser event capture for conversation plugins. */
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";

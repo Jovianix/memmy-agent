@@ -70,7 +70,6 @@ try {
   node("frontend-types", frontend, [tsc, "-p", "tsconfig.json", "--noEmit"]);
   node("agent-lint", agent, [path.join(agent, "node_modules/eslint/bin/eslint.js"),
     "src/tools/computer-history/**/*.ts", "tests/tools/computer-history/**/*.ts",
-    "src/tools/computer-recordings/**/*.ts", "tests/tools/computer-recordings/**/*.ts",
     "src/core/agent-runtime/task-activity.ts", "src/core/agent-runtime/plugin-update-lease.ts",
     "src/core/agent-runtime/loop.ts", "src/core/agent-runtime/subagent.ts",
     "tests/core/agent-runtime/task-activity.test.ts", "tests/core/agent-runtime/plugin-update-lease.test.ts",
@@ -107,7 +106,7 @@ try {
     "App/backend/src/adapters/outbound/memmy-agent-admin-client/tests"]);
   const packaging = JSON.parse(fs.readFileSync(path.join(root, "package.json"))).scripts["test:packaging-guards"];
   tests("packaging-guards", root, packaging.replace(/^vitest run /, "").split(/\s+/));
-  tests("recording-ui", frontend, ["src/pages/tests/task-recordings.interaction.test.tsx", "src/pages/tests/plugin-update-indicator.test.tsx",
+  tests("plugin-ui", frontend, ["src/pages/tests/plugin-update-indicator.test.tsx",
     "src/pages/tests/conversation-features.interaction.test.tsx"]);
   report.status = report.stages.every(stage => stage.exitCode === 0) ? "passed" : "failed";
 } catch (error) {

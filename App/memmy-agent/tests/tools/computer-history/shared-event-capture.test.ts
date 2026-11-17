@@ -78,7 +78,7 @@ describe("Computer History capture subscriptions", () => {
     const firstPid = f.pid(), a = await f.service.acquireEventCapture(), b = await f.service.acquireEventCapture();
     const point = await a.checkpoint(); expect(point).toMatchObject({ running: true, complete: true });
     expect(fs.readFileSync(point.streams.at(-1)!.file, "utf8")).toContain("controlled fixture");
-    expect(f.pid()).toBe(firstPid); expect(() => collectorGate.acquire("task")).toThrow("collector_busy");
+    expect(f.pid()).toBe(firstPid); expect(() => collectorGate.acquire("history")).toThrow("collector_busy");
     await a.release(); await b.release();
     expect(f.service.snapshot().observation.state).toBe("running"); expect(f.pid()).toBe(firstPid);
     await f.service.stopObservation(); expect(collectorGate.busy).toBe(false);
@@ -101,11 +101,8 @@ describe("Computer History capture subscriptions", () => {
     const c = await f.service.acquireEventCapture(); await f.service.stopObservation(); await c.release();
     expect(f.service.snapshot().observation.state).toBe("stopped"); expect(collectorGate.busy).toBe(false);
   });
-  it("does not launch or acquire resources when permission is denied or another recorder owns the collector", async () => {
+  it("does not launch or acquire resources when permission is denied", async () => {
     const f = fixture(false); await expect(f.service.acquireEventCapture()).rejects.toThrow("permission_required");
     expect(f.pid()).toBeUndefined(); expect(collectorGate.busy).toBe(false);
-    const release = collectorGate.acquire("task");
-    try { await expect(f.service.acquireEventCapture()).rejects.toThrow("collector_busy"); }
-    finally { release(); }
   });
 });

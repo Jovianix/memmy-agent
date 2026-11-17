@@ -23,7 +23,6 @@ import { readHistoryPermissionSetup, saveHistoryPermissionSetup } from "./comput
 import { ComputerHistoryRecordingConfirmation } from "./computer-history-recording-confirmation.js";
 import { WindowsHistorySettings } from "./windows-history-settings.js";
 import { historyPermissionsReady, type WindowsHistoryConfiguration } from "../../api/computer-history-contract.js";
-import { TaskRecordingsPanel } from "./task-recordings.js";
 import { ComputerHistoryWeChatConfirmation } from "./computer-history-wechat-confirmation.js";
 import { ComputerHistoryWeChatRiskConfirmation } from "./computer-history-wechat-risk-confirmation.js";
 import { clearWeChatPermissionReturn, shouldReturnToWeChatSettings } from "./computer-history-wechat-permission-state.js";
@@ -527,7 +526,6 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
           </p> : null}
         </div>
       </header>
-      <TaskRecordingsPanel client={props.client} human />
 
       {error || refreshError || recordingError || snapshot?.observation.retentionDeferred || (narrationError && !narrationQuotaExhausted) ? (
         <div className="ch__notices">

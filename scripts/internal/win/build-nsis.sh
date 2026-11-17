@@ -1064,8 +1064,8 @@ bash "$ROOT_DIR/scripts/internal/win/build-memmy-computer-use.sh" \
 package_step_start "Build native Windows History recorder from source"
 bash "$ROOT_DIR/scripts/internal/win/build-memmy-computer-history.sh" \
   "$RUNTIME_DIR/memmy-agent/dist/native-computer-history/windows/amd64/memmy-computer-history.exe" amd64
-package_step_start "Build shared native task recorder from source"
-node "$ROOT_DIR/scripts/internal/win/build-plugin-native-recorder.mjs" \
+package_step_start "Build shared Windows History recorder from source"
+node "$ROOT_DIR/scripts/internal/win/build-history-native-recorder.mjs" \
   "$(to_node_readable_path "$RUNTIME_DIR/memmy-agent/dist/tools/computer-history/win/memmy-history-recorder.exe")"
 package_step_start "Stage Windows memmy-agent workspace runtime packages"
 # local-api-contracts shares scan ordering with Memory through this browser-safe package.
