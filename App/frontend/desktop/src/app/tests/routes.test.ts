@@ -96,7 +96,6 @@ describe("desktop route table", () => {
       "/onboarding",
       "/main",
       "/pet",
-      "/plugins",
       "/tools",
       "/memory",
       "/knowledge",
@@ -747,12 +746,13 @@ describe("desktop route table", () => {
     ).toBe("/settings");
   });
 
-  it("persists only valid current routes in session storage", () => {
+  it.each(["/unknown", "/plugins"])("persists valid routes and ignores unsupported stored route %s", (unsupportedRoute) => {
     const storage = new MapStorage();
     writeCurrentRoute(storage, "/memory-sources");
     expect(readCurrentRoute(storage)).toBe("/memory-sources");
-    storage.setItem("memmy.currentRoute", "/unknown");
+    storage.setItem("memmy.currentRoute", unsupportedRoute);
     expect(readCurrentRoute(storage)).toBeNull();
+    expect(resolveReloadedInitialView("/main", readCurrentRoute(storage))).toBe("/main");
   });
 
   it("体验额度弹窗 dismiss 标记写入 sessionStorage 并可读回，跨窗口 reload 保留", () => {
