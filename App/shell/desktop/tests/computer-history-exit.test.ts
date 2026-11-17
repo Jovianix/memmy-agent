@@ -128,7 +128,6 @@ function setupCleanup(platform: string, drain: () => Promise<void>) {
     localBackend: { close: async () => { calls.push("backend"); } },
     stopMemoryServiceForCurrentQuit: false,
     browserWebviewDownloads: null, disposeBrowserWebviewPermissions: null,
-    stopTaskRecordingBeforeExit: async () => {},
     stopComputerUseAgentForPermissionRestart: async () => {},
     browserSidebarBridge: null, embeddedBrowserDriver: { dispose: vi.fn() }, computerUseSurfaceWindows: null,
     pipScreenPermissionGuide: permissionGuide,

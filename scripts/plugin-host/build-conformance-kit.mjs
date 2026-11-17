@@ -19,7 +19,7 @@ await rm(output, { recursive: true, force: true }); await mkdir(path.join(output
 await build({ absWorkingDir: root,
   entryPoints: ["App/backend/src/tests/support/plugin-host-harness.ts"], outfile: path.join(output, "runtime", "host-kit.mjs"),
   platform: "node", target: "node22", format: "esm", bundle: true,
-  external: ["better-sqlite3", "sqlite-vec", "pngjs"],
+  external: ["better-sqlite3", "sqlite-vec"],
   banner: { js: "import { createRequire as __hostRequire } from 'node:module'; const require = __hostRequire(import.meta.url);" }
 });
 for (const rel of ["App/backend/src/infrastructure/app-state-store/migrations", "App/backend/src/infrastructure/agent-source-store/migrations", "App/backend/src/infrastructure/idempotency-store/migrations"]) {
@@ -54,7 +54,7 @@ async function copyDependency(name, resolver = require) {
     await copyDependency(dependency, nested);
   }
 }
-for (const dependency of ["pngjs", "better-sqlite3", "sqlite-vec"]) await copyDependency(dependency);
+for (const dependency of ["better-sqlite3", "sqlite-vec"]) await copyDependency(dependency);
 await writeFile(path.join(output, "host-kit.mjs"), 'export * from "./runtime/host-kit.mjs";\n');
 const kit = await import(pathToFileURL(path.join(output, "host-kit.mjs")).href);
 const release = process.env.MEMMY_HOST_RELEASE_TAG

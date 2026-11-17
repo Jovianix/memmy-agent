@@ -1,9 +1,8 @@
-/** One owner across history and task recording, including asynchronous startup/teardown. */
+/** One History collector, including asynchronous startup/teardown. */
 export class CollectorGate {
-  private owner: "history" | "task" | null = null;
+  private owner: "history" | null = null;
   get busy(): boolean { return this.owner !== null; }
-  get taskActive(): boolean { return this.owner === "task"; }
-  acquire(owner: "history" | "task"): () => void {
+  acquire(owner: "history"): () => void {
     if (this.owner) throw new CollectorBusyError();
     this.owner = owner;
     let released = false;
@@ -12,6 +11,6 @@ export class CollectorGate {
 }
 export class CollectorBusyError extends Error {
   readonly status = 409;
-  constructor() { super("collector_busy: pause Computer History or stop the active recording first"); }
+  constructor() { super("collector_busy: Computer History collector is already running"); }
 }
 export const collectorGate = new CollectorGate();

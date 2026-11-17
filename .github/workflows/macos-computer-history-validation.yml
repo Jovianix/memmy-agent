@@ -1,4 +1,4 @@
-name: macOS task recording validation
+name: macOS Computer History validation
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - "feature/windows-history-native-core"
   pull_request:
     paths:
-      - ".github/workflows/macos-task-recording-validation.yml"
+      - ".github/workflows/macos-computer-history-validation.yml"
       - "App/memmy-agent/**"
       - "App/backend/local-api-contracts/**"
       - "App/frontend/desktop/**"
@@ -42,23 +42,23 @@ jobs:
           npm ci --prefix App/memmy-agent
       - name: Build production native helpers for Apple Silicon and Intel
         run: |
-          mkdir -p .recording-ci/helpers
-          cp -R App/memmy-agent/src/tools/computer-history/mac/. .recording-ci/helpers/
-          bash scripts/internal/mac/build-computer-history-helpers.sh .recording-ci/helpers arm64
-          bash scripts/internal/mac/build-computer-history-helpers.sh .recording-ci/helpers x64
-      - name: Run native media, macOS lifecycle, UI and packaging checks
-        run: node scripts/internal/shared/validate-computer-history.mjs --report-dir "$GITHUB_WORKSPACE/.recording-ci/regression"
+          mkdir -p .history-ci/helpers
+          cp -R App/memmy-agent/src/tools/computer-history/mac/. .history-ci/helpers/
+          bash scripts/internal/mac/build-computer-history-helpers.sh .history-ci/helpers arm64
+          bash scripts/internal/mac/build-computer-history-helpers.sh .history-ci/helpers x64
+      - name: Run History lifecycle, UI and packaging checks
+        run: node scripts/internal/shared/validate-computer-history.mjs --report-dir "$GITHUB_WORKSPACE/.history-ci/regression"
       - name: Record validation scope
         if: ${{ always() }}
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-          This job compiles production helpers for both macOS architectures and runs real AVFoundation H.264 encode/decode, timestamp, color/orientation, sealed-prefix recovery and PNG extraction checks without screen or input permission prompts.
-          OS permission dialogs, real ScreenCaptureKit window visibility, multi-display/DPI transitions, a full 20-minute session and a signed installed application require manual Mac acceptance. The job does not claim those checks passed.
+          This job compiles the retained History support helpers for both macOS architectures and checks History lifecycle, event capture, UI and packaging.
+          OS permission dialogs, real desktop collection and a signed installed application require manual Mac acceptance. The job does not claim those checks passed.
           EOF
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
-          name: macos-task-recording-validation
-          path: .recording-ci/regression/**
+          name: macos-computer-history-validation
+          path: .history-ci/regression/**
           retention-days: 7
           if-no-files-found: warn

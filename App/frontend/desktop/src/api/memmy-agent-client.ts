@@ -6,8 +6,6 @@
  * bearer tokens and a WebSocket protocol owned by memmy-agent.
  */
 import { z } from "zod";
-import { ComputerRecordingsClient } from "./computer-recordings-client.js";
-import type { RecordingStart } from "@memmy/local-api-contracts";
 import {
   ApplicationIconSchema,
   ComputerHistorySnapshotSchema,
@@ -731,7 +729,6 @@ export type WebuiSessionTarget =
   | { kind: "project"; projectId: string };
 
 export type MemmyAgentSendMessageInput = {
-  taskRecording?: RecordingStart;
   chatId: string;
   content: string;
   clientRequestId?: string;
@@ -864,7 +861,6 @@ const ExcelControlStatusSchema = z.object({
 export type ExcelControlStatus = z.infer<typeof ExcelControlStatusSchema>;
 
 export interface MemmyAgentClient {
-  recordings?: ComputerRecordingsClient;
   bootstrap(options?: { force?: boolean }): Promise<MemmyAgentBootstrap>;
   getSettings(): Promise<MemmyAgentSettings>;
   getComputerUseSetting(): Promise<{ enabled: boolean; available: boolean; binaryAvailable: boolean }>;
@@ -1206,7 +1202,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 class HttpMemmyAgentClient implements MemmyAgentClient {
-  readonly recordings = new ComputerRecordingsClient((path, schema, options) => this.request(path, schema, options));
   private readonly baseUrl: string;
   private readonly bootstrapSecret: string | null;
   private readonly clientId: string;
@@ -2792,7 +2787,6 @@ class MemmyAgentWebSocketSession implements MemmyAgentWebSocketConnection {
       ...(input.clientRequestId ? { client_request_id: input.clientRequestId } : {}),
       ...(input.target ? { target: input.target } : {}),
       ...(input.language ? { language: input.language } : {}),
-      ...(input.taskRecording ? { task_recording: input.taskRecording } : {}),
       ...(input.modelPreset !== undefined ? { model_preset: input.modelPreset } : {}),
       ...(input.thinkingEnabled !== undefined ? { thinking_enabled: input.thinkingEnabled } : {}),
       ...(input.thinkingLevel ? { thinking_level: input.thinkingLevel } : {}),
@@ -3316,7 +3310,6 @@ function sameMessageAttempt(
     language: left.language ?? null,
     modelPreset: left.modelPreset ?? null,
     mediaPaths: left.media?.map((item) => item.path) ?? [],
-    taskRecording: left.taskRecording ?? null
   }) === JSON.stringify({
     chatId: right.chatId,
     content: right.content,
@@ -3325,7 +3318,6 @@ function sameMessageAttempt(
     language: right.language ?? null,
     modelPreset: right.modelPreset ?? null,
     mediaPaths: right.media?.map((item) => item.path) ?? [],
-    taskRecording: right.taskRecording ?? null
   });
 }
 

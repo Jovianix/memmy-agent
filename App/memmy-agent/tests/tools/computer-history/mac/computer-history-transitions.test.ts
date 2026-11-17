@@ -221,16 +221,12 @@ describe("recorder transition ordering", () => {
     fs.appendFileSync(file, JSON.stringify({ recordType: "human_event", eventType: "recording_stopped", details: { reason } }) + "\n");
   }
 
-  it("holds the shared capture gate until the legacy process exits, then blocks history while a task owns it", async () => {
+  it("holds the shared capture gate until the legacy process exits", async () => {
     service.startObservation();
     const pause = service.pauseObservation();
-    expect(() => collectorGate.acquire("task")).toThrow("collector_busy");
+    expect(() => collectorGate.acquire("history")).toThrow("collector_busy");
     state.children[0].exit(); await pause;
-    const release = collectorGate.acquire("task");
-    try {
-      expect(() => service.resumeObservation()).toThrow("collector_busy");
-      expect(state.children).toHaveLength(1);
-    } finally { release(); }
+    expect(collectorGate.busy).toBe(false);
     service.resumeObservation(); expect(state.children).toHaveLength(2);
   });
 

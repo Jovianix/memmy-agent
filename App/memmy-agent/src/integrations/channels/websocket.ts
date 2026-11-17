@@ -1,6 +1,3 @@
-import { RecordingStartSchema } from "@memmy/local-api-contracts";
-import { handleRecordingHttp } from "../../tools/computer-recordings/http-api.js";
-import { getRecordingSessionService, shutdownRecordingService } from "../../tools/computer-recordings/service.js";
 import { CollectorBusyError } from "../../tools/computer-history/core/collector-gate.js";
 import { invokeNativePluginService, shutdownNativePlugins } from "../../tools/plugin-host/native-services.js";
 import { SkillsLoader } from "../../core/agent-runtime/skills.js";
@@ -279,7 +276,6 @@ export type WebuiMessageDigestInput = {
   expectedTurnId: string | null;
   thinkingEnabled?: boolean;
   thinkingLevel?: string | null;
-  taskRecording?: unknown;
   interruptPendingTurnId?: string | null;
 };
 
@@ -296,9 +292,7 @@ export function computeWebuiMessageDigest(input: WebuiMessageDigestInput): strin
     expected_turn_id: input.expectedTurnId,
     thinking_enabled: input.thinkingEnabled ?? null,
     thinking_level: input.thinkingLevel ?? null,
-    ...(input.taskRecording ? { task_recording: input.taskRecording } : {}),
     ...(input.interruptPendingTurnId ? { interrupt_pending_turn_id: input.interruptPendingTurnId } : {}),
-    ...(input.taskRecording ? { task_recording: input.taskRecording } : {}),
   })).digest("hex");
 }
 
@@ -3346,10 +3340,6 @@ export class WebSocketChannel extends BaseChannel {
     if (got === "/api/settings") return this.handleSettings(request);
     if (got === "/api/commands") return this.handleCommands(request);
     if (got === "/api/computer-history") return this.handleComputerHistory(request, "snapshot");
-    if (got === "/api/computer-recordings" || got.startsWith("/api/computer-recordings/")) {
-      if (!this.checkApiToken(request)) return httpError(401, "Unauthorized");
-      return handleRecordingHttp(getRecordingSessionService(), request, true);
-    }
     if (got === "/api/computer-history/windows/settings") return this.handleWindowsHistorySettings(request);
     if (got === "/api/plugin-host/services") {
       if (!this.checkApiToken(request)) return httpError(401, "Unauthorized");
@@ -3462,6 +3452,8 @@ export class WebSocketChannel extends BaseChannel {
       if (!this.isAllowed(clientId)) return connectionRespond(connection, 403, "Forbidden");
       return this.authorizeWebsocketHandshake(connection, query);
     }
+    // Removed or unknown API routes must not fall back to a successful HTML page.
+    if (got === "/api" || got.startsWith("/api/")) return connectionRespond(connection, 404, "Not Found");
     const staticResponse = this.serveStatic(got);
     if (staticResponse) return staticResponse;
     return connectionRespond(connection, 404, "Not Found");
@@ -3469,7 +3461,6 @@ export class WebSocketChannel extends BaseChannel {
 
   override async start(): Promise<void> {
     this.running = true;
-    if (process.platform === "win32" || process.platform === "darwin") void getRecordingSessionService().list().catch(() => {});
     this.startComputerHistoryModelSync();
     await nativeExcelControl.start();
     if (process.env.MEMMY_DESKTOP_MANAGED_GATEWAY === "1") {
@@ -3537,7 +3528,6 @@ export class WebSocketChannel extends BaseChannel {
     // rather than leaving a recorder running behind the user's back.
     await shutdownNativePlugins();
     await this.computerHistory.shutdown();
-    await shutdownRecordingService();
     if (typeof this.server?.close === "function") {
       await new Promise<void>((resolve) => this.server.close(() => resolve()));
     }
@@ -4100,11 +4090,6 @@ export class WebSocketChannel extends BaseChannel {
       });
       return;
     }
-    const recording = envelope.task_recording == null ? null : RecordingStartSchema.safeParse(envelope.task_recording);
-    if (recording && !recording.success) {
-      await this.sendWebuiRequestError(connection, { chatId, clientRequestId, detail: "message_request_rejected", reason: "task_recording_consent_invalid" });
-      return;
-    }
     const digest = clientRequestId
       ? this.webuiMessageDigest({
           chatId,
@@ -4116,7 +4101,6 @@ export class WebSocketChannel extends BaseChannel {
           queueSurface,
           turnAdmission,
           expectedTurnId,
-          taskRecording: recording?.success ? recording.data : null,
           thinkingEnabled: typeof envelope.thinking_enabled === "boolean" ? envelope.thinking_enabled : undefined,
           thinkingLevel: typeof envelope.thinking_level === "string" ? envelope.thinking_level : undefined,
           interruptPendingTurnId,
@@ -4222,7 +4206,6 @@ export class WebSocketChannel extends BaseChannel {
     }
     const metadata: Record<string, any> = {
       remote: connection?.remoteAddress ?? null,
-      ...(recording?.success ? { task_recording: recording.data } : {}),
       message_id: clientRequestId ?? crypto.randomUUID(),
       webui: envelope.webui === true,
       model_preset: modelSelection.preset,
@@ -5361,10 +5344,6 @@ export class WebSocketChannel extends BaseChannel {
         turnId: this.turnIdFromMetadata(message.metadata),
         source: parseTurnSource(message.metadata.turn_source),
       });
-      return;
-    }
-    if (message.metadata?.taskRecordingStatus) {
-      await this.broadcast(message.chatId, { event: "task_recording", chat_id: message.chatId, ...message.metadata.taskRecordingStatus });
       return;
     }
     if (message.metadata?.turnEnd) {

@@ -1,6 +1,5 @@
 import { createMacDmgUpdateInstallScript, createMacDmgUpdateStageScript, type MacUpdateValidationOptions } from './mac-update-scripts.js';
 import { createDesktopScreenCapture } from './desktop-screen-capture.js';
-import { createRecordingMediaProxy } from "./recording-media-proxy.js";
 import { compareVersionSegments, parseUpdatePackageVersion } from './version-compare.js';
 import { captureMemmyScreen, computerUseApp, memmyPermissionSnapshot, resolveComputerUseBinary, runHelperCommand } from './memmy-screen-permission.js';
 import { desktopSaveFileName } from './save-file-name.js';
@@ -58,7 +57,7 @@ import type {
   DesktopUpdateMode,
   MicrophoneAccessStatus
 } from "@memmy/desktop-interface";
-import { app, protocol, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, session, shell, systemPreferences, Tray, type Event as ElectronEvent, type FileFilter, type IpcMainEvent, type MenuItemConstructorOptions, type Rectangle, type WebContents } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, session, shell, systemPreferences, Tray, type Event as ElectronEvent, type FileFilter, type IpcMainEvent, type MenuItemConstructorOptions, type Rectangle, type WebContents } from "electron";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
@@ -174,14 +173,11 @@ import {
 } from "./windows-launch-at-login.js";
 import { resolveComputerHistoryMarkdownPath } from "./computer-history-markdown.js";
 import { stopComputerHistoryBeforeExit } from "./computer-history-exit.js";
-import { stopTaskRecordingBeforeExit } from "./task-recording-exit.js";
 import { writeQuitDiagnostic, type QuitDiagnostic } from "./quit-diagnostics.js";
 import { composeRecordingMenuBarBitmap } from "./menu-bar-recording-indicator.js";
 import { runApprovedEmbeddedUpload } from './browser-embedded-upload-access.js';
 import { createPIPTrayRecovery } from './computer-use-pip-tray.js';
 import { attachRendererRecovery, rendererRecoveryUrl, type RendererRecoveryDiagnostic } from './renderer-recovery.js';
-
-protocol.registerSchemesAsPrivileged([{ scheme: "memmy-recording", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }]);
 
 let mainWindow: BrowserWindow | null = null;
 let memmyPermissionOnboarding: ReturnType<typeof createComputerUseOnboarding> | null = null;
@@ -5890,7 +5886,6 @@ app.on("child-process-gone", (_event, details) => {
 });
 
 app.whenReady().then(async () => {
-  protocol.handle("memmy-recording", createRecordingMediaProxy(() => runtimeServices?.agentGateway ?? null));
   if (!(await waitForSingleInstanceLock())) {
     // An instance is already running: this instance exits directly, to avoid a second instance
     // contending for the fixed ports (memory 18960 / agent gateway) and causing a startup failure.
@@ -6214,7 +6209,6 @@ async function closeRuntimeForQuit(quit: QuitCleanupContext): Promise<void> {
     quit.servicesClose = (async () => {
       if (process.platform === "win32" || process.platform === "darwin") {
         quit.phase = "history-stop";
-        try { await stopTaskRecordingBeforeExit(services.agentGateway, () => armQuitCleanupForceExitTimer(30_000)); } catch { /* sealed parts recover on next startup */ }
       }
       if (process.platform === "win32") {
         try {

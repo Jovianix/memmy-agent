@@ -106,33 +106,28 @@ try {
   run("agent-assets", agent, ["scripts/copy-build-assets.mjs"]);
   run("frontend-types", frontend, [binary(frontend, "typescript/bin/tsc"), "-p", "tsconfig.json", "--noEmit"]);
   run("agent-lint", agent, [binary(agent, "eslint/bin/eslint.js"),
-    "src/tools/computer-recordings/**/*.ts", "tests/tools/computer-recordings/**/*.ts",
     "src/providers/openai-responses/**/*.ts", "tests/providers/openai-responses.test.ts", "tests/providers/extra-body-config.test.ts",
     "src/tools/computer-history/**/*.ts", "tests/tools/computer-history/**/*.ts",
     "src/tools/computer-use/extract-workflow-candidate.ts", "tests/tools/computer-use/extract-workflow-candidate.test.ts",
     "src/integrations/channels/websocket.ts", "tests/integrations/channels/websocket-computer-history-routes.test.ts",
     "tests/core/agent-runtime/skills-loader.test.ts"]);
   const frontendTests = ["src/app/tests/computer-history-model-sync.test.tsx",
-    "src/pages/tests/task-recordings.interaction.test.tsx",
     ...["computer-history-platform", "computer-history-sub-page", "computer-history-permission-guide", "windows-history-settings"]
       .map((name) => `src/pages/tests/${name}.interaction.test.tsx`), "src/pages/tests/computer-history-quota.test.tsx"];
   run("frontend-lint", frontend, [binary(frontend, "eslint/bin/eslint.js"),
-    "src/api/computer-recordings-client.ts", "src/pages/memory/task-recordings.tsx",
     "src/api/computer-history-contract.ts", "src/api/memmy-agent-client.ts", "src/app/computer-history-platform.ts",
     "src/app/computer-history-model-sync.ts", "src/i18n/messages.ts",
     ...["app-icon", "computer-history-sub-page", "computer-history-recording-confirmation", "windows-history-settings"]
       .map((name) => `src/pages/memory/${name}.tsx`), ...frontendTests]);
   // Exclude native capture independently of ambient environment variables.
   tests("agent-tests", agent, ["tests/tools/computer-history", "tests/tools/computer-use/extract-workflow-candidate.test.ts",
-    "tests/tools/computer-recordings",
     "tests/core/agent-runtime/skills-loader.test.ts", "tests/integrations/channels/websocket-computer-history-routes.test.ts",
     `--exclude=${nativeTest}`]);
   // CU also changes shared model request construction; keep the complete Provider
   // contract suite in both platform jobs, including extra_body tool merging.
   tests("provider-tests", agent, ["tests/providers"]);
   tests("frontend-tests", frontend, frontendTests);
-  tests("recording-media-proxy-tests", root, ["App/shell/desktop/tests/recording-media-proxy.test.ts", "App/shell/desktop/tests/task-recording-exit.test.ts",
-    "App/shell/desktop/tests/computer-history-exit.test.ts"]);
+  tests("history-exit-tests", root, ["App/shell/desktop/tests/computer-history-exit.test.ts"]);
   tests("contract-tests", root, ["tests/computer-history-contract.test.ts", "tests/windows-history-workflow.test.ts"]);
   // The Windows Vite module runner cannot load electron-builder's ESM graph.
   // Keep the Node runner limited to MJS packaging tests: TS source imports need Vite resolution.

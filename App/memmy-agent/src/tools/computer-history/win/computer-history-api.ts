@@ -1,7 +1,6 @@
 import { ComputerHistoryDemoService as SharedService, ComputerHistoryApiError } from "../core/computer-history-api.js";
 import { WindowsPlatformDriver } from "./platform-driver.js";
 import { parseWindowsSettings, WindowsSettingsStore } from "./settings.js";
-import { collectorGate, CollectorBusyError } from "../core/collector-gate.js";
 import { ObservationSettingsStore } from "../core/settings-store.js";
 import { parseObservationSettings } from "../core/observation-settings.js";
 
@@ -18,7 +17,6 @@ export class WindowsComputerHistoryService extends SharedService {
     return this.driver.store.readObservation()!;
   }
   override async updateObservationSettings(input: unknown) {
-    if (collectorGate.taskActive) throw new CollectorBusyError();
     const settings = parseObservationSettings(input);
     this.getObservationSettings();
     if (this.snapshot().observation.state !== "stopped") await this.stopObservation();
@@ -27,7 +25,6 @@ export class WindowsComputerHistoryService extends SharedService {
     return result;
   }
   async updateWindowsSettings(input: unknown) {
-    if (collectorGate.taskActive) throw new CollectorBusyError();
     let settings;
     try { settings = parseWindowsSettings(input); }
     catch { throw new ComputerHistoryApiError(422, "Invalid Windows Computer History settings"); }

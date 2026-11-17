@@ -12,7 +12,6 @@
 #include "win/identity.h"
 #include "win/system.h"
 #include "win/worker_host.h"
-#include "win/task_video.h"
 
 #include <algorithm>
 #include <atomic>
@@ -53,8 +52,7 @@ std::wstring AbsolutePath(const std::wstring& path) {
 
 class Session {
  public:
-  Session() : id_(RandomHex(16)), origin_(MonotonicMs()), qpcOrigin_(QpcTicks()) {}
-  std::uint64_t QpcOrigin() const { return qpcOrigin_; }
+  Session() : id_(RandomHex(16)), origin_(MonotonicMs()) {}
   const std::string& Id() const { return id_; }
   bool Valid() const { return id_.size() == 32; }
   void DiscardEnvelope() { --sequence_; }
@@ -75,7 +73,6 @@ class Session {
  private:
   std::string id_;
   double origin_;
-  std::uint64_t qpcOrigin_;
   std::uint64_t sequence_ = 0;
 };
 
@@ -323,7 +320,7 @@ BOOL WINAPI OnConsoleControl(DWORD type) {
 class Observer {
  public:
   explicit Observer(const cli::CommandLine& command)
-      : command_(command), policyPath_(AbsolutePath(command.policyPath)), hooks_(256, command.kind == cli::CommandKind::RecordTask) {}
+      : command_(command), policyPath_(AbsolutePath(command.policyPath)), hooks_(256) {}
 
   int Run() {
     SessionLease lease(kLeasePrefix);
@@ -365,10 +362,6 @@ class Observer {
     if (!hooks_.Start(false, command_.inputHooks)) {
       Diagnostic("hook_install_failed");
       return kExitInfrastructure;
-    }
-    if (command_.kind == cli::CommandKind::RecordTask) {
-      video_ = std::make_unique<TaskVideo>(command_.outputDirectory, policyPath_, hooks_, session_.QpcOrigin(), command_.seconds);
-      if (!video_->Start()) { hooks_.Stop(2000); Diagnostic("task_video_start_failed"); return kExitInfrastructure; }
     }
     if (!command_.outputPath.empty() &&
         !output_.Open(command_.outputPath, command_.rotateSeconds * 1000.0, MonotonicMs(), error)) {
@@ -453,22 +446,7 @@ class Observer {
   }
 
   void WriteLine(const std::string& line) {
-    std::string encoded = line;
-    if (video_) {
-      auto value = ParseJsonStrict(line, 32);
-      if (!value) throw std::runtime_error("task_event_invalid");
-      const auto tick = QpcTicks();
-      (*value)["protocol"] = "memmy.windows.task-recording";
-      (*value)["monotonicMs"] = static_cast<double>(tick - session_.QpcOrigin()) * 1000.0 / static_cast<double>(QpcFrequency());
-      Json actionTimes = Json::array();
-      if (value->at("kind") == "snapshot" && (*value)["snapshot"].contains("actions")) {
-        for (auto& action : (*value)["snapshot"]["actions"]) { actionTimes.push_back(action.at("taskQpc")); action.erase("taskQpc"); }
-      }
-      (*value)["task"] = {{"qpcOrigin", std::to_string(session_.QpcOrigin())}, {"qpcFrequency", std::to_string(QpcFrequency())},
-        {"qpc", std::to_string(tick)}, {"actionQpc", actionTimes}, {"unsupportedActions", unsupportedActions_}};
-      encoded = DumpJson(*value) + "\n";
-    }
-    const auto failure = output_.Write(encoded);
+    const auto failure = output_.Write(line);
     ++counters_.events;
     if (failure != EventOutput::Failure::None && !outputFailed_) {
       outputFailed_ = true;
@@ -525,7 +503,6 @@ class Observer {
   }
 
   void CaptureGap(const char* code, std::uint64_t fromTick, std::uint64_t throughTick = 0) {
-    if (video_) return;  // Task recording retains its existing action/coverage counters.
     const auto now = TickMs();
     const auto utc = NowFileTime();
     const auto timestamp = [&](std::uint64_t tick) {
@@ -559,7 +536,7 @@ class Observer {
       const auto item = message.kind;
       switch (item) {
         case ControlItem::Checkpoint:
-          if (video_ || paused_ || !hooks_.RequestCheckpoint(message.id)) Checkpoint(message.id, 0, false);
+          if (paused_ || !hooks_.RequestCheckpoint(message.id)) Checkpoint(message.id, 0, false);
           break;
         case ControlItem::Pause: {
           const bool already = paused_;
@@ -567,7 +544,6 @@ class Observer {
             // Invalidate everything before acknowledging: hooks stop enqueuing, the generation
             // moves (any result in flight is rejected), queued triggers and baseline are dropped.
             paused_ = true;
-            if (video_) video_->Pause(true);
             hooks_.SetPaused(true);
             hooks_.BumpGeneration();
             hooks_.Queue().Clear();
@@ -584,7 +560,6 @@ class Observer {
           const bool already = !paused_;
           if (paused_) {
             paused_ = false;
-            if (video_) video_->Pause(false);
             hooks_.SetPaused(false);
             hooks_.BumpGeneration();
             ++epoch_;
@@ -634,7 +609,7 @@ class Observer {
     Json trigger = {{"kinds", Json(std::vector<std::string>(pendingKinds_.begin(), pendingKinds_.end()))},
                     {"count", pendingCount_}};
     const auto actions = std::move(pendingActions_);
-    bool actionOverflow = pendingActionOverflow_;
+    const bool actionOverflow = pendingActionOverflow_;
     ClearPending();
     const std::uint64_t hwnd = ForegroundWindow();
     std::vector<HANDLE> cancel = {stop_.get(), control_.InterruptEvent()};
@@ -647,7 +622,6 @@ class Observer {
 
     if (query.status == "cancelled") {
       CaptureGap("query_cancelled", captureFrom);
-      if (video_) unsupportedActions_ += actions.size();
       // A control command or stop arrived mid-query; its handler decides what happens next.
       ++counters_.cancelled;
       ResetCaptureState();
@@ -657,7 +631,6 @@ class Observer {
     if (query.status != "ok") {
       if (query.status == "unavailable" || query.reason == "context_changed" || query.reason == "policy_changed")
         CaptureGap("query_unavailable", captureFrom);
-      if (video_) unsupportedActions_ += actions.size();
       // Any refusal or failure ends the delta chain; the next success is a full baseline.
       baseline_.Reset();
       lastFocusKey_.reset();
@@ -709,7 +682,6 @@ class Observer {
       const bool pointer = action.kind == ActionKind::MouseClick || action.kind == ActionKind::Scroll;
       if (item.hwnd != query.context->hwnd || (!pointer && item.generation != query.generation)) {
         if (ActionInScope(item.hwnd)) CaptureGap("action_context_changed", item.tickMs);
-        if (video_) { ++unsupportedActions_; actionOverflow = true; }
         continue;
       }
       Json detail = {{"timestamp", protocol::FormatUtcTimestamp(action.timestamp)}, {"injected", action.injected}};
@@ -728,10 +700,8 @@ class Observer {
         detail["type"] = "text_input";
         detail["pressCount"] = 1; detail["redacted"] = true; detail["unit"] = "key_press";
       } else {
-        if (video_ && (action.kind == ActionKind::KeyPress || action.kind == ActionKind::TextKey)) { ++unsupportedActions_; actionOverflow = true; }
         continue;
       }
-      if (video_) detail["taskQpc"] = std::to_string(action.qpc);
       approvedActions.push_back(std::move(detail));
     }
     if (!diff.full && diff.added.empty() && diff.removed.empty() && focusKey == lastFocusKey_ && approvedActions.empty() && !actionOverflow) {
@@ -739,7 +709,6 @@ class Observer {
       ++counters_.unchanged;
       return;
     }
-    const auto approvedCount = approvedActions.size();
     Json body = OkBody(query, diff.full ? "full" : "delta", focusKey);
     if (command_.inputHooks) { body["actions"] = std::move(approvedActions); body["actionOverflow"] = actionOverflow; }
     if (diff.full) {
@@ -755,7 +724,6 @@ class Observer {
     event["snapshot"] = std::move(body);
     const std::string line = DumpJson(event) + "\n";
     if (!collector_->Commit(query, cancel.data(), static_cast<DWORD>(cancel.size()))) {
-      if (video_) unsupportedActions_ += approvedCount;
       session_.DiscardEnvelope();
       CaptureGap("query_commit_rejected", captureFrom);
       ResetCaptureState();
@@ -787,7 +755,7 @@ class Observer {
   bool ActionInScope(std::uint64_t hwnd) {
     const auto file = ReadPolicyFile(policyPath_);
     const auto parsed = file.ok ? policy::Parse(file.bytes) : policy::Parse("");
-    if (!parsed.policy) return true;  // Failed policy reads must still report lost task input.
+    if (!parsed.policy) return true;  // Failed policy reads must still report lost input.
     std::string reason;
     const auto context = ReadWindowContext(hwnd, reason);
     if (!context) return true;
@@ -800,8 +768,6 @@ class Observer {
     nextSample_ = start + command_.sampleMs;
     MarkPending("session_start");
     for (;;) {
-      if (video_ && video_->Failed()) { stopReason_ = "video_capture_failed"; return; }
-      if (video_ && video_->Done()) { stopReason_ = "duration_elapsed"; return; }
       if (hooks_.StopRequested()) {
         stopReason_ = "stop_hotkey";
         return;
@@ -862,10 +828,6 @@ class Observer {
           }
           MarkPending(TriggerKindName(trigger.kind), trigger.firstTickMs ? trigger.firstTickMs : trigger.tickMs);
           if (trigger.action.kind != ActionKind::None) {
-            // Returning to Memmy's stop/finish controls is outside the selected
-            // applications. It must not make their recording look incomplete.
-            if (video_ && !ActionInScope(trigger.hwnd)) continue;
-            if (video_ && trigger.action.kind == ActionKind::Unsupported) { ++unsupportedActions_; pendingActionOverflow_ = true; }
             if (pendingActions_.size() < 64) pendingActions_.push_back(trigger);
             else pendingActionOverflow_ = true;
           }
@@ -884,7 +846,6 @@ class Observer {
   }
 
   int Shutdown() {
-    if (video_) video_->Stop();
     hooks_.SetPaused(true);
     hooks_.BumpGeneration();
     const bool hooksStopped = hooks_.Stop(2000);
@@ -918,7 +879,7 @@ class Observer {
     g_consoleStop.store(nullptr);
     SetEvent(done_.get());
     if (stopReason_ == "output_failed" || outputFailed_) return kExitOutput;
-    if (!hooksStopped || stopReason_ == "internal_error" || stopReason_ == "control_queue_overflow" || stopReason_ == "video_capture_failed") return kExitInternal;
+    if (!hooksStopped || stopReason_ == "internal_error" || stopReason_ == "control_queue_overflow") return kExitInternal;
     return kExitOk;
   }
 
@@ -927,7 +888,6 @@ class Observer {
   Session session_;
   HookThread hooks_;
   WorkerHost host_;
-  std::unique_ptr<TaskVideo> video_;
   EventOutput output_;
   ControlInput control_;
   std::unique_ptr<Collector> collector_;
@@ -949,7 +909,6 @@ class Observer {
   std::uint64_t pendingCount_ = 0;
   std::vector<Trigger> pendingActions_;
   bool pendingActionOverflow_ = false;
-  std::uint64_t unsupportedActions_ = 0;
   std::string stopReason_ = "unknown";
   bool outputFailed_ = false;
   std::string failedChannel_;

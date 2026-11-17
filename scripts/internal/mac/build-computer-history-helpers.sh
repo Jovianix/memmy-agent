@@ -28,13 +28,10 @@ build_helper() {
   lipo "$BUILD_DIR/$helper" -verify_arch "$SWIFT_CPU"
   install -m 755 "$BUILD_DIR/$helper" "$OUTPUT_DIR/$helper"
 }
-for helper in app-icon task-recorder; do
-  if [ "$helper" = task-recorder ]; then
-    build_helper "$helper" -Xlinker -weak_framework -Xlinker ScreenCaptureKit
-  else
-    build_helper "$helper"
-  fi
-done
+
+# Remove retired video assets from reused staging directories.
+rm -f "$HELPER_DIR/task-recorder.swift" "$HELPER_DIR"/native/*/task-recorder
+build_helper app-icon
 
 # The optional Apple silicon WeChat connection copies these libraries into its
 # private helper. Build before packaging/signing so users never invoke clang.
