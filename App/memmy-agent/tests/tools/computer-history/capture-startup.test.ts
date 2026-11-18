@@ -122,10 +122,15 @@ it('reports cancellation when shutdown invalidates pending startup', async () =>
 it("preserves diagnostics arriving after process exit but before pipe close", async () => {
   const f = fixture(async () => granted);
   const diagnostic = "delayed helper connection failure";
-  const writer = `setTimeout(() => process.stderr.write(${JSON.stringify(diagnostic)}, () => process.exit(0)), 100)`;
+  // Start the diagnostic delay after the recorder exits, not while Windows may
+  // still be launching the writer. Keep the real inherited stderr pipe open.
+  const writer = `
+    process.once("disconnect", () => setTimeout(() => process.stderr.write(${JSON.stringify(diagnostic)}, () => process.exit(0)), 100));
+    process.send("ready");
+  `;
   fs.writeFileSync(path.join(f.root, "recorder.cjs"), `
-    require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(writer)}], { stdio: ["ignore", "ignore", 2] });
-    process.exit(23);
+    const writer = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(writer)}], { stdio: ["ignore", "ignore", 2, "ipc"] });
+    writer.once("message", () => process.exit(23));
   `);
   await expect(startTeach(f)).rejects.toMatchObject({ code: diagnostic, stage: "recorder-start" });
   expect(f.events.list(owner, chat)[0]).toMatchObject({ error: diagnostic, failureStage: "recorder-start" });
