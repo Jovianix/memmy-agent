@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { EventCaptureSessionSchema, type EventCaptureSession } from "@memmy/local-api-contracts";
-import type { EventCaptureSource, EventCaptureSubscription, CaptureCheckpoint } from "../computer-history/core/event-capture-source.js";
+import { EventCaptureStartError, type EventCaptureSource, type EventCaptureSubscription, type CaptureCheckpoint } from "../computer-history/core/event-capture-source.js";
 import { writeJsonAtomic } from "../../utils/atomic-json.js";
 import { BrowserCaptureRequestSchema, type BrowserCaptureProvider, type BrowserCaptureRequest } from "../computer-history/browser-event-capture.js";
 
@@ -108,11 +108,11 @@ export class PluginEventSessions {
         this.starting.set(session.id, { session, controller }); this.save(session);
         if (browser && !this.options.browser) throw new Error("browser_capture_unavailable: update the desktop Host");
         subscription = browser ? await this.options.browser!.acquire({ sessionId: session.id, directory: this.folder(owner, session.id), request: browser, signal: controller.signal })
-          : await this.options.source.acquireEventCapture();
+          : await this.options.source.acquireEventCapture(controller.signal);
         controller.signal.throwIfAborted();
         const initial = await subscription.checkpoint({ from: this.now() });
         controller.signal.throwIfAborted();
-        if (!initial.running) throw new Error("capture_not_running");
+        if (!initial.running) throw initial.failure ?? new Error("capture_not_running");
         session.state = "recording"; session.startedAt = this.now();
         session.captureIntegrity = initial.captureIntegrity;
         session.browserCapture = subscription.browserCapture;
@@ -134,6 +134,14 @@ export class PluginEventSessions {
           if (session.state !== "cancelled") { session.state = "failed"; session.availability = "unavailable"; session.endedAt = this.now(); }
           if (session.state !== "cancelled") {
             session.error = error instanceof Error ? error.message : "capture_start_failed";
+            if (error instanceof EventCaptureStartError) {
+              session.error = error.code;
+              session.failureStage = error.stage;
+              session.preflight = error.preflight;
+              console.warn("[Computer History] Event session startup failed", {
+                sessionId: session.id, stage: error.stage, error: error.message, preflight: error.preflight,
+              });
+            }
             this.failed.set(session.id, session);
           }
           try { this.save(session); } catch { /* The in-memory terminal state remains authoritative until disk recovers. */ }

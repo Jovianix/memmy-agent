@@ -32,6 +32,25 @@ function fixture() {
   return { plugin, client, invoke, onPrompt, render, click, refresh };
 }
 describe("conversation-owned recording", () => {
+  it.each([
+    { accessibility: false, inputMonitoring: true, missing: "辅助功能", granted: "输入监控" },
+    { accessibility: true, inputMonitoring: false, missing: "输入监控", granted: "辅助功能" },
+  ])("identifies the missing $missing permission without requesting the granted one", async ({ missing, granted, ...permissions }) => {
+    const f = fixture(); await f.render();
+    await f.refresh({ state: "failed", error: "capture_permission_required", failureStage: "recorder-start",
+      preflight: { platform: "macos", ...permissions } });
+    const message = node.querySelector('[role="alert"]')?.textContent;
+    expect(message).toContain(missing);
+    expect(message).not.toContain(granted);
+    expect(message).not.toContain("capture_permission_required");
+  });
+  it("preserves a non-permission startup error in the recording card", async () => {
+    const f = fixture(); await f.render();
+    await f.refresh({ state: "failed", error: "helper connection failed", failureStage: "recorder-start",
+      preflight: { platform: "macos", accessibility: true, inputMonitoring: true } });
+    expect(node.querySelector('[role="alert"]')?.textContent).toContain("helper connection failed");
+    expect(node.textContent).not.toContain("请在系统设置");
+  });
   it("shows a saved coverage gap separately from an unconfirmed end boundary", async () => {
     const f = fixture(); await f.render();
     await f.refresh({state: "ready", availability: "partial", endedAt: new Date().toISOString(),

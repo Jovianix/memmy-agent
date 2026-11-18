@@ -1,3 +1,4 @@
+import { EventCaptureStartError } from "../../tools/computer-history/core/event-capture-source.js";
 import { CollectorBusyError } from "../../tools/computer-history/core/collector-gate.js";
 import { invokeNativePluginService, shutdownNativePlugins } from "../../tools/plugin-host/native-services.js";
 import { SkillsLoader } from "../../core/agent-runtime/skills.js";
@@ -3636,7 +3637,10 @@ export class WebSocketChannel extends BaseChannel {
         }
         return httpJsonResponse(await invokeNativePluginService(raw,
           { history: this.computerHistory, toolNames: this.runtimeToolNames?.() ?? [], skills }));
-      } catch (error) { return httpError(409, error instanceof Error ? error.message : "Plugin host service failed"); }
+      } catch (error) {
+        const status = error instanceof EventCaptureStartError || error instanceof ComputerHistoryApiError ? error.status : 409;
+        return httpError(status, error instanceof Error ? error.message : "Plugin host service failed");
+      }
     }
     if (got === "/api/computer-history/observation/status") return this.handleComputerHistory(request, "observation-status");
     if (got === "/api/computer-history/settings") return this.handleComputerHistory(request, "settings");

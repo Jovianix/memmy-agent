@@ -14,6 +14,11 @@ export const EventCaptureSessionSchema = z.object({
   eventsSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
   availability: z.enum(["pending", "available", "empty", "partial", "unavailable"]),
   limitations: z.array(z.string()), error: z.string().nullable(),
+  failureStage: z.enum(["permission-check", "recorder-start"]).optional(),
+  preflight: z.discriminatedUnion("platform", [
+    z.object({ platform: z.literal("macos"), accessibility: z.boolean(), inputMonitoring: z.boolean() }),
+    z.object({ platform: z.literal("windows"), reason: z.string() }),
+  ]).optional(),
   captureIntegrity: CaptureIntegritySchema.optional(),
   browserCapture: z.object({ browser: z.enum(["chrome", "edge"]), windowId: z.number().int().nonnegative().optional(),
     scope: z.literal("teaching-window-and-popups") }).optional(),
