@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "feature/windows-history-native-core"
+      - "fix/**"
   pull_request:
     paths:
       - ".github/workflows/macos-computer-history-validation.yml"
