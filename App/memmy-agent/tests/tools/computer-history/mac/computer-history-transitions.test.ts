@@ -161,11 +161,17 @@ describe("recorder transition ordering", () => {
     expect(await pending).toMatchObject({ running: true, complete: false, boundaryConfirmed: false });
   });
 
-  it("still reports a real collector exit during a pending checkpoint as stopped", async () => {
+  it.each(["close", "timeout"])("reports a collector exit after the diagnostic drain ends by %s", async drain => {
     const subscription = await service.acquireEventCapture();
-    const pending = subscription.checkpoint();
+    let settled = false;
+    const pending = subscription.checkpoint().then(point => { settled = true; return point; });
     state.children[0]!.exit(1);
-    expect(await pending).toMatchObject({ running: false, complete: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    if (drain === "close") state.children[0]!.emit("close", 1);
+    else await vi.advanceTimersByTimeAsync(1_000);
+    expect(await pending).toMatchObject({ running: false, complete: false,
+      failure: { code: "recorder exited with code 1", stage: "recorder-start" } });
   });
 
   it("restores an explicitly running recorder after agent restart, and keeps pause across restarts", async () => {

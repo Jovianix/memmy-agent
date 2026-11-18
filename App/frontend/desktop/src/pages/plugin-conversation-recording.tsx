@@ -9,7 +9,7 @@ import { Button } from "../components/button.js";
 export function PluginConversationRecording({ client, config, plugins, conversationId: currentConversationId, onPrompt }: {
   client?: PluginsClient; config?: RuntimeConfig; plugins: InstalledPlugin[]; conversationId: string | null; onPrompt: (text: string) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const conversationId = currentConversationId?.replace(/^websocket:/, "") ?? null;
   const [sessions, setSessions] = useState<Array<{ plugin: InstalledPlugin; session: EventCaptureSession; presentation?: PluginConversationPresentation }>>([]);
   const [error, setError] = useState<string | null>(null), [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
@@ -76,6 +76,15 @@ export function PluginConversationRecording({ client, config, plugins, conversat
   }
   if (!selected) return error || notice ? <div className="mx-4 my-2 text-sm" role={error ? "alert" : "status"}>{error ?? notice}</div> : null;
   const { session, presentation } = selected, recording = session.state === "recording";
+  let sessionError = session.error;
+  if (sessionError === "capture_permission_required" && session.preflight?.platform === "macos") {
+    const missing = [];
+    if (!session.preflight.accessibility) missing.push(t("computerHistory.permissions.accessibility"));
+    if (!session.preflight.inputMonitoring) missing.push(t("computerHistory.permissions.inputMonitoring"));
+    if (missing.length) sessionError = t("plugins.recording.missingPermissions", {
+      permissions: new Intl.ListFormat(language, { type: "conjunction" }).format(missing),
+    });
+  }
   const elapsed = session.state === "starting" ? 0 : Math.max(0, Math.floor(((session.endedAt ? Date.parse(session.endedAt) : endingAt ?? now) - Date.parse(session.startedAt)) / 1_000));
   const duration = `${elapsed >= 3600 ? `${String(Math.floor(elapsed / 3600)).padStart(2, "0")}:` : ""}${String(Math.floor(elapsed / 60) % 60).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
   const availability = t(`plugins.recording.availability.${session.availability}`);
@@ -113,7 +122,7 @@ export function PluginConversationRecording({ client, config, plugins, conversat
           : t("plugins.recording.saved")}</p>}
     {presentation && <div className="mt-2 flex flex-wrap items-center gap-3"><span>{presentation.message}</span>
       {presentation.actions.map(action => <Button key={action.id} size="sm" disabled={busy} onClick={() => onPrompt(action.prompt)}>{action.label}</Button>)}</div>}
-    {session.error && <p role="alert" className={ongoing ? "recording-bar__note recording-bar__note--warning" : undefined}>{session.error}</p>}{error && <p role="alert" className={ongoing ? "recording-bar__note recording-bar__note--warning" : undefined}>{error}</p>}
+    {sessionError && <p role="alert" className={ongoing ? "recording-bar__note recording-bar__note--warning" : undefined}>{sessionError}</p>}{error && <p role="alert" className={ongoing ? "recording-bar__note recording-bar__note--warning" : undefined}>{error}</p>}
     {session.limitations.length > 0 && !recording && <details className="mt-2"><summary>{t("plugins.recording.limitations")}</summary>{session.limitations.map((text, i) => <p key={i}>{text}</p>)}</details>}
   </section>;
 }
