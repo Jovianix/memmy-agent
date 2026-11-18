@@ -34,6 +34,9 @@ jobs:
           node-version: 22
           cache: npm
       - name: Install declared workspace and Agent dependencies
+        env:
+          # Memory uses the CPU provider bundled with onnxruntime-node.
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
         run: |
           npm ci
           npm install --prefix App/memmy-agent --ignore-scripts --no-audit --no-fund

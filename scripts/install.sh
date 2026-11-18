@@ -161,7 +161,9 @@ AGENT_DIR="$PAYLOAD_DIR/App/memmy-agent"
   || fail "archive is missing the bundled embedding model"
 
 printf 'Installing Memory runtime production dependencies for this Linux machine...\n'
-(cd "$PAYLOAD_DIR" && npm ci --omit=dev --workspaces \
+# Memory uses the CPU provider bundled with onnxruntime-node; its optional
+# CUDA download is unnecessary and can fail before dependencies are installed.
+(cd "$PAYLOAD_DIR" && ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm ci --omit=dev --workspaces \
   --include-workspace-root=false --no-audit --no-fund) \
   || fail "Memory runtime dependency installation failed; the previous Memmy installation is unchanged"
 printf 'Installing Agent production dependencies for this Linux machine...\n'

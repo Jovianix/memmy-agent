@@ -71,6 +71,9 @@ jobs:
         with:
           go-version: '1.22'
       - run: npm ci
+        env:
+          # Memory uses the CPU provider bundled with onnxruntime-node.
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
       - run: npm ci --prefix App/memmy-agent
       - name: Resolve and verify version
         id: version
