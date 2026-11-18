@@ -5,6 +5,9 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PluginManifestSchema } from "@memmy/local-api-contracts";
 import { createPluginUpdateService } from "../plugin-update-service.js";
+import { createPluginNativeHostServices } from "../plugin-native-host-services.js";
+import { createGeneratedPluginSkills } from "../plugin-generated-skills.js";
+import type { MemmyAgentAdminClient } from "../../adapters/outbound/memmy-agent-admin-client/index.js";
 import { AgentTaskActivity } from "../../../../memmy-agent/src/core/agent-runtime/task-activity.js";
 import { reconcileEntitledPlugins } from "../plugin-entitlement-reconcile-service.js";
 import { createInMemoryPluginRegistry, type PluginRelease } from "../../adapters/outbound/plugin-registry/index.js";
@@ -550,6 +553,54 @@ describe("PluginService", () => {
     expect(resolveSpy).toHaveBeenCalledWith(release.manifest.id, "2.0.0", expect.any(AbortSignal));
     expect(service.get(release.manifest.id)).toMatchObject({ state: "active", activeCallCount: 0 });
     expect(service.get(release.manifest.id).update).toBeUndefined();
+  });
+
+  it.each([false, true])("permits host-service initialization during update and rollback (new version fails=%s)", async fails => {
+    const initial: PluginRelease = { manifest: { ...release.manifest, permissions: [
+      ...release.manifest.permissions,
+      { type: "host-service", services: ["plugin-context", "event-sessions"] }
+    ] } };
+    const next = { manifest: { ...initial.manifest, version: "2.0.0" } };
+    const { service, runtimeHost } = createContext([initial, next]);
+    const invokePluginHostService = vi.fn(async () => ({ ok: true }));
+    const dataRoot = join(root!, "plugin-data");
+    const native = createPluginNativeHostServices({
+      repository: store!.repositories.plugins,
+      admin: { invokePluginHostService } as unknown as MemmyAgentAdminClient,
+      dataRoot,
+      generated: createGeneratedPluginSkills(dataRoot, join(root!, "generated-skills.json"))
+    });
+    const initialized: string[] = [];
+    vi.mocked(runtimeHost.activate).mockImplementation(async plugin => {
+      // Use the real Host permission guard, as a worker does while initializing.
+      const call = { pluginId: plugin.id, callId: "plugin-lifecycle", conversationId: `plugin:${plugin.id}` };
+      await native.hostServices.invoke({ ...call, service: "plugin-context", input: {} });
+      await native.hostServices.invoke({ ...call, service: "event-sessions", input: { action: "configuration" } });
+      initialized.push(plugin.version);
+      if (fails && plugin.version === "2.0.0") throw new Error("new worker initialization failed");
+    });
+    try {
+      await service.install(initial.manifest.id, "1.0.0");
+      service.configure(initial.manifest.id, { config: { database: "crossref" }, secrets: { "api-key": "secret" } });
+      await service.approvePermissions(initial.manifest.id, initial.manifest.permissions);
+      await service.enable(initial.manifest.id);
+      expect(initialized).toEqual(["1.0.0"]);
+
+      if (fails) {
+        await expect(service.update(initial.manifest.id, "2.0.0")).rejects.toThrow("new worker initialization failed");
+      } else {
+        await expect(service.update(initial.manifest.id, "2.0.0")).resolves.toMatchObject({ version: "2.0.0", state: "active" });
+      }
+      expect(initialized).toEqual(fails ? ["1.0.0", "2.0.0", "1.0.0"] : ["1.0.0", "2.0.0"]);
+      expect(service.get(initial.manifest.id)).toMatchObject({
+        version: fails ? "1.0.0" : "2.0.0", state: "active", config: { database: "crossref" },
+        approvedPermissions: initial.manifest.permissions
+      });
+      expect(invokePluginHostService).toHaveBeenCalledTimes(initialized.length * 2);
+    } finally {
+      await service.shutdown();
+      await native.close();
+    }
   });
 
   it("keeps serving the old version during download and preserves it on download failure", async () => {
