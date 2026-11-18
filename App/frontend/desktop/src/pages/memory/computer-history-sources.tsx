@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ComputerHistoryObservationSettings } from "../../api/computer-history-contract.js";
 import type { MemmyAgentClient } from "../../api/memmy-agent-client.js";
 import { useTranslation } from "../../i18n/use-translation.js";
+import { hasLegacyHistoryScope } from "./computer-history-scope.js";
 
 /** The compact settings rows; app and website rules are edited in the scope dialog. */
 export function ComputerHistorySources({ client, syncStatus, onChoose }: {
@@ -12,7 +13,6 @@ export function ComputerHistorySources({ client, syncStatus, onChoose }: {
 }) {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<ComputerHistoryObservationSettings | null>(null);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -28,7 +28,8 @@ export function ComputerHistorySources({ client, syncStatus, onChoose }: {
     return () => { active = false; };
   }, [client]);
 
-  const selectedCount = settings?.observation.rules.length ?? 0;
+  const selectedCount = settings?.observation.rules.filter((rule) => rule.behavior === "do_not_observe").length ?? 0;
+  const legacyScope = settings ? hasLegacyHistoryScope(settings) : false;
   const pendingDeletion = syncStatus?.pendingDeletionCount ?? 0;
   const skillError = syncStatus?.skillError ?? "";
   const skillStatuses = [...new Set(skillError ? skillError.split("; ").map((error) => {
@@ -49,11 +50,11 @@ export function ComputerHistorySources({ client, syncStatus, onChoose }: {
     <div className="ch__sources-row">
       <div className="ch__sources-copy">
         <div className="ch__setting-label">{t("computerHistory.sources.permissions")}</div>
-        <p className="ch__setting-description">{t("computerHistory.sources.permissionsDescription")}</p>
+        <p className="ch__setting-description">{t(legacyScope ? "computerHistory.sources.legacySummary" : "computerHistory.sources.permissionsDescription")}</p>
       </div>
-      <button type="button" className="ch__sources-choose" disabled={!client || busy} onClick={onChoose}>
-        {selectedCount === 0
-          ? t("computerHistory.sources.choose")
+      <button type="button" className="ch__sources-choose" disabled={!client} onClick={onChoose}>
+        {!settings ? t("computerHistory.sources.choose") : legacyScope ? t("computerHistory.sources.reselect") : selectedCount === 0
+          ? t("computerHistory.allowAllApps")
           : t("computerHistory.sources.selectedCount", { count: selectedCount })}
       </button>
     </div>

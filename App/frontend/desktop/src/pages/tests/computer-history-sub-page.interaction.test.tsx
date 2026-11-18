@@ -11,6 +11,7 @@ import type {
   MemmyAgentClient
 } from "../../api/memmy-agent-client.js";
 import type { MemoryRuntimeClient } from "../../api/memory-runtime-client.js";
+import type { ComputerHistoryObservationSettings } from "../../api/computer-history-contract.js";
 import { I18nProvider } from "../../i18n/i18n-provider.js";
 import { saveHistoryPermissionSetup, readHistoryPermissionSetup } from "../memory/computer-history-permission-state.js";
 import { readWeChatPermissionReturn, rememberWeChatPermissionReturn } from "../memory/computer-history-wechat-permission-state.js";
@@ -150,6 +151,104 @@ describe("ComputerHistorySubPage", () => {
     expect(client.startComputerHistoryObservation).not.toHaveBeenCalled();
   });
 
+  it("allows all apps directly, waiting for the scope to be saved before checking permissions", async () => {
+    const settings = legacyScopeSettings();
+    const save = deferred<ComputerHistoryObservationSettings>();
+    const missing = snapshot({ observation: { ...snapshot().observation,
+      permissions: { supported: true, accessibility: false, inputMonitoring: true },
+    } });
+    const client = await renderWith(snapshot(), {
+      getComputerHistorySettings: vi.fn().mockResolvedValue(settings),
+      updateComputerHistorySettings: vi.fn().mockReturnValue(save.promise),
+      startComputerHistoryObservation: vi.fn().mockResolvedValue(missing),
+      checkComputerHistoryPermissions: vi.fn().mockResolvedValue(missing.observation.permissions),
+    });
+    act(() => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+    expect(dialogButton("允许所有应用")?.disabled).toBe(false);
+    expect(dialogButton("自定义应用")?.disabled).toBe(false);
+    await act(async () => dialogButton("允许所有应用")!.click());
+    expect(document.querySelector(".ch-source-dialog")).toBeNull();
+    const all = { memory: settings.memory, observation: {
+      defaultApplicationBehavior: "observe", defaultURLBehavior: "observe", rules: [],
+    } };
+    expect(client.updateComputerHistorySettings).toHaveBeenCalledExactlyOnceWith(all);
+    expect(client.startComputerHistoryObservation).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
+    await act(async () => save.resolve(all as ComputerHistoryObservationSettings));
+    expect(client.startComputerHistoryObservation).toHaveBeenCalledOnce();
+    expect(document.querySelector(".ch__permission-dialog")).not.toBeNull();
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("does not start when saving Allow all apps fails and displays the reason", async () => {
+    const client = await renderWith(snapshot(), {
+      updateComputerHistorySettings: vi.fn().mockRejectedValue(new Error("scope could not be saved")),
+    });
+    act(() => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+    await act(async () => dialogButton("允许所有应用")!.click());
+    expect(client.startComputerHistoryObservation).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("scope could not be saved");
+    expect(readHistoryPermissionSetup()).toBeNull();
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("does not start a stale Allow all apps request after leaving the page", async () => {
+    const save = deferred<ComputerHistoryObservationSettings>();
+    const client = await renderWith(snapshot(), { updateComputerHistorySettings: vi.fn().mockReturnValue(save.promise) });
+    act(() => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+    await act(async () => dialogButton("允许所有应用")!.click());
+    expect(client.updateComputerHistorySettings).toHaveBeenCalledOnce();
+    await act(async () => root.render(null));
+    await act(async () => save.resolve(legacyScopeSettings()));
+    expect(client.startComputerHistoryObservation).not.toHaveBeenCalled();
+  });
+
+  it("can start with empty exclusions after explicitly replacing an empty legacy allowlist", async () => {
+    const initialSettings: ComputerHistoryObservationSettings = { memory: { syncEnabled: false }, observation: {
+      defaultApplicationBehavior: "do_not_observe", defaultURLBehavior: "observe", rules: [],
+    } };
+    const client = await renderWith(snapshot(), {
+      getComputerHistorySettings: vi.fn().mockResolvedValue(initialSettings),
+      startComputerHistoryObservation: vi.fn().mockResolvedValue(snapshot({ observation: { ...snapshot().observation, state: "running" } })),
+    });
+    act(() => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+    await act(async () => confirmationButton()!.click());
+    expect(document.querySelector(".ch-source-dialog")?.textContent).toContain("旧版“仅包含”规则");
+    expect(client.updateComputerHistorySettings).not.toHaveBeenCalled();
+    await act(async () => document.querySelector<HTMLButtonElement>(".ch-source-dialog__continue")!.click());
+    expect(client.updateComputerHistorySettings).toHaveBeenCalledWith({ memory: { syncEnabled: false }, observation: {
+      defaultApplicationBehavior: "observe", defaultURLBehavior: "observe", rules: [],
+    } });
+    expect(client.startComputerHistoryObservation).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(initialSettings.observation.defaultApplicationBehavior).toBe("do_not_observe");
+  });
+
+  it("keeps legacy rules unchanged until an explicit scope choice is saved", async () => {
+    const settings = legacyScopeSettings();
+    const client = await renderWith(snapshot(), { getComputerHistorySettings: vi.fn().mockResolvedValue(settings) });
+    expect(container.querySelector(".ch__sources-choose")?.textContent).toBe("重新选择范围");
+    await act(async () => container.querySelector<HTMLButtonElement>(".ch__sources-choose")!.click());
+    expect(document.querySelector<HTMLButtonElement>(".ch-source-dialog__continue")?.disabled).toBe(true);
+    expect(document.querySelector(".ch-source-dialog__columns")).toBeNull();
+    act(() => dialogButton("自定义应用")!.click());
+    expect(document.querySelector(".ch-source-dialog__rules")?.textContent).toContain("com.example.Private");
+    expect(document.querySelector(".ch-source-dialog__rules")?.textContent).not.toContain("com.example.Writer");
+    act(() => document.querySelector<HTMLButtonElement>(".ch-source-dialog__footer button")!.click());
+    expect(client.updateComputerHistorySettings).not.toHaveBeenCalled();
+    await act(async () => container.querySelector<HTMLButtonElement>(".ch__sources-choose")!.click());
+    expect(document.querySelector<HTMLButtonElement>(".ch-source-dialog__continue")?.disabled).toBe(true);
+    act(() => dialogButton("自定义应用")!.click());
+    await act(async () => document.querySelector<HTMLButtonElement>(".ch-source-dialog__continue")!.click());
+    expect(client.updateComputerHistorySettings).toHaveBeenCalledExactlyOnceWith({ memory: settings.memory, observation: {
+      defaultApplicationBehavior: "observe", defaultURLBehavior: "observe",
+      rules: settings.observation.rules.filter((rule) => rule.behavior === "do_not_observe"),
+    } });
+    expect(client.startComputerHistoryObservation).not.toHaveBeenCalled();
+    expect(settings.observation.defaultApplicationBehavior).toBe("do_not_observe");
+    expect(settings.observation.rules).toHaveLength(3);
+  });
+
   it("saves a custom app scope before starting and leaves Memory sync unchanged", async () => {
     const settings = { memory: { syncEnabled: true }, observation: {
       defaultApplicationBehavior: "observe" as const, defaultURLBehavior: "observe" as const, rules: [],
@@ -186,20 +285,16 @@ describe("ComputerHistorySubPage", () => {
     expect(client.startComputerHistoryObservation).toHaveBeenCalledOnce();
   });
 
-  it("can limit both apps and websites to an explicit allowlist", async () => {
+  it("only offers exclusions for both apps and websites", async () => {
     const client = await renderWith(snapshot(), {
       listComputerHistoryApplications: vi.fn().mockResolvedValue([{ bundleId: "com.example.Writer", name: "Example Writer" }]),
     });
     act(() => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
     await act(async () => confirmationButton()!.click());
     const columns = [...document.querySelectorAll<HTMLElement>(".ch-source-dialog__column")];
-    for (const column of columns) {
-      const select = column.querySelector<HTMLSelectElement>("select")!;
-      await act(async () => {
-        select.value = "do_not_observe";
-        select.dispatchEvent(new Event("change", { bubbles: true }));
-      });
-    }
+    expect(document.querySelector(".ch-source-dialog select")).toBeNull();
+    expect(columns[0]!.textContent).toContain("未排除应用，允许所有应用");
+    expect(columns[1]!.textContent).toContain("未排除网站，允许所有网站");
     act(() => columns[0]!.querySelector<HTMLButtonElement>(".ch-source-dialog__add")!.click());
     const appInput = document.querySelector<HTMLInputElement>('[aria-label="搜索应用"]')!;
     await act(async () => {
@@ -216,10 +311,10 @@ describe("ComputerHistorySubPage", () => {
     act(() => columns[1]!.querySelector<HTMLButtonElement>(".ch-source-dialog__add-field button")!.click());
     await act(async () => document.querySelector<HTMLButtonElement>(".ch-source-dialog__continue")!.click());
     expect(client.updateComputerHistorySettings).toHaveBeenCalledWith({ observation: {
-      defaultApplicationBehavior: "do_not_observe", defaultURLBehavior: "do_not_observe",
+      defaultApplicationBehavior: "observe", defaultURLBehavior: "observe",
       rules: [
-        { scope: "app", bundleID: "com.example.Writer", behavior: "observe" },
-        { scope: "url", urlDomain: "example.com", behavior: "observe" },
+        { scope: "app", bundleID: "com.example.Writer", behavior: "do_not_observe" },
+        { scope: "url", urlDomain: "example.com", behavior: "do_not_observe" },
       ],
     } });
   });
@@ -251,7 +346,7 @@ describe("ComputerHistorySubPage", () => {
   it("opens the same scope selector from the running settings without restarting", async () => {
     const initial = snapshot({ observation: { ...snapshot().observation, state: "running" } });
     const client = await renderWith(initial);
-    expect(container.querySelector(".ch__sources-choose")?.textContent).toBe("选择");
+    expect(container.querySelector(".ch__sources-choose")?.textContent).toBe("允许所有应用");
     await act(async () => container.querySelector<HTMLButtonElement>(".ch__sources-choose")!.click());
     expect(document.querySelector(".ch-source-dialog__continue")?.textContent).toBe("保存");
     await act(async () => document.querySelector<HTMLButtonElement>(".ch-source-dialog__continue")!.click());
@@ -719,7 +814,7 @@ describe("ComputerHistorySubPage", () => {
       listComputerHistoryApplications: vi.fn().mockResolvedValue([{ bundleId: "com.example.Notes", name: "Example Notes" }]),
       updateComputerHistorySettings,
     });
-    expect(container.querySelector(".ch__sources-choose")?.textContent).toBe("选择");
+    expect(container.querySelector(".ch__sources-choose")?.textContent).toBe("允许所有应用");
     await act(async () => container.querySelector<HTMLButtonElement>(".ch__sources-choose")!.click());
     const dialog = document.querySelector<HTMLElement>(".ch-source-dialog")!;
     act(() => dialog.querySelector<HTMLButtonElement>(".ch-source-dialog__add")!.click());
@@ -744,7 +839,7 @@ describe("ComputerHistorySubPage", () => {
       rules: [{ scope: "app", bundleID: "com.example.Notes", behavior: "do_not_observe" }],
     } });
     expect(client.getApplicationIcon).toHaveBeenCalledWith("com.example.Notes");
-    expect(container.querySelector(".ch__sources-choose")?.textContent).toBe("已选中 1 项");
+    expect(container.querySelector(".ch__sources-choose")?.textContent).toBe("已排除 1 项");
   });
 
   it("finds personal WeChat by its Chinese alias without changing WeChat consent", async () => {
@@ -1421,7 +1516,7 @@ describe("ComputerHistorySubPage", () => {
 
     await act(async () => { start.reject(new Error("recorder could not start")); });
     expect(container.textContent).toContain("无法开始记录，请重试。");
-    expect(container.textContent).not.toContain("recorder could not start");
+    expect(container.textContent).toContain("recorder could not start");
     expect(recordingSwitch?.getAttribute("aria-checked")).toBe("false");
     expect(recordingSwitch?.disabled).toBe(false);
 
@@ -1630,9 +1725,20 @@ function dialogButton(label: string) {
     .find((button) => button.textContent === label);
 }
 
+function legacyScopeSettings(): ComputerHistoryObservationSettings {
+  return { memory: { syncEnabled: false }, observation: {
+    defaultApplicationBehavior: "do_not_observe", defaultURLBehavior: "do_not_observe",
+    rules: [
+      { scope: "app", bundleID: "com.example.Writer", behavior: "observe" },
+      { scope: "app", bundleID: "com.example.Private", behavior: "do_not_observe" },
+      { scope: "url", urlDomain: "private.example", behavior: "do_not_observe" },
+    ],
+  } };
+}
+
 function confirmationButton() {
   return [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')]
-    .find((button) => button.textContent === "确认开启");
+    .find((button) => button.textContent === "自定义应用" || button.textContent === "确认开启");
 }
 
 async function confirmWeChatRisk() {

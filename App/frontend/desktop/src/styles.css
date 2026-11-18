@@ -14715,30 +14715,43 @@ body.memmy-platform-windows :is(
   min-height: 0;
 }
 
-.ch-source-dialog__select-label {
-  position: relative;
-  display: flex;
-  align-items: center;
-  align-self: start;
-  margin-bottom: 12px;
-}
-
-.ch-source-dialog__select-label select {
-  appearance: none;
-  border: 0;
-  padding: 4px 24px 4px 0;
-  background: transparent;
+.ch-source-dialog__scope-label {
+  margin: 0 0 12px;
+  padding: 4px 0;
   color: var(--ch-title);
   font-size: 15px;
   font-weight: 600;
-  cursor: pointer;
 }
 
-.ch-source-dialog__select-label svg {
-  position: absolute;
-  right: 2px;
-  pointer-events: none;
+.ch-source-dialog__title {
+  margin: 0 0 8px;
+  color: var(--ch-title);
+  font-size: 20px;
+}
+
+.ch-source-dialog__description,
+.ch-source-dialog__legacy,
+.ch-source-dialog__empty {
+  margin: 0 0 16px;
   color: var(--ch-prose);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.ch-source-dialog__legacy {
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--color-canvas-oat);
+}
+
+.ch-source-dialog__empty {
+  padding: 12px;
+}
+
+.ch-source-dialog__scope-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .ch-source-dialog__list {
@@ -14955,7 +14968,8 @@ body.memmy-platform-windows :is(
   margin-top: 20px;
 }
 
-.ch-source-dialog__footer button {
+.ch-source-dialog__footer button,
+.ch-source-dialog__scope-choice button {
   min-height: 36px;
   border: 0;
   border-radius: 10px;
@@ -14964,6 +14978,10 @@ body.memmy-platform-windows :is(
   color: var(--ch-prose);
   font-size: 14px;
   cursor: pointer;
+}
+
+.ch-source-dialog__scope-choice button {
+  background: var(--color-canvas-oat);
 }
 
 .ch-source-dialog__footer .ch-source-dialog__continue {
