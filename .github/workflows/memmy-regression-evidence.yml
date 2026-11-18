@@ -1,6 +1,8 @@
 name: Memmy regression evidence
 
 on:
+  push:
+    branches: ["fix/**"]
   pull_request:
     paths:
       - ".github/workflows/memmy-regression-evidence.yml"
