@@ -1,3 +1,4 @@
+import "../../fixtures/isolated-user-home.js";
 import Database from 'better-sqlite3';
 import {afterEach,expect,it,vi} from 'vitest';
 import {existsSync,mkdirSync,writeFileSync} from 'node:fs';
