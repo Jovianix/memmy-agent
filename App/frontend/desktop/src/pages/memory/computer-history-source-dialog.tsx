@@ -1,20 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Plus, Search, X } from "lucide-react";
+import { Plus, Search, X } from "lucide-react";
 import type { ComputerHistoryObservationSettings } from "../../api/computer-history-contract.js";
 import type { MemmyAgentClient } from "../../api/memmy-agent-client.js";
 import { useTranslation } from "../../i18n/use-translation.js";
 import { AppIcon } from "./app-icon.js";
 import { APP_SEARCH_ALIASES } from "./app-search-aliases.js";
+import { hasLegacyHistoryScope, historyExclusionScope } from "./computer-history-scope.js";
 
 type Rule = ComputerHistoryObservationSettings["observation"]["rules"][number];
-type Scope = Rule["scope"];
-type Behavior = Rule["behavior"];
-
-function opposite(behavior: Behavior): Behavior {
-  return behavior === "observe" ? "do_not_observe" : "observe";
-}
-
 function ruleKey(rule: Rule): string {
   return rule.scope === "app" ? rule.bundleID : rule.urlDomain;
 }
@@ -41,6 +35,8 @@ export function ComputerHistorySourceDialog(props: {
 }) {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<ComputerHistoryObservationSettings | null>(null);
+  const [legacyScope, setLegacyScope] = useState(false);
+  const [scopeChosen, setScopeChosen] = useState(false);
   const [applications, setApplications] = useState<Array<{ bundleId: string; name: string }>>([]);
   const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const [appQuery, setAppQuery] = useState("");
@@ -58,6 +54,8 @@ export function ComputerHistorySourceDialog(props: {
     if (!props.open) return;
     let active = true;
     setSettings(null);
+    setLegacyScope(false);
+    setScopeChosen(false);
     setError(null);
     setAddingWebsite(false);
     setAppMenuOpen(false);
@@ -70,7 +68,13 @@ export function ComputerHistorySourceDialog(props: {
     dialogRef.current?.focus();
     if (props.client) {
       void props.client.getComputerHistorySettings().then((value) => {
-        if (active) setSettings(value);
+        if (!active) return;
+        const legacy = hasLegacyHistoryScope(value);
+        setLegacyScope(legacy);
+        // Starting already requires an explicit Custom choice. Editing legacy
+        // rules requires a fresh choice before showing the replacement draft.
+        setScopeChosen(!legacy || props.mode === "start");
+        setSettings(historyExclusionScope(value));
       }).catch((cause) => {
         if (active) setError(cause instanceof Error ? cause.message : String(cause));
       });
@@ -87,7 +91,7 @@ export function ComputerHistorySourceDialog(props: {
       document.body.style.overflow = overflow;
       if (previous?.isConnected) previous.focus();
     };
-  }, [props.open, props.client]);
+  }, [props.open, props.client, props.mode]);
 
   useEffect(() => {
     if (!props.open || busy) return;
@@ -159,25 +163,11 @@ export function ComputerHistorySourceDialog(props: {
   }, [availableApps, appQuery]);
   const highlightedAppIndex = Math.min(activeAppIndex, Math.max(matchingApps.length - 1, 0));
 
-  function defaultBehavior(scope: Scope): Behavior {
-    return scope === "app" ? settings!.observation.defaultApplicationBehavior : settings!.observation.defaultURLBehavior;
-  }
-
-  function setBehavior(scope: Scope, behavior: Behavior) {
-    if (!settings) return;
-    setSettings({ ...settings, observation: {
-      ...settings.observation,
-      ...(scope === "app" ? { defaultApplicationBehavior: behavior } : { defaultURLBehavior: behavior }),
-      rules: settings.observation.rules.map((rule) =>
-        rule.scope === scope ? { ...rule, behavior: opposite(behavior) } : rule),
-    } });
-  }
-
   function addApp(bundleId: string) {
     if (!settings) return;
     const value = bundleId.trim();
     if (!value) return;
-    const rule: Rule = { scope: "app", bundleID: value, behavior: opposite(defaultBehavior("app")) };
+    const rule: Rule = { scope: "app", bundleID: value, behavior: "do_not_observe" };
     setSettings({ ...settings, observation: { ...settings.observation,
       rules: [...settings.observation.rules.filter((item) => item.scope !== "app" || ruleKey(item) !== value), rule],
     } });
@@ -191,7 +181,7 @@ export function ComputerHistorySourceDialog(props: {
       setError(t("computerHistory.sources.invalidDomain"));
       return;
     }
-    const rule: Rule = { scope: "url", urlDomain: value, behavior: opposite(defaultBehavior("url")) };
+    const rule: Rule = { scope: "url", urlDomain: value, behavior: "do_not_observe" };
     setSettings({ ...settings, observation: { ...settings.observation,
       rules: [...settings.observation.rules.filter((item) => item.scope !== "url" || ruleKey(item) !== value), rule],
     } });
@@ -222,7 +212,7 @@ export function ComputerHistorySourceDialog(props: {
   }
 
   async function continueWithSources() {
-    if (!props.client || !settings || busy) return;
+    if (!props.client || !settings || !scopeChosen || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -269,21 +259,21 @@ export function ComputerHistorySourceDialog(props: {
     if (event.target === event.currentTarget && !busy) props.onCancel();
   }}>
     <section ref={dialogRef} className="ch-source-dialog" role="dialog" aria-modal="true" aria-labelledby="ch-source-dialog-title" aria-describedby="ch-source-dialog-privacy" tabIndex={-1}>
-      <h2 id="ch-source-dialog-title" className="sr-only">{t("computerHistory.sources.dialogTitle")}</h2>
+      <h2 id="ch-source-dialog-title" className="ch-source-dialog__title">{t("computerHistory.sources.dialogTitle")}</h2>
+      <p className="ch-source-dialog__description">{t("computerHistory.sources.dialogDescription")}</p>
       {!settings && !error ? <p className="ch-source-dialog__loading">{t("computerHistory.sources.loading")}</p> : null}
-      {settings ? <div className="ch-source-dialog__columns">
+      {settings && legacyScope && <p className="ch-source-dialog__legacy" role="status">{t("computerHistory.sources.legacyNotice")}</p>}
+      {settings && !scopeChosen && <div className="ch-source-dialog__scope-choice">
+        <button type="button" onClick={() => { setSettings(historyExclusionScope(settings, true)); setScopeChosen(true); }}>
+          {t("computerHistory.allowAllApps")}
+        </button>
+        <button type="button" onClick={() => setScopeChosen(true)}>{t("computerHistory.customizeApps")}</button>
+      </div>}
+      {settings && scopeChosen ? <div className="ch-source-dialog__columns">
         {(["app", "url"] as const).map((scope) => {
-          const behavior = defaultBehavior(scope);
           const rules = settings.observation.rules.filter((rule) => rule.scope === scope);
           return <div className="ch-source-dialog__column" key={scope}>
-            <label className="ch-source-dialog__select-label">
-              <select value={behavior} disabled={busy} aria-label={t(scope === "app" ? "computerHistory.sources.apps" : "computerHistory.sources.websites")}
-                onChange={(event) => setBehavior(scope, event.target.value as Behavior)}>
-                <option value="observe">{t(scope === "app" ? "computerHistory.sources.dialogExcludeApps" : "computerHistory.sources.dialogExcludeWebsites")}</option>
-                <option value="do_not_observe">{t(scope === "app" ? "computerHistory.sources.dialogIncludeApps" : "computerHistory.sources.dialogIncludeWebsites")}</option>
-              </select>
-              <ChevronDown size={16} aria-hidden="true" />
-            </label>
+            <h3 className="ch-source-dialog__scope-label">{t(scope === "app" ? "computerHistory.sources.dialogExcludeApps" : "computerHistory.sources.dialogExcludeWebsites")}</h3>
             <div className={`ch-source-dialog__list${scope === "app" ? " ch-source-dialog__list--apps" : ""}`}>
               {scope === "app" ? <button ref={addAppRef} type="button" className="ch-source-dialog__add ch-source-dialog__add--app" disabled={busy}
                 aria-expanded={appMenuOpen} aria-haspopup="listbox" aria-controls="ch-app-menu"
@@ -317,6 +307,7 @@ export function ComputerHistorySourceDialog(props: {
                 <Plus size={18} /> {t("computerHistory.sources.dialogAddWebsite")}
               </button>}
               {scope === "app" ? appMenu : null}
+              {rules.length === 0 && <p className="ch-source-dialog__empty">{t(scope === "app" ? "computerHistory.sources.noExcludedApps" : "computerHistory.sources.noExcludedWebsites")}</p>}
               <ul className="ch-source-dialog__rules">{rules.map((rule) => <li key={ruleKey(rule)}>
                 {rule.scope === "app" ? <AppIcon bundleId={rule.bundleID} client={props.client} /> : null}
                 <span>{rule.scope === "app" ? appNames.get(rule.bundleID) ?? rule.bundleID : rule.urlDomain}</span>
@@ -333,7 +324,7 @@ export function ComputerHistorySourceDialog(props: {
       {error ? <p className="ch-source-dialog__error" role="alert">{error}</p> : null}
       <div className="ch-source-dialog__footer">
         <button type="button" disabled={busy} onClick={props.onCancel}>{t("dialog.cancel")}</button>
-        <button type="button" disabled={!settings || busy} className="ch-source-dialog__continue" onClick={() => void continueWithSources()}>
+        <button type="button" disabled={!settings || !scopeChosen || busy} className="ch-source-dialog__continue" onClick={() => void continueWithSources()}>
           {t(props.mode === "start" ? "computerHistory.sources.continue" : "computerHistory.sources.save")}
         </button>
       </div>

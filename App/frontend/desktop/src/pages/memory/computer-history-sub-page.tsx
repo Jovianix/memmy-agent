@@ -30,6 +30,7 @@ import { weChatConnectionError } from "./computer-history-wechat-error.js";
 import { ComputerHistorySources } from "./computer-history-sources.js";
 import { ComputerHistoryBrowserEnhancement } from "./computer-history-browser-enhancement.js";
 import { ComputerHistorySourceDialog } from "./computer-history-source-dialog.js";
+import { historyExclusionScope } from "./computer-history-scope.js";
 import {
   consumeComputerHistoryLaunchEnable,
   hasComputerHistoryLaunchEnable,
@@ -402,7 +403,7 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
       if (version !== requestVersion.current) return;
       // A genuine start failure must not leave a permission setup intent.
       if (!permissionSetupActive.current) saveHistoryPermissionSetup(null);
-      setError(failureMessage ?? errorMessage(cause));
+      setError(failureMessage ? `${failureMessage} ${errorMessage(cause)}` : errorMessage(cause));
     } finally {
       if (version === requestVersion.current) {
         actionPending.current = false;
@@ -896,6 +897,19 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
         open={pendingRecordingAction !== null}
         windows={windows}
         onCancel={() => setPendingRecordingAction(null)}
+        onAllowAll={!windows && pendingRecordingAction === "start" ? () => {
+          setPendingRecordingAction(null);
+          saveHistoryPermissionSetup("start");
+          void runAction(async (client) => {
+            const version = requestVersion.current;
+            const settings = await client.getComputerHistorySettings();
+            if (version !== requestVersion.current) throw new Error("History scope selection cancelled");
+            await client.updateComputerHistorySettings(historyExclusionScope(settings, true));
+            if (version !== requestVersion.current) throw new Error("History scope selection cancelled");
+            setSourcesRevision((revision) => revision + 1);
+            return client.startComputerHistoryObservation();
+          }, t("computerHistory.recordingStartFailed"));
+        } : undefined}
         onConfirm={() => {
           const action = pendingRecordingAction;
           setPendingRecordingAction(null);
