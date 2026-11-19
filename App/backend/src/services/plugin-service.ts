@@ -403,7 +403,6 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
                   });
                   updated = options.repository.setApprovedPermissions(id, approvedPermissions);
                   if (previous.state === "active" && !pendingApproval) {
-                    updated = options.repository.setState(id, "enabling");
                     await activateContributions(updated, secrets);
                     updated = options.repository.setState(id, "active");
                   }
@@ -423,7 +422,6 @@ export function createPluginService(options: CreatePluginServiceOptions): Plugin
                   let rollbackError: unknown;
                   if (previous.state === "active") {
                     try {
-                      restored = options.repository.setState(id, "enabling");
                       await activateContributions(restored, readSecrets(restored, options.secretStore));
                       options.repository.setState(id, "active");
                     } catch (restoreError) {
