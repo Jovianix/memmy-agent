@@ -395,6 +395,36 @@ describe("recorder transition ordering", () => {
 });
 
 describe("aligned recording windows", () => {
+  it("keeps the Mac recorder on the current file when the rotation timer fires early", async () => {
+    vi.setSystemTime(new Date("2026-09-13T00:09:59.000Z"));
+    const { segmentId } = service.startObservation().observation;
+    const staging = path.join(root, "histories", `${segmentId}-10min-summary.md.staging`);
+    fs.writeFileSync(staging, "pending summary");
+    const child = state.children[0]!;
+    child.stdout.write(CONTINUOUS_RECORDER_CAPABILITY + "\n");
+    const targets: string[] = [];
+    child.stdin.on("data", (chunk: Buffer) => {
+      const { id, eventsFile } = JSON.parse(chunk.toString());
+      targets.push(eventsFile);
+      const complete = path.basename(path.dirname(eventsFile)) !== segmentId;
+      child.stdout.write(`[recorder-rotation] ${JSON.stringify({ id, complete })}\n`);
+    });
+
+    // The timer still expires in one second, but the wall clock is now 1 ms behind.
+    vi.setSystemTime(new Date("2026-09-13T00:09:58.999Z"));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(targets).toEqual([]);
+    expect(fs.existsSync(staging)).toBe(true);
+    expect(service.snapshot().observation).toMatchObject({ state: "running", segmentId });
+
+    await vi.advanceTimersByTimeAsync(1);
+    const nextId = "2026-09-13T00-10-00Z";
+    expect(targets).toEqual([path.join(root, "recordings", "segments", nextId, "events.jsonl")]);
+    expect(service.snapshot().observation).toMatchObject({ state: "running", segmentId: nextId });
+    expect(state.children).toEqual([child]);
+    expect(child.signals).toEqual([]);
+  });
+
   it("rotates at the next ten-minute boundary even when started just before it", async () => {
     vi.setSystemTime(new Date("2026-09-12T21:59:00Z"));
     service.startObservation();

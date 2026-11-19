@@ -1774,8 +1774,7 @@ export class ComputerHistoryDemoService {
     return alignedId(at, SEGMENT_DURATION_MS);
   }
 
-  private openSegment(): SegmentState {
-    const now = new Date();
+  private openSegment(now = new Date()): SegmentState {
     const id = this.segmentId(now);
     const directory = path.join(this.segmentsDirectory, id);
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -2179,9 +2178,9 @@ export class ComputerHistoryDemoService {
     this.rotationTimer = null;
   }
 
-  private startRotationTimer(): void {
+  private startRotationTimer(now = Date.now()): void {
     this.clearRotationTimer();
-    const delay = SEGMENT_DURATION_MS - Date.now() % SEGMENT_DURATION_MS;
+    const delay = SEGMENT_DURATION_MS - now % SEGMENT_DURATION_MS;
     this.rotationTimer = setTimeout(() => {
       this.rotationTimer = null;
       if (this.observationState !== "running") return;
@@ -2560,10 +2559,16 @@ export class ComputerHistoryDemoService {
   private rotateSegment(): void {
     const previous = this.segment;
     if (!previous || this.recorderTransition || this.shuttingDown) return;
+    const now = new Date();
+    // A timer can expire before the wall clock reaches the next recording window.
+    if (this.segmentId(now) <= previous.id) {
+      this.startRotationTimer(now.getTime());
+      return;
+    }
     void this.trackRecorderTransition(async () => {
       if (previous.child && (this.platformDriver?.rotate || this.continuousRecorderChildren.has(previous.child))) {
         const child = previous.child;
-        const next = this.openSegment();
+        const next = this.openSegment(now);
         next.recorderStartedAtByte = fs.existsSync(next.eventsFile) ? fs.statSync(next.eventsFile).size : 0;
         const launch = { title: `Computer History ${next.id}`, eventsFile: next.eventsFile,
           observationSettingsFile: this.observationSettings.filePath, weChatConsentFile: this.weChatConsent.filePath };
