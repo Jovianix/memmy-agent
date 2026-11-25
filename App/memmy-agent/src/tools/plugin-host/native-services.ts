@@ -1,4 +1,4 @@
-/** Shared History and browser event capture for conversation plugins. */
+/** Shared Computer History event capture for conversation plugins. */
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
@@ -8,9 +8,6 @@ import { PluginEventSessions } from "./event-sessions.js";
 import type { EventCaptureSource } from "../computer-history/core/event-capture-source.js";
 import { PLUGIN_HOST_CAPABILITIES } from "@memmy/local-api-contracts";
 import { isMacNativeRuntimeSupported } from "../computer-use/mac-native-runtime-support.js";
-import { createBrowserCaptureProvider, type BrowserCaptureProvider } from "../computer-history/browser-event-capture.js";
-import { externalBrowserBridge } from "../../core/agent-runtime/tools/external-browser-bridge.js";
-import { launchTeachingBrowser } from "../computer-history/browser-capture-launch.js";
 
 const Request = z.object({ pluginId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/),
   service: z.enum(["event-sessions", "release"]), input: z.record(z.string(), z.unknown()).default({}) });
@@ -18,7 +15,6 @@ export function createNativePluginServices(options: {
   dataRoot?: string; platform?: NodeJS.Platform; osRelease?: string;
   now?: () => number; leaseTimeoutMs?: number;
   history?: EventCaptureSource; skillCreatorFile?: string; toolNames?: () => string[];
-  browser?: BrowserCaptureProvider;
   skills?: () => Array<{ name: string; path: string }>;
 } = {}) {
   let events: PluginEventSessions | undefined;
@@ -51,9 +47,7 @@ export function createNativePluginServices(options: {
       }
       const conversationId = z.string().trim().min(1).max(500).parse(input.conversationId).replace(/^websocket:/, "");
       if (!events) {
-        events = new PluginEventSessions({ dataRoot: options.dataRoot ?? path.join(os.homedir(), ".memmy", "plugin-data"), source,
-          browser: options.browser ?? createBrowserCaptureProvider(externalBrowserBridge, { platform: options.platform,
-            launch: browser => launchTeachingBrowser(browser, options.platform) }) });
+        events = new PluginEventSessions({ dataRoot: options.dataRoot ?? path.join(os.homedir(), ".memmy", "plugin-data"), source });
       }
       return events.invoke(pluginId, conversationId, input);
     }

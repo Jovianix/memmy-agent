@@ -1,4 +1,4 @@
-import type { CaptureIntegrity, EventCaptureSession } from "@memmy/local-api-contracts";
+import type { EventCaptureSession } from "@memmy/local-api-contracts";
 import type { HistoryPermissions } from "./platform-driver.js";
 
 /** The recorder remains owned by Computer History; consumers own subscriptions. */
@@ -12,7 +12,6 @@ export interface CaptureCheckpoint {
   rangeEvaluated?: boolean;
   /** The ordered boundary reached durable storage, independently of interval health. */
   boundaryConfirmed?: boolean;
-  captureIntegrity?: CaptureIntegrity;
   /** Failure of this collector run, retained after its process has been cleaned up. */
   failure?: EventCaptureStartError;
   limitations: string[];

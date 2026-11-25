@@ -52,12 +52,12 @@ jobs:
       - name: macOS normalization and durable boundary pipeline
         working-directory: App/memmy-agent
         run: npx vitest run tests/tools/computer-history/mac/record-human-history-checkpoints.test.ts tests/tools/computer-history/mac/computer-history-transitions.test.ts tests/tools/computer-history/mac/recorder-health-forwarding.test.ts
-      - name: Teaching window capture and extension connection identity
+      - name: Extension connection identity
         working-directory: App/memmy-agent
-        run: npx vitest run tests/tools/computer-history/browser-event-capture.test.ts tests/core/agent-runtime/tools/external-browser-bridge.test.ts
-      - name: Browser extension teaching isolation
+        run: npx vitest run tests/core/agent-runtime/tools/external-browser-bridge.test.ts
+      - name: Browser extension packaging
         working-directory: App/shell/desktop
-        run: npx vitest run tests/teaching-browser-recorder.test.ts tests/external-browser-extension-packaging.test.ts
+        run: npx vitest run tests/external-browser-extension-packaging.test.ts
       - name: Deferred Gateway startup and plugin readiness
         working-directory: App/shell/desktop
         run: npx vitest run tests/runtime-services.test.ts

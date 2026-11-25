@@ -1,6 +1,5 @@
 /* global chrome */
 "use strict";
-if (typeof importScripts === "function") importScripts("teaching-recorder.js");
 
 // After installation the extension connects to Memmy and operates ordinary
 // http(s) pages. Internal browser pages stay out of reach. Keep BRIDGE_PORTS
@@ -9,7 +8,7 @@ const BRIDGE_PORTS = [47321, 47322, 47323];
 // Memmy updates replace these files in place, but Chrome keeps running the worker script it
 // registered at install, even across browser restarts, until the extension reloads.
 // Must equal "version" in manifest.json.
-const EXTENSION_VERSION = "1.2.2";
+const EXTENSION_VERSION = "1.2.3";
 // Chrome stops an idle MV3 worker about 30 seconds after Memmy goes away, which ends
 // the setTimeout retries. The alarm wakes the worker so it reconnects once Memmy is back.
 const RECONNECT_ALARM = "memmy-reconnect";
@@ -35,7 +34,7 @@ const USER_CANCEL_COOLDOWN_MS = 10_000;
 const USER_CANCELLED_REASON = "你关闭了浏览器顶部的“Memmy 已开始调试此浏览器”提示，Memmy 已停止操作这个网页。需要继续时，在 Memmy 里重新发起请求，或点击浏览器工具栏中的 Memmy 图标选择“重新连接”。";
 const COMMANDS_WITHOUT_DEBUGGER = new Set(["allowOrigin", "tabState", "open", "activate", "playwrightEnd"]);
 // Reported in the handshake so Memmy can tell an outdated installed copy from a slow one.
-const EXTENSION_CAPABILITIES = ["openTab", "playwright", "browserHistory", ...(typeof createMemmyTeachingRecorder === "function" ? ["teachingCapture/v2"] : [])];
+const EXTENSION_CAPABILITIES = ["openTab", "playwright", "browserHistory"];
 const OPEN_TAB_READY_MS = 10_000;
 // Chrome's openerTabId names the tab that was active, not a background tab whose
 // link opened the new tab. A Page.windowOpen is paired with a tab created within
@@ -177,29 +176,6 @@ function recordHistoryInput(tabId, commandId) {
   if (historyInputEvidence.size >= 128 && !historyInputEvidence.has(tabId)) historyInputEvidence.delete(historyInputEvidence.keys().next().value);
   historyInputEvidence.set(tabId, { commandId, at: Date.now() });
 }
-const teachingRecorder = typeof createMemmyTeachingRecorder === "function" ? createMemmyTeachingRecorder({
-  send,
-  protected: tabId => protectedCredentialTabs.has(tabId) || claims.get(tabId)?.credentialProtected === true,
-  command,
-  async attach(tabId) {
-    clearIdleDetach(tabId);
-    const tab = await chrome.tabs.get(tabId);
-    if (/^https?:/.test(tab.url || "")) { await discoverTab(tabId); await ensureAttached(tabId); }
-    else await chrome.debugger.attach({ tabId }, "1.3");
-  },
-  async detach(tabId) {
-    if (tabCommandCounts.get(tabId)) { scheduleIdleDetach(tabId); return; }
-    const claim = claims.get(tabId); if (claim) markDebuggerDetached(claim);
-    await chrome.debugger.detach({ tabId });
-  },
-}) : null;
-chrome.runtime.onConnect?.addListener(port => {
-  if (port.name === "memmy-teaching/v2") {
-    if (teachingRecorder) void teachingRecorder.connectPage(port);
-    else port.disconnect();
-  }
-});
-
 function pageOrigin(url) {
   const parsed = new URL(url);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("This page cannot be connected");
@@ -333,7 +309,6 @@ async function connect() {
 
 function connectPort(port) {
   if (socket) {
-    teachingRecorder?.disconnect();
     const previous = socket;
     socket = null;
     ready = null;
@@ -390,9 +365,6 @@ function connectPort(port) {
         resolve();
       } else if (browserHistory?.receive(message)) {
         // History configuration is metadata-only and never attaches a debugger.
-      } else if (message.type === "teaching_command" && teachingRecorder && typeof message.id === "string") {
-        void teachingRecorder.handle(message).then(result => send({ type: "response", id: message.id, ok: true, result }),
-          error => send({ type: "response", id: message.id, ok: false, error: String(error?.message || error) }));
       } else if (message.type === "command") {
         void handleCommand(message);
       } else if (message.type === "refresh_tabs" && typeof message.id === "string") {
@@ -415,7 +387,6 @@ function connectPort(port) {
         historyInputEvidence.clear();
         clearTimeout(socketHealth?.probeTimer);
         socketHealth = null;
-        teachingRecorder?.disconnect();
         socket = null;
         ready = null;
         for (const tabId of [...claims.keys()]) void unclaim(tabId, false);
@@ -801,7 +772,7 @@ function scheduleIdleDetach(tabId) {
     idleDetachTimers.delete(tabId);
     void queueDebuggerTask(tabId, async () => {
       const current = claims.get(tabId);
-      if (!current?.attached || tabCommandCounts.get(tabId) || teachingRecorder?.owns(tabId)) return;
+      if (!current?.attached || tabCommandCounts.get(tabId)) return;
       markDebuggerDetached(current);
       await chrome.debugger.detach({ tabId }).catch(() => undefined);
     });
@@ -2052,8 +2023,6 @@ async function navigate(tabId, url) {
 
 // The tab opens in the background beside its source page, so the user's current tab stays in front.
 async function openTab(url, sourceTabId) {
-  if (teachingRecorder?.owns(sourceTabId)) throw Error("End the teaching recording before operating its pages.");
-  if (teachingRecorder?.active() && !Number.isSafeInteger(sourceTabId)) throw Error("Select a non-teaching source tab before opening a page while teaching is recording.");
   const target = new URL(String(url));
   if (!["http:", "https:"].includes(target.protocol)) throw new Error("Only HTTP and HTTPS pages are supported");
   const source = Number.isSafeInteger(sourceTabId) && claims.has(sourceTabId)
@@ -2471,7 +2440,6 @@ async function handleCommand(message) {
   clearIdleDetach(tabId);
   tabCommandCounts.set(tabId, (tabCommandCounts.get(tabId) || 0) + 1);
   try {
-    if (teachingRecorder?.owns(tabId)) throw Error("This page is being demonstrated by the user. End teaching recording before running browser commands.");
     if (!COMMANDS_WITHOUT_DEBUGGER.has(message.command)) await ensureAttached(tabId);
     const result = await run(tabId, message.command, message.args || {}, message.id);
     send({ type: "response", id: message.id, ok: true, result });

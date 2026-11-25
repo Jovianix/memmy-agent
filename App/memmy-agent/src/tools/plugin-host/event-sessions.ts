@@ -4,10 +4,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { EventCaptureSessionSchema, type EventCaptureSession } from "@memmy/local-api-contracts";
 import { EventCaptureStartError, type EventCaptureSource, type EventCaptureSubscription, type CaptureCheckpoint } from "../computer-history/core/event-capture-source.js";
 import { writeJsonAtomic } from "../../utils/atomic-json.js";
-import { BrowserCaptureRequestSchema, type BrowserCaptureProvider, type BrowserCaptureRequest } from "../computer-history/browser-event-capture.js";
 
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const controls = /^recording_(?:started|stopped|paused|resumed|checkpoint|gap)$/;
+const retiredWindowMessage = "Teaching-window recording has been retired. Update Teach Mode and confirm the Computer History capture scope before starting.";
 const maxBytes = 64 * 1024 * 1024;
 type Active = { session: EventCaptureSession; subscription: EventCaptureSubscription;
   positions: Map<string, number>; skipLeading: Set<string>; fd: number; bytes: number;
@@ -22,7 +22,7 @@ export class PluginEventSessions {
   private polling: Promise<void> | null = null;
   private readonly timer: ReturnType<typeof setInterval>;
   private closing = false;
-  constructor(private readonly options: { dataRoot: string; source: EventCaptureSource; browser?: BrowserCaptureProvider; now?: () => number }) {
+  constructor(private readonly options: { dataRoot: string; source: EventCaptureSource; now?: () => number }) {
     fs.mkdirSync(options.dataRoot, { recursive: true });
     // A Host crash never resumes acquisition. Keep the partial evidence.
     for (const owner of fs.readdirSync(options.dataRoot, { withFileTypes: true })) {
@@ -88,34 +88,29 @@ export class PluginEventSessions {
       try { const session = this.read(owner, id); return session.conversationId === conversationId ? [session] : []; } catch { return []; }
     }).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   }
-  start(owner: string, conversationId: string, goal: string, consent: boolean, browser?: BrowserCaptureRequest) {
+  start(owner: string, conversationId: string, goal: string, consent: boolean, legacyWindowScope?: unknown) {
+    if (legacyWindowScope !== undefined) return Promise.reject(new Error(retiredWindowMessage));
     return this.serial(async () => {
       if (this.closing) throw new Error("capture_shutting_down");
       if (consent !== true || !goal.trim() || goal.length > 2_000) throw new Error("capture_goal_and_consent_required");
       const duplicate = [...this.active.values(), ...this.starting.values()].find(a => a.session.pluginId === owner && a.session.conversationId === conversationId);
       if (duplicate) return structuredClone(duplicate.session);
-      if (browser) BrowserCaptureRequestSchema.parse(browser);
-      let subscription: (EventCaptureSubscription & { browserCapture?: EventCaptureSession["browserCapture"] }) | undefined;
+      let subscription: EventCaptureSubscription | undefined;
       let fd: number | undefined;
       let session: EventCaptureSession | undefined;
       const controller = new AbortController();
       try {
         session = { schemaVersion: 1, id: randomUUID(), pluginId: owner, conversationId,
           goal: goal.trim(), state: "starting", startedAt: this.now(), endedAt: null, eventCount: 0, eventTypes: {}, applications: [],
-          availability: "pending", eventsSha256: null, limitations: [], error: null, ranges: [],
-          ...(browser ? { browserCapture: { browser: browser.name, scope: "teaching-window-and-popups" as const } } : {}) };
+          availability: "pending", eventsSha256: null, limitations: [], error: null, ranges: [] };
         fs.mkdirSync(this.folder(owner, session.id), { recursive: true, mode: 0o700 });
         this.starting.set(session.id, { session, controller }); this.save(session);
-        if (browser && !this.options.browser) throw new Error("browser_capture_unavailable: update the desktop Host");
-        subscription = browser ? await this.options.browser!.acquire({ sessionId: session.id, directory: this.folder(owner, session.id), request: browser, signal: controller.signal })
-          : await this.options.source.acquireEventCapture(controller.signal);
+        subscription = await this.options.source.acquireEventCapture(controller.signal);
         controller.signal.throwIfAborted();
         const initial = await subscription.checkpoint({ from: this.now() });
         controller.signal.throwIfAborted();
         if (!initial.running) throw initial.failure ?? new Error("capture_not_running");
         session.state = "recording"; session.startedAt = this.now();
-        session.captureIntegrity = initial.captureIntegrity;
-        session.browserCapture = subscription.browserCapture;
         session.availability = !initial.rangeEvaluated && initial.complete === false ? "partial" : "pending";
         session.limitations = initial.rangeEvaluated ? initial.limitations.filter(value => !/coverage is incomplete|observer is still starting|checkpoint could not be confirmed/i.test(value)) : initial.limitations;
         fd = fs.openSync(path.join(this.folder(owner, session.id), "events.jsonl"), "wx", 0o600);
@@ -157,7 +152,6 @@ export class PluginEventSessions {
   private async collect(active: Active, checkpoint?: CaptureCheckpoint) {
     const point = checkpoint ?? await active.subscription.checkpoint({ from: active.session.startedAt,
       ...(active.session.endedAt ? { through: active.session.endedAt } : {}) });
-    if (point.captureIntegrity) active.session.captureIntegrity = structuredClone(point.captureIntegrity);
     active.session.limitations = [...new Set([...active.session.limitations, ...point.limitations])];
     if (point.complete === false) active.session.availability = "partial";
     const start = Date.parse(active.session.startedAt), end = Date.parse(active.session.endedAt ?? this.now());
@@ -239,13 +233,10 @@ export class PluginEventSessions {
       if (!this.active.has(id)) return this.read(owner, id);
       try {
         const point = await active.subscription.checkpoint({ from: active.session.startedAt, through: active.session.endedAt! });
-        if (point.captureIntegrity) active.session.captureIntegrity = structuredClone(point.captureIntegrity);
         active.session.limitations = [...new Set([...active.session.limitations, ...point.limitations])];
         if (point.complete !== true) {
           active.session.availability = "partial";
-          const limitation = point.captureIntegrity
-            ? point.boundaryConfirmed ? "Browser recording was saved with coverage gaps." : "Browser recording end boundary could not be confirmed."
-            : point.boundaryConfirmed ? "Capture coverage is incomplete for this fragment." : "Native-to-disk completion was not confirmed.";
+          const limitation = point.boundaryConfirmed ? "Capture coverage is incomplete for this fragment." : "Native-to-disk completion was not confirmed.";
           if (!active.session.limitations.includes(limitation)) active.session.limitations.push(limitation);
         }
         await this.collect(active, point);
@@ -253,7 +244,6 @@ export class PluginEventSessions {
         fs.fsyncSync(active.fd); fs.closeSync(active.fd); active.fd = -1;
         active.session.eventsSha256 = this.evidenceHash(active.session);
         active.session.state = cancel ? "cancelled" : "ready";
-        if (active.session.captureIntegrity) active.session.captureIntegrity.snapshotSaved = true;
         if (active.session.availability !== "partial") active.session.availability = active.session.eventCount ? "available" : "empty";
         this.save(active.session); return structuredClone(active.session);
       } catch (error) { await this.fail(active, error); return this.read(owner, id); }
@@ -288,12 +278,8 @@ export class PluginEventSessions {
     return { session, events, nextOffset };
   }
   async invoke(owner: string, conversationId: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (input.action === "browser-options") {
-      if (!this.options.browser) throw new Error("browser_capture_unavailable: update the desktop Host");
-      return this.options.browser.profiles() as Record<string, unknown>;
-    }
-    if (input.action === "start") return this.start(owner, conversationId, String(input.goal ?? ""), input.consent === true,
-      input.browser === undefined ? undefined : BrowserCaptureRequestSchema.parse(input.browser));
+    if (input.action === "browser-options") throw new Error(retiredWindowMessage);
+    if (input.action === "start") return this.start(owner, conversationId, String(input.goal ?? ""), input.consent === true, input.browser);
     if (input.action === "status" || input.action === "list") return { sessions: this.list(owner, conversationId) };
     if (typeof input.session_id !== "string") throw new Error("capture_session_id_required");
     if (input.action === "stop" || input.action === "cancel") return this.stop(owner, conversationId, input.session_id, input.action === "cancel");
@@ -302,7 +288,6 @@ export class PluginEventSessions {
   }
   private async fail(active: Active, error: unknown) {
     active.session.state = "failed"; active.session.availability = "partial"; active.session.endedAt ??= this.now();
-    if (active.session.captureIntegrity) active.session.captureIntegrity.snapshotSaved = false;
     active.session.error = error instanceof Error ? error.message : "capture_failed";
     this.failed.set(active.session.id, structuredClone(active.session));
     this.active.delete(active.session.id);

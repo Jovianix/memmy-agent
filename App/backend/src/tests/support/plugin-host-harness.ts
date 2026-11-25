@@ -12,7 +12,6 @@ import { createMockMemoryClient } from "./mock-memory-client.js";
 import { createNativePluginServices } from "../../../../memmy-agent/src/tools/plugin-host/native-services.js";
 import { SkillsLoader } from "../../../../memmy-agent/src/core/agent-runtime/skills.js";
 import type { EventCaptureSource } from "../../../../memmy-agent/src/tools/computer-history/core/event-capture-source.js";
-import type { BrowserCaptureProvider } from "../../../../memmy-agent/src/tools/computer-history/browser-event-capture.js";
 
 export { MEMMY_VERSION } from "../../project-version.js";
 export { PLUGIN_HOST_CAPABILITIES } from "../../services/plugin-host-capabilities.js";
@@ -22,7 +21,7 @@ export function createPluginHostHarness(options: {
   root: string; registryUrl: string; platform?: NodeJS.Platform;
   /** Source checks can use repository skills without building a Host kit. */
   skillsRoot?: string;
-  source: EventCaptureSource; availableTools?: string[]; browser?: BrowserCaptureProvider;
+  source: EventCaptureSource; availableTools?: string[];
 }) {
   const assetRoot = path.dirname(fileURLToPath(import.meta.url));
   const skillsRoot = options.skillsRoot ?? path.join(assetRoot, "skills");
@@ -36,7 +35,7 @@ export function createPluginHostHarness(options: {
     { pluginDataRoot: path.join(options.root, "plugin-data"), pluginSkillsRoot: path.join(options.root, "plugin-skills"), includePlugins: true });
   loader.availableTools = () => options.availableTools ?? ["read_file", "write_file"];
   const native = createNativePluginServices({ dataRoot: path.join(options.root, "plugin-data"),
-    platform: options.platform ?? process.platform, history: options.source, browser: options.browser,
+    platform: options.platform ?? process.platform, history: options.source,
     // A cross-platform fixture controls the OS version as well as its event source.
     ...(options.platform === "darwin" && process.platform !== "darwin" ? { osRelease: "23.0.0" } : {}),
     toolNames: loader.availableTools, skills: () => loader.listSkills(false).map(({ name, path }) => ({ name, path })),
