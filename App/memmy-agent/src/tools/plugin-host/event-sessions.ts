@@ -94,7 +94,7 @@ export class PluginEventSessions {
       try { const session = this.read(owner, id); return session.conversationId === conversationId ? [session] : []; } catch { return []; }
     }).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   }
-  start(owner: string, conversationId: string, goal: string, consent: boolean, legacyWindowScope?: unknown, demonstration = false) {
+  start(owner: string, conversationId: string, goal: string, consent: boolean, legacyWindowScope?: unknown, demonstration = false, includeMemmyApp = false) {
     if (legacyWindowScope !== undefined) return Promise.reject(new Error(retiredWindowMessage));
     return this.serial(async () => {
       if (this.closing) throw new Error("capture_shutting_down");
@@ -108,6 +108,7 @@ export class PluginEventSessions {
       const controller = new AbortController();
       try {
         session = { schemaVersion: 1, id: randomUUID(), pluginId: owner, conversationId,
+          ...(demonstration && { includeMemmyApp }),
           goal: goal.trim(), state: "starting", startedAt: this.now(), endedAt: null, eventCount: 0, eventTypes: {}, applications: [],
           availability: "pending", eventsSha256: null, limitations: [], error: null, ranges: [] };
         fs.mkdirSync(this.folder(owner, session.id), { recursive: true, mode: 0o700 });
@@ -287,7 +288,7 @@ export class PluginEventSessions {
   }
   async invoke(owner: string, conversationId: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (input.action === "browser-options") throw new Error(retiredWindowMessage);
-    if (input.action === "start") return this.start(owner, conversationId, String(input.goal ?? ""), input.consent === true, input.browser, input.recordingControls === "record-and-replay");
+    if (input.action === "start") return this.start(owner, conversationId, String(input.goal ?? ""), input.consent === true, input.browser, input.recordingControls === "record-and-replay", input.includeMemmyApp === true);
     if (input.action === "status" || input.action === "list") return { sessions: this.list(owner, conversationId) };
     if (typeof input.session_id !== "string") throw new Error("capture_session_id_required");
     if (input.action === "stop" || input.action === "cancel") return this.stop(owner, conversationId, input.session_id, input.action === "cancel");

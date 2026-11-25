@@ -41,6 +41,7 @@ export function recorderFailureMessage(error: unknown): string {
 type HelperEvent = Record<string, any>;
 
 interface Application {
+  memmyWindow?: boolean;
   name?: string;
   bundleId?: string;
 }
@@ -180,6 +181,12 @@ export function appFrom(event: HelperEvent | undefined): Application {
   const application: Application = {};
   if (typeof app.name === "string") application.name = app.name;
   if (typeof app.bundleIdentifier === "string") application.bundleId = app.bundleIdentifier;
+  // In development several apps share Electron's identity. Preserve the result
+  // of the foreground-window check even on clicks/keystrokes that have no AX tree.
+  if (["com.github.electron", "win32.electron"].includes(application.bundleId?.toLowerCase() ?? "")
+    && typeof event?.window?.title === "string" && event.window.title) {
+    application.memmyWindow = event.window.title === "Memmy";
+  }
   return application;
 }
 
@@ -814,7 +821,8 @@ export async function run(
       const inputContext = searchInputContextFromAccessibility(event.keyboard?.target);
       event = { ...event, inputContext };
       const previous = pendingKeys.at(-1);
-      if (previous && (appFrom(previous).bundleId !== application.bundleId
+      const previousApp = previous && appFrom(previous);
+      if (previous && (previousApp?.bundleId !== application.bundleId || previousApp?.memmyWindow !== application.memmyWindow
         || JSON.stringify(previous.inputContext) !== JSON.stringify(inputContext)
         || JSON.stringify(observationSubject(previous)) !== JSON.stringify(subjects[0]))) {
         await flushKeys();
