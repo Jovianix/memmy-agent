@@ -35,7 +35,9 @@ export function createPluginNativeHostServices(options: {
         ...(options.legacyDataRoot ? { legacyDataDirectory: join(options.legacyDataRoot, call.pluginId) } : {}), config: installed.config, language: options.language?.() ?? "en-US",
         tools: Object.fromEntries(installed.manifest.capabilities.map(c => [c.id, `mcp_plugins_${capabilityToolName(installed.id, c.id)}`])) };
       if (call.service === "skills") {
-        if (input.action === "publish") await generated.publish(call.pluginId, input.skill);
+        if (input.action === "published" && typeof input.name === "string") return await generated.published?.(call.pluginId, input.name) ?? null;
+        if (input.action === "publish" && (input.expectedSha256 === null || typeof input.expectedSha256 === "string")) await generated.publish(call.pluginId, input.skill, input.expectedSha256);
+        else if (input.action === "publish") await generated.publish(call.pluginId, input.skill);
         else if (input.action === "remove" && typeof input.name === "string") await generated.remove(call.pluginId, input.name);
         else throw new Error("Unknown generated skill operation");
         return { ok: true };

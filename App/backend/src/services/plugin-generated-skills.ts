@@ -10,7 +10,8 @@ const Entry = z.object({ name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
   checks: z.record(z.string(), z.string().regex(/^[a-f0-9]{64}$/)).optional() });
 type Entry = z.infer<typeof Entry>;
 export interface GeneratedPluginSkills {
-  publish(pluginId: string, input: unknown): Promise<void>;
+  published?(pluginId: string, name: string): Promise<{ directory: string; sha256: string } | null>;
+  publish(pluginId: string, input: unknown, expectedSha256?: string | null): Promise<void>;
   assertStaticNames(pluginId: string, names: readonly string[]): Promise<void>;
   remove(pluginId: string, name: string): Promise<void>;
   activate(pluginId: string): Promise<void>;
@@ -41,7 +42,13 @@ export function createGeneratedPluginSkills(dataRoot: string, indexPath: string,
         throw new Error("Static skill name conflicts with a retained generated skill");
       }
     }),
-    publish: (id, raw) => serial(async () => {
+    published: (id, name) => serial(async () => {
+      const all = entries.get(id) ?? z.array(Entry).parse(await readJson(file(id), []));
+      const entry = all.find(item => item.name === name);
+      const sha256 = entry?.files["SKILL.md"];
+      return entry && sha256 ? { directory: entry.directory, sha256 } : null;
+    }),
+    publish: (id, raw, expectedSha256) => serial(async () => {
       const entry = Entry.parse(raw), root = await realpath(join(dataRoot, id));
       await assertWorkspaceName(entry.name);
       entry.directory = await realpath(entry.directory);
@@ -56,6 +63,11 @@ export function createGeneratedPluginSkills(dataRoot: string, indexPath: string,
         if (createHash("sha256").update(await readFile(target)).digest("hex") !== hash) throw new Error("Generated skill hash mismatch");
       }
       const all = entries.get(id) ?? z.array(Entry).parse(await readJson(file(id), []));
+      const previous = all.find(item => item.name === entry.name);
+      if (expectedSha256 !== undefined && (previous?.files["SKILL.md"] ?? null) !== expectedSha256
+        && !(previous?.directory === entry.directory && previous.files["SKILL.md"] === entry.files["SKILL.md"])) {
+        throw new Error("The published skill changed. Prepare the current revision before refining it.");
+      }
       if ([...active].some(owner => owner !== id && entries.get(owner)?.some(other => other.name === entry.name))) throw new Error("Generated skill name is already used by another active plugin");
       for (const [name, hash] of Object.entries(entry.checks ?? {})) {
         const target = resolve(root, name); descendant(root, target);
