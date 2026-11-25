@@ -1168,6 +1168,15 @@ export function HomePage() {
     return flight;
   }, [chatScopeKey, connection, dispatch, ensureChatSubscription, resolvedConversationModel.candidateId,
     resolvedConversationModel.unavailable, state.agent, taskStateCoordinator, threadPanel.promoteScope, draftTarget]);
+  function sendPluginMessage(text: string, displayContent?: string) {
+    return submitAgentComposerMessage({
+      chatId: state.agent.currentChatId, target: state.agent.currentChatId ? null : draftTarget,
+      connection, ensureChatSubscription, content: text, displayContent, pendingAttachments: [], language,
+      dispatch, track, uploadAgentMedia: (files) => clients!.memmyAgent.uploadAgentMedia(files), clearComposer: () => {},
+      setCreatingChat: setIsCreatingChat, modelPreset: resolvedConversationModel.candidateId ?? undefined,
+      chatSelectionEpoch: state.agent.chatSelectionEpoch, getChatSelectionEpoch: () => chatSelectionEpochRef.current,
+    });
+  }
   const features = useConversationFeatures({
     scopeKey: chatScopeKey, sharedRowWidth: workspaceRowWidth,
     agentMessages: state.agent.messages,
@@ -1187,13 +1196,7 @@ export function HomePage() {
       threadPanel.openTab({ id: "recording:main", type: "recording", name: t("recording.page.title") });
     },
     onEnsureConversation: ensurePluginConversation,
-    onSend: (text) => submitAgentComposerMessage({
-      chatId: state.agent.currentChatId, target: state.agent.currentChatId ? null : draftTarget,
-      connection, ensureChatSubscription, content: text, pendingAttachments: [], language,
-      dispatch, track, uploadAgentMedia: (files) => clients!.memmyAgent.uploadAgentMedia(files), clearComposer: () => {},
-      setCreatingChat: setIsCreatingChat, modelPreset: resolvedConversationModel.candidateId ?? undefined,
-      chatSelectionEpoch: state.agent.chatSelectionEpoch, getChatSelectionEpoch: () => chatSelectionEpochRef.current,
-    }),
+    onSend: sendPluginMessage,
   });
   const hasActiveConversation = hasActiveAgentConversation(
     state.agent.currentChatId,
@@ -3272,7 +3275,7 @@ export function HomePage() {
                     />
                   </div>
                 ) : null}
-                <PluginConversationRecording client={clients?.plugins} config={clients?.runtimeConfig} plugins={features.plugins}
+                <PluginConversationRecording onContinue={sendPluginMessage} client={clients?.plugins} config={clients?.runtimeConfig} plugins={features.plugins}
                   conversationId={state.agent.currentChatId ?? state.agent.currentSessionKey ?? null}
                   onPrompt={(text) => { setCurrentComposerDraft(text); inputRef.current?.focus(); }} />
                 <ComposerHighlightedTextarea
@@ -3416,7 +3419,7 @@ export function HomePage() {
           <div ref={composerOverlayRef} className="agent-conversation-composer">
             <div className="agent-conversation-content agent-conversation-content--composer agent-conversation-column">
               <div className="agent-composer-flow">
-                <PluginConversationRecording client={clients?.plugins} config={clients?.runtimeConfig} plugins={features.plugins}
+                <PluginConversationRecording onContinue={sendPluginMessage} client={clients?.plugins} config={clients?.runtimeConfig} plugins={features.plugins}
                   conversationId={state.agent.currentChatId ?? state.agent.currentSessionKey ?? null}
                   onPrompt={(text) => { setCurrentComposerDraft(text); inputRef.current?.focus(); }} />
                 <AgentQueuedMessageList

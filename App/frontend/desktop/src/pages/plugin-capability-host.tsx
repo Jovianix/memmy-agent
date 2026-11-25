@@ -1,4 +1,5 @@
 import "./plugin-interaction-frame.css";
+import { ConfirmDialog } from "../components/confirm-dialog.js";
 import { createPortal } from "react-dom";
 import { Button } from "../components/button.js";
 import { FileTypeIcon } from "../components/file-type-icon.js";
@@ -424,6 +425,10 @@ export function PluginCapabilityHost(props: PluginCapabilityHostProps) {
         // Progress and task-list events are status updates, not user-facing
         // cards. Keep them in the chat flow as text so a job cannot take over
         // the conversation with a second progress panel.
+        if (call.events.some(event => event.type === "interaction" && event.request.type === "approval"
+          && asRecord(event.request.payload).kind === "recording-start")) {
+          return hidden ? null : <div key={call.callId}>{cards}</div>;
+        }
         if (isBarePresentation(call) || isStatusOnlyPresentation(call)
           || (call.pluginId === "legal-labor" && call.events.some((event) => event.type === "error")
             && !call.events.some((event) => event.type === "interaction"))
@@ -774,6 +779,14 @@ function InteractionCard(props: {
     event.preventDefault();
     if (value.trim()) void submit(value.trim());
   };
+
+  if (props.request.type === "approval" && payload.kind === "recording-start") {
+    if (status === "answered") return null;
+    return createPortal(<ConfirmDialog open title={t("plugins.recording.confirmTitle")} icon={null}
+      message={status === "error" ? t("plugin.ui.responseFailed") : t("plugins.recording.confirmScope")}
+      cancelLabel={t("plugins.recording.cancel")} confirmLabel={t("plugins.recording.startButton")}
+      confirmDisabled={disabled} onCancel={() => void submit(false)} onConfirm={() => void submit(true)} />, document.body);
+  }
 
   if (props.request.type === "file-input") {
     return <FileInputCard onOpenArtifact={props.onOpenArtifact} diagnosticUpload={props.diagnosticUpload} onGenerateDiagnosis={props.onGenerateDiagnosis} onClose={props.onDismiss} conversationId={props.conversationId} pluginId={props.pluginId} request={props.request} title={title} description={description} disabled={disabled} status={status} onStatus={setStatus} onRespond={props.onRespond} onUploadFiles={props.onUploadFiles} />;

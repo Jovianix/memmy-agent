@@ -28,6 +28,7 @@ export type EventCaptureSession = z.infer<typeof EventCaptureSessionSchema>;
 
 /** Declares a conversation-owned state/control capability; it never opens a surface. */
 export const PluginConversationSchema = z.object({
+  recordingControls: z.literal("record-and-replay").optional(),
   recordingCapabilityId: z.string().min(1), skillCapabilityId: z.string().min(1).optional(),
   recordingSkillId: z.string().min(1), creatorSkillId: z.string().min(1).optional()
 });

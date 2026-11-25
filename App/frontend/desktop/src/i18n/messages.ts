@@ -12,6 +12,17 @@ export const MEMORY_ADD_STATUS_SUMMARIES = [
 ] as const;
 
 export const zhCNMessages = {
+  "plugins.recording.confirmTitle": "开始录制操作？",
+  "plugins.recording.confirmScope": "最多 30 分钟。录制使用电脑历史记录已授权的范围，生成技能时会将相关操作提供给当前模型。",
+  "plugins.recording.startButton": "开始录制",
+  "plugins.recording.discard": "丢弃",
+  "plugins.recording.move": "移动录制控件",
+  "plugins.recording.done": "录制完成",
+  "plugins.recording.empty": "没有录到操作",
+  "plugins.recording.unavailable": "暂时无法读取录制状态",
+  "plugins.recording.failedHint": "录制失败，请返回对话查看原因。",
+  "plugins.recording.permissionHint": "请检查系统的辅助功能和输入监控权限。",
+  "plugins.recording.dismiss": "关闭",
   "plugins.recording.disabledNotice": "插件已停用，录制已终止；片段和技能已保留。",
   "plugins.recording.statusUnavailable": "状态待核对",
   "plugins.recording.ending": "正在结束录制",
@@ -3192,6 +3203,17 @@ export const zhCNMessages = {
 } as const;
 
 export const enUSMessages: Record<keyof typeof zhCNMessages, string> = {
+  "plugins.recording.confirmTitle": "Start recording your actions?",
+  "plugins.recording.confirmScope": "Record up to 30 minutes within your Computer History permissions. Relevant actions are shared with the selected model when creating a skill.",
+  "plugins.recording.startButton": "Start recording",
+  "plugins.recording.discard": "Discard",
+  "plugins.recording.move": "Move recording controls",
+  "plugins.recording.done": "Recording complete",
+  "plugins.recording.empty": "No actions recorded",
+  "plugins.recording.unavailable": "Recording status unavailable",
+  "plugins.recording.failedHint": "Recording failed. See the conversation for details.",
+  "plugins.recording.permissionHint": "Check Accessibility and Input Monitoring permissions.",
+  "plugins.recording.dismiss": "Dismiss",
   "plugins.recording.disabledNotice": "Plugin disabled. Recording ended; fragments and skills were retained.",
   "plugins.recording.statusUnavailable": "Status unavailable",
   "plugins.recording.ending": "Ending recording",

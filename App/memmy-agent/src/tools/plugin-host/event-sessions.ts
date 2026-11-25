@@ -8,10 +8,11 @@ import { writeJsonAtomic } from "../../utils/atomic-json.js";
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const controls = /^recording_(?:started|stopped|paused|resumed|checkpoint|gap)$/;
 const retiredWindowMessage = "Teaching-window recording has been retired. Update Teach Mode and confirm the Computer History capture scope before starting.";
+const demonstrationDurationMs = 30 * 60_000;
 const maxBytes = 64 * 1024 * 1024;
 type Active = { session: EventCaptureSession; subscription: EventCaptureSubscription;
   positions: Map<string, number>; skipLeading: Set<string>; fd: number; bytes: number;
-  stopping?: Promise<EventCaptureSession> };
+  deadline?: number; stopping?: Promise<EventCaptureSession> };
 
 /** Durable, owner/conversation-scoped snapshots of the shared authorized stream. */
 export class PluginEventSessions {
@@ -43,6 +44,11 @@ export class PluginEventSessions {
   }
   private poll(): Promise<void> {
     if (this.polling) return this.polling;
+    for (const item of this.active.values()) {
+      if (item.deadline !== undefined && Date.parse(this.now()) >= item.deadline && item.session.state === "recording") {
+        void this.stop(item.session.pluginId, item.session.conversationId, item.session.id).catch(() => undefined);
+      }
+    }
     const pass = this.serial(async () => {
       for (const active of [...this.active.values()]) {
         if (active.session.state !== "recording") continue;
@@ -88,13 +94,14 @@ export class PluginEventSessions {
       try { const session = this.read(owner, id); return session.conversationId === conversationId ? [session] : []; } catch { return []; }
     }).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   }
-  start(owner: string, conversationId: string, goal: string, consent: boolean, legacyWindowScope?: unknown) {
+  start(owner: string, conversationId: string, goal: string, consent: boolean, legacyWindowScope?: unknown, demonstration = false) {
     if (legacyWindowScope !== undefined) return Promise.reject(new Error(retiredWindowMessage));
     return this.serial(async () => {
       if (this.closing) throw new Error("capture_shutting_down");
       if (consent !== true || !goal.trim() || goal.length > 2_000) throw new Error("capture_goal_and_consent_required");
       const duplicate = [...this.active.values(), ...this.starting.values()].find(a => a.session.pluginId === owner && a.session.conversationId === conversationId);
       if (duplicate) return structuredClone(duplicate.session);
+      if (demonstration && this.isBusy(owner)) throw new Error("capture_active_in_another_conversation");
       let subscription: EventCaptureSubscription | undefined;
       let fd: number | undefined;
       let session: EventCaptureSession | undefined;
@@ -121,7 +128,8 @@ export class PluginEventSessions {
           try { fs.readSync(input, last, 0, 1, stream.size - 1); if (last[0] !== 10) skipLeading.add(stream.id); }
           finally { fs.closeSync(input); }
         }
-        this.active.set(session.id, { session, subscription, fd, bytes: 0, skipLeading, positions: new Map(initial.streams.map(s => [s.id, s.size])) });
+        this.active.set(session.id, { session, subscription, fd, bytes: 0, skipLeading,
+          deadline: demonstration ? Date.parse(session.startedAt) + demonstrationDurationMs : undefined, positions: new Map(initial.streams.map(s => [s.id, s.size])) });
         return structuredClone(session);
       } catch (error) {
         if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* Subscription cleanup still runs after a file error. */ } }
@@ -154,7 +162,7 @@ export class PluginEventSessions {
       ...(active.session.endedAt ? { through: active.session.endedAt } : {}) });
     active.session.limitations = [...new Set([...active.session.limitations, ...point.limitations])];
     if (point.complete === false) active.session.availability = "partial";
-    const start = Date.parse(active.session.startedAt), end = Date.parse(active.session.endedAt ?? this.now());
+    const start = Date.parse(active.session.startedAt), end = Math.min(Date.parse(active.session.endedAt ?? this.now()), active.deadline ?? Infinity);
     if (end < start) throw new Error("capture_clock_changed");
     for (const stream of point.streams) {
       let position = active.positions.get(stream.id) ?? 0;
@@ -227,7 +235,7 @@ export class PluginEventSessions {
     const active = this.active.get(id);
     if (!active) return Promise.resolve(saved);
     if (active.stopping) return active.stopping;
-    active.session.endedAt ??= this.now(); active.session.state = "finalizing";
+    active.session.endedAt ??= new Date(Math.min(Date.parse(this.now()), active.deadline ?? Infinity)).toISOString(); active.session.state = "finalizing";
     this.save(active.session);
     const stopping = this.serial(async () => {
       if (!this.active.has(id)) return this.read(owner, id);
@@ -279,7 +287,7 @@ export class PluginEventSessions {
   }
   async invoke(owner: string, conversationId: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (input.action === "browser-options") throw new Error(retiredWindowMessage);
-    if (input.action === "start") return this.start(owner, conversationId, String(input.goal ?? ""), input.consent === true, input.browser);
+    if (input.action === "start") return this.start(owner, conversationId, String(input.goal ?? ""), input.consent === true, input.browser, input.recordingControls === "record-and-replay");
     if (input.action === "status" || input.action === "list") return { sessions: this.list(owner, conversationId) };
     if (typeof input.session_id !== "string") throw new Error("capture_session_id_required");
     if (input.action === "stop" || input.action === "cancel") return this.stop(owner, conversationId, input.session_id, input.action === "cancel");

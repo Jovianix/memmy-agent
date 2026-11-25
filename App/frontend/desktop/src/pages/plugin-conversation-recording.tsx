@@ -4,10 +4,11 @@ import { EventCaptureSessionSchema, PluginConversationPresentationSchema, type P
 import type { PluginsClient } from "../api/plugins-client.js";
 import { createEventsConnection } from "../api/events.js";
 import { useTranslation } from "../i18n/use-translation.js";
+import { DemonstrationControls } from "./demonstration-controls.js";
 import { Button } from "../components/button.js";
 
-export function PluginConversationRecording({ client, config, plugins, conversationId: currentConversationId, onPrompt }: {
-  client?: PluginsClient; config?: RuntimeConfig; plugins: InstalledPlugin[]; conversationId: string | null; onPrompt: (text: string) => void;
+export function PluginConversationRecording({ client, config, plugins, conversationId: currentConversationId, onPrompt, onContinue }: {
+  client?: PluginsClient; config?: RuntimeConfig; plugins: InstalledPlugin[]; conversationId: string | null; onPrompt: (text: string) => void; onContinue?: (text: string, display: string) => Promise<boolean>;
 }) {
   const { t, language } = useTranslation();
   const conversationId = currentConversationId?.replace(/^websocket:/, "") ?? null;
@@ -87,6 +88,17 @@ export function PluginConversationRecording({ client, config, plugins, conversat
   }
   const elapsed = session.state === "starting" ? 0 : Math.max(0, Math.floor(((session.endedAt ? Date.parse(session.endedAt) : endingAt ?? now) - Date.parse(session.startedAt)) / 1_000));
   const duration = `${elapsed >= 3600 ? `${String(Math.floor(elapsed / 3600)).padStart(2, "0")}:` : ""}${String(Math.floor(elapsed / 60) % 60).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
+  const contribution = selected.plugin.manifest.conversation!;
+  // Earlier Teach releases already declare the standard recording skill but lack the controls field.
+  if (contribution.recordingControls === "record-and-replay" || contribution.recordingSkillId === "record-and-replay") {
+    const hint = error ? t("plugins.recording.unavailable") : session.error === "capture_permission_required"
+      ? sessionError !== session.error ? sessionError : t("plugins.recording.permissionHint")
+      : session.error ? t("plugins.recording.failedHint") : null;
+    const creator = contribution.creatorSkillId;
+    return <DemonstrationControls key={session.id} session={session} busy={busy} duration={duration} elapsed={elapsed} error={hint}
+      onStop={() => void control("stop")} onDiscard={() => void control("cancel")}
+      onContinue={creator && onContinue ? () => onContinue(`$${creator}\n\n${t("plugins.recording.done")} (${session.id})`, t("plugins.recording.done")) : undefined} />;
+  }
   const availability = t(`plugins.recording.availability.${session.availability}`);
   const label = error ? t("plugins.recording.statusUnavailable") : busy ? t("plugins.recording.ending") : recording ? t("plugins.recording.active") :
     session.state === "ready" ? t("plugins.recording.ended") : session.state === "cancelled" ? t("plugins.recording.cancelled") :

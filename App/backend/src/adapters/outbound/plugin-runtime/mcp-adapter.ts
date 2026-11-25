@@ -72,6 +72,8 @@ interface McpPluginSession extends PluginSession {
   client: McpClientLike;
   config: McpRuntimeConfig;
   capabilityTools: Record<string, string>;
+  recordingCapability?: string;
+  confirmations: Map<string, (approved: boolean) => void>;
   controllers: Map<string, AbortController>;
   calls: Map<string, CapabilityCall>;
   closing: boolean;
@@ -122,7 +124,10 @@ export function createMcpPluginAdapter(options: CreateMcpPluginAdapterOptions = 
         assertNetworkPermission(context, url.hostname);
       }
       const client = createClient();
-      const session: McpPluginSession = { pluginId: context.plugin.id, client, config, capabilityTools: {}, controllers: new Map(), calls: new Map(), closing: false };
+      const conversation = context.plugin.manifest.conversation;
+      const session: McpPluginSession = { pluginId: context.plugin.id, client, config, capabilityTools: {},
+        recordingCapability: conversation?.recordingControls === "record-and-replay" ? conversation.recordingCapabilityId : undefined,
+        confirmations: new Map(), controllers: new Map(), calls: new Map(), closing: false };
       const approved = new Set(context.plugin.approvedPermissions.flatMap(p => p.type === "host-service" ? p.services : []));
       const hostControllers = new Set<AbortController>();
       const abortActivation = () => {
@@ -183,6 +188,28 @@ export function createMcpPluginAdapter(options: CreateMcpPluginAdapterOptions = 
       if (!toolName) throw new Error(`MCP capability is not mapped: ${call.capabilityId}`);
       const controller = new AbortController();
       session.controllers.set(call.callId, controller);
+      if (call.capabilityId === session.recordingCapability && asArguments(call.input).action === "start") {
+        let answer!: (approved: boolean) => void;
+        const decision = new Promise<boolean>(resolve => { answer = resolve; });
+        const cancel = () => answer(false);
+        session.confirmations.set(call.callId, answer);
+        controller.signal.addEventListener("abort", cancel, { once: true });
+        const timeout = setTimeout(cancel, callTimeoutMs(session.config.timeoutMs, call.deadline));
+        try {
+          yield { type: "interaction", request: { interactionId: "recording-start", type: "approval",
+            payload: { kind: "recording-start" }, responseSchema: { type: "boolean" } } };
+          if (!await decision || controller.signal.aborted) {
+            yield { type: "result", output: { state: "cancelled", recordingStarted: false } };
+            return;
+          }
+        } finally {
+          clearTimeout(timeout);
+          controller.signal.removeEventListener("abort", cancel);
+          session.confirmations.delete(call.callId);
+          session.controllers.delete(call.callId);
+        }
+        session.controllers.set(call.callId, controller);
+      }
       session.calls.set(call.callId, call);
       const progress: CapabilityEvent[] = [];
       let wake: (() => void) | null = null;
@@ -234,6 +261,14 @@ export function createMcpPluginAdapter(options: CreateMcpPluginAdapterOptions = 
         session.controllers.delete(call.callId);
         session.calls.delete(call.callId);
       }
+    },
+
+    async respond(rawSession, callId, interactionId, response) {
+      const confirmation = asMcpSession(rawSession).confirmations.get(callId);
+      if (!confirmation || interactionId !== "recording-start" || typeof response !== "boolean") {
+        throw new Error("No matching recording confirmation");
+      }
+      confirmation(response);
     },
 
     async cancel(rawSession, callId) {
